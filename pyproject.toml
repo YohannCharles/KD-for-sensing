@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kd-sensing"
 version = "0.1.0"
-description = "MMW T2 and baseline multimodal beam-prediction workflows."
+description = "Clean MMW U0, retained baseline, and DeepSense6G multimodal beam-prediction workflows."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

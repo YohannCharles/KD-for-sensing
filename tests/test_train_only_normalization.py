@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,8 +41,38 @@ def test_gps_scaler_fits_train_only_and_round_trips(tmp_path: Path):
     np.testing.assert_allclose(train.gps_scaler.mean_, [2.0, 0.0, 1.0])
     assert test.gps_scaler is train.gps_scaler
     artifacts = save_normalization_artifacts({"train": SimpleNamespace(dataset=train)}, tmp_path / "run")
+    assert artifacts["metadata"]["source_split"] == "train"
+    assert artifacts["metadata"]["sample_id_hash"]
+    assert Path(artifacts["metadata_sidecar"]).is_file()
     loaded = load_normalization_artifacts({"normalization_artifacts": artifacts})
     assert set(loaded) == set(gps_scaler_kwargs(train))
     validate_normalization_artifact_fingerprint({"data": {"dataset": {"gps_feature_mode": "relative_polar"}}}, {"normalization_artifacts": artifacts})
     with pytest.raises(ValueError, match="feature mode"):
         validate_normalization_artifact_fingerprint({"data": {"dataset": {"gps_feature_mode": "other"}}}, {"normalization_artifacts": artifacts})
+
+
+def test_clean_scaler_identity_mismatch_is_rejected(tmp_path: Path) -> None:
+    train = _MMWLeaf([1.0, 3.0], tmp_path / "inner_train.csv")
+    validation = _MMWLeaf([100.0], tmp_path / "inner_validation.csv")
+    fit_gps_scaler(train, validation, source="train_split_streaming_fit")
+    artifacts = save_normalization_artifacts({"train": SimpleNamespace(dataset=train)}, tmp_path / "run")
+    audit = tmp_path / "clean_split_audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "train_sample_id_hash": "not-the-train-hash",
+                "train_sample_count": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = {
+        "data": {"dataset": {"gps_feature_mode": "relative_polar"}},
+        "data_protocol": {"mode": "clean_inner_development", "audit_report": str(audit)},
+    }
+
+    with pytest.raises(ValueError, match="sample identity"):
+        validate_normalization_artifact_fingerprint(cfg, {"normalization_artifacts": artifacts})
+
+    np.testing.assert_allclose(train.gps_scaler.mean_, [2.0, 0.0, 1.0])
+    np.testing.assert_allclose(validation.gps_scaler.mean_, [2.0, 0.0, 1.0])

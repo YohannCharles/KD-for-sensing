@@ -102,6 +102,9 @@ def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, An
         generator_metadata = getattr(loader, "generator_metadata", None)
         if isinstance(generator_metadata, dict):
             metadata["dataloader_generator"] = dict(generator_metadata)
+        protocol_identity = getattr(loader, "clean_protocol_identity", None)
+        if isinstance(protocol_identity, dict):
+            metadata["clean_protocol"] = dict(protocol_identity)
         if split == "train":
             sampler_metadata = getattr(getattr(loader, "sampler", None), "domain_balanced_metadata", None)
             if isinstance(sampler_metadata, dict):

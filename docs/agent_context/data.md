@@ -1,7 +1,7 @@
 # 数据任务上下文
 
-数据面服务 MMW prepared sequence 与 DeepSense6G Scene31–34 标准 CSV 的 image、radar、gps、lidar 输入及其共享时间缺失协议。DeepSense6G 标签只能来自 64 维 `future_beamN` 功率的 `argmax`；不恢复 CSI、毫米波原始输入、soft label、cache 或场景 alias。`dataset/` 是本地输入，不能纳入源码变更；训练输出、cache、日志和 checkpoint 也不是文档或配置输入。
+MMW 只能通过 `clean_protocol.py` 的 `inner_train` / `inner_validation` 数据域运行；所有 train-domain 与 validation-domain 配对都必须完成零重叠审计，outer test 不得访问。归一化只从 train 拟合。
 
-先读 `openspec/specs/t2-baseline-surface/spec.md` 和 `openspec/specs/project-architecture/spec.md`。不要恢复任何已退役数据路线。
+DeepSense6G 保持 Scene31--34、四模态和 64 类 future-beam 契约，不使用 MMW protocol。`dataset/`、`outputs/`、cache、日志和 checkpoint 均为本地边界。
 
-最小验证：`conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_all_weather_runtime.py -q`。
+先读 `openspec/specs/clean-data-integrity/spec.md`。最小验证：`conda run -n kd_mm_beam pytest tests/test_clean_inner_protocol.py tests/test_train_only_normalization.py tests/test_deepsense6g_dataset.py -q`。

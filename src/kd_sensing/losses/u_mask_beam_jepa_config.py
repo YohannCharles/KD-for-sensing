@@ -1,9 +1,7 @@
 import math
 from typing import Any
 
-from kd_sensing.losses.bcacl_config import resolve_bcacl_config
 from kd_sensing.losses.beam_prototype_alignment import TOPOLOGY_IDS
-from kd_sensing.losses.cmsbl_config import resolve_cmsbl_config
 
 
 _FIELDS = frozenset(
@@ -17,13 +15,9 @@ _FIELDS = frozenset(
         "prototype_target_circular",
         "prototype_topology",
         "circular_beam_distance",
-        "use_amber_cma_analogue",
-        "lambda_amber_cma",
-        "amber_cma_temperature",
         "router_oracle_weight",
         "router_oracle_target_mode",
         "router_oracle_temperature",
-        "router_oracle_beam_temperature",
         "missing_mask",
         "superset_consistency",
     }
@@ -31,6 +25,9 @@ _FIELDS = frozenset(
 
 
 def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    retired = [name for name in ("bcacl", "cmsbl") if name in cfg]
+    if retired:
+        raise ValueError(f"Clean U0 does not support retired training sections: {retired}.")
     loss_cfg = cfg.get("loss", {}) if isinstance(cfg.get("loss"), dict) else {}
     raw = loss_cfg.get("u_mask_beam_jepa", {})
     if not isinstance(raw, dict):
@@ -42,15 +39,12 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     primary = model.get("primary", {}) if isinstance(model.get("primary"), dict) else {}
     head_type = str(primary.get("head_type", "prototype")).strip().lower()
     if head_type not in {"prototype", "classifier"}:
-        raise ValueError("T2 head_type must be prototype or classifier.")
+        raise ValueError("Clean U0 head_type must be prototype or classifier.")
     fusion_type = str(primary.get("fusion_type", "supervised_router")).strip().lower()
     if fusion_type != "supervised_router":
-        raise ValueError("Current T2/S1 supports fusion_type=supervised_router only.")
+        raise ValueError("Clean U0 supports fusion_type=supervised_router only.")
 
     use_bpa = bool(raw.get("use_beam_prototype_alignment", False)) and head_type == "prototype"
-    use_cma = bool(raw.get("use_amber_cma_analogue", False))
-    if use_bpa and use_cma:
-        raise ValueError("BPA and the AMBER CMA analogue are mutually exclusive.")
     lambda_proto = _finite(raw.get("lambda_proto", 0.0), "lambda_proto", non_negative=True) if use_bpa else 0.0
     lambda_modality_proto = (
         _finite(raw.get("lambda_modality_proto", 0.0), "lambda_modality_proto", non_negative=True)
@@ -61,11 +55,10 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
     router_weight = _finite(raw.get("router_oracle_weight", 0.1), "router_oracle_weight", non_negative=True)
     router_supervision = str(raw.get("router_supervision", "oracle")).strip().lower()
     if router_supervision != "oracle":
-        raise ValueError("Current T2/S1 supports router_supervision=oracle only.")
+        raise ValueError("Clean U0 supports router_supervision=oracle only.")
     target_mode = str(raw.get("router_oracle_target_mode", "hard_first")).strip().lower()
     if target_mode != "hard_first":
-        raise ValueError("T2 current surface supports router_oracle_target_mode=hard_first only.")
-    bcacl = resolve_bcacl_config(cfg)
+        raise ValueError("Clean U0 supports router_oracle_target_mode=hard_first only.")
     return {
         "enabled": bool(raw.get("enabled", False)),
         "head_type": head_type,
@@ -77,11 +70,6 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "beam_label_sigma": _finite(raw.get("beam_label_sigma", 1.0), "beam_label_sigma", positive=True),
         "prototype_target_circular": bool(topology["circular"]),
         "prototype_topology": topology,
-        "use_amber_cma_analogue": use_cma,
-        "lambda_amber_cma": _finite(raw.get("lambda_amber_cma", 0.2), "lambda_amber_cma", non_negative=True),
-        "amber_cma_temperature": _finite(
-            raw.get("amber_cma_temperature", 0.2), "amber_cma_temperature", positive=True
-        ),
         "superset_consistency": _resolve_superset(raw.get("superset_consistency")),
         "missing_mask": _resolve_missing_mask(raw.get("missing_mask")),
         "router_supervision": router_supervision,
@@ -90,12 +78,7 @@ def u_mask_beam_jepa_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "router_oracle_temperature": _finite(
             raw.get("router_oracle_temperature", 1.0), "router_oracle_temperature", positive=True
         ),
-        "router_oracle_beam_temperature": _finite(
-            raw.get("router_oracle_beam_temperature", 1.0), "router_oracle_beam_temperature", positive=True
-        ),
         "circular_beam_distance": bool(raw.get("circular_beam_distance", True)),
-        "bcacl": bcacl,
-        "cmsbl": resolve_cmsbl_config(cfg, bcacl),
     }
 
 

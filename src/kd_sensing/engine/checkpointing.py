@@ -12,7 +12,7 @@ from kd_sensing.engine.training_resume import (
     restore_runtime_state,
 )
 from kd_sensing.engine.training_state import TrainingState
-from kd_sensing.utils.artifact_registry import gps_checkpoint_provenance, training_profile_checkpoint_provenance
+from kd_sensing.utils.artifact_registry import gps_checkpoint_provenance
 from kd_sensing.utils.checkpoint import load_checkpoint, publish_checkpoint
 
 
@@ -141,7 +141,6 @@ class CheckpointManager:
                 self.normalization_artifacts,
             ),
             **gps_checkpoint_provenance(self.cfg),
-            **training_profile_checkpoint_provenance(self.cfg),
         }
         if selection is not None:
             payload["selection"] = dict(selection)
@@ -159,7 +158,6 @@ class CheckpointManager:
                 "task": self.cfg.get("experiment", {}).get("task"),
                 "enabled_modalities": list(self.cfg.get("model", {}).get("primary", {}).get("modalities", ())),
                 **gps_checkpoint_provenance(self.cfg),
-                **training_profile_checkpoint_provenance(self.cfg),
             },
         )
         return path

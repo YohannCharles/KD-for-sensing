@@ -8,6 +8,7 @@ from kd_sensing.engine.data_factory import (
     build_split_dataset,
     shutdown_dataloader_workers,
 )
+from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
 from kd_sensing.engine.data_factory_scalers import fit_gps_scaler
 from kd_sensing.engine.modality_resolution import (
     config_uses_gps,
@@ -29,11 +30,10 @@ from kd_sensing.engine.run_status import (
 from kd_sensing.engine.runtime import configure_cuda_performance_settings, configure_torch_runtime_threads
 from kd_sensing.engine.trainer import create_eval_run_dir, final_config_with_runtime
 from kd_sensing.engine.validator import validate
-from kd_sensing.losses.bcacl_config import primary_model_config_with_bcacl
 from kd_sensing.utils.artifact_registry import (
     resolve_evaluation_checkpoint,
+    validate_evaluation_checkpoint_route,
     validate_evaluation_gps_checkpoint_provenance,
-    validate_evaluation_training_profile_provenance,
 )
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 from kd_sensing.utils.seed import set_seed
@@ -64,8 +64,10 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             f"Resolution: {checkpoint_resolution.to_dict()}"
         )
     validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_resolution.metadata)
-    validate_evaluation_training_profile_provenance(cfg, checkpoint_resolution.metadata)
+    validate_evaluation_checkpoint_route(checkpoint_resolution.metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
+    clean_protocol_audit = validate_clean_config_protocol(cfg)
+    evaluation_split = "validation" if clean_protocol_audit is not None else "test"
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
     if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):
@@ -79,10 +81,10 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
         fit_gps_scaler(train_dataset, source="train_split_streaming_fit")
         split_metadata["train"] = dataset_run_metadata(train_dataset)
         dataset_kwargs["gps_scaler"] = _dataset_attr_recursive(train_dataset, "gps_scaler")
-        dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
+        dataset = build_split_dataset(cfg, evaluation_split, **dataset_kwargs)
     else:
-        dataset = build_split_dataset(cfg, "test", **dataset_kwargs)
-    split_metadata["test"] = dataset_run_metadata(dataset)
+        dataset = build_split_dataset(cfg, evaluation_split, **dataset_kwargs)
+    split_metadata[evaluation_split] = dataset_run_metadata(dataset)
     normalization_artifacts = {}
     if checkpoint_resolution.metadata:
         normalization_artifacts = checkpoint_resolution.metadata.get("normalization_artifacts", {})
@@ -101,8 +103,8 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
         run_dir / "final_config.yaml",
     )
     loader_cfg = cfg["data"]["dataloader"]
-    dataloader = build_dataloader(dataset, loader_cfg, split="test")
-    model = build_model(primary_model_config_with_bcacl(cfg)).to(device)
+    dataloader = build_dataloader(dataset, loader_cfg, split=evaluation_split)
+    model = build_model(cfg["model"]["primary"]).to(device)
     checkpoint_load = None
     if checkpoint_resolution.path is not None:
         if not checkpoint_resolution.path.exists():
@@ -130,7 +132,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     report = {
         **metrics,
         "checkpoint_load": checkpoint_load,
-        "split_protocol": _evaluation_split_protocol_report(split_metadata),
+        "split_protocol": _evaluation_split_protocol_report(split_metadata, evaluation_split),
         "runtime": {
             "run_dir": str(run_dir),
             "splits": split_metadata,
@@ -143,7 +145,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             "lineage": lineage,
         },
     }
-    with (run_dir / "test_report.json").open("w", encoding="utf-8") as f:
+    with (run_dir / f"{evaluation_split}_report.json").open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     write_complete_status(
         run_dir,
@@ -164,21 +166,21 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     }
 
 
-def _evaluation_split_protocol_report(split_metadata: dict) -> dict:
-    test = split_metadata.get("test", {}) if isinstance(split_metadata, dict) else {}
-    sidecar = test.get("split_metadata", {}) if isinstance(test.get("split_metadata"), dict) else {}
+def _evaluation_split_protocol_report(split_metadata: dict, split: str) -> dict:
+    metadata = split_metadata.get(split, {}) if isinstance(split_metadata, dict) else {}
+    sidecar = metadata.get("split_metadata", {}) if isinstance(metadata.get("split_metadata"), dict) else {}
     split_metadata_available = sidecar.get("available")
     if split_metadata_available is None:
-        split_metadata_available = bool(test.get("split_metadata_path") or test.get("split_protocol"))
-    split_metadata_path = test.get("split_metadata_path") or sidecar.get("path")
-    strict_validation_eligible = test.get("strict_validation_eligible")
-    reasons = list(test.get("eligibility_reasons") or [])
+        split_metadata_available = bool(metadata.get("split_metadata_path") or metadata.get("split_protocol"))
+    split_metadata_path = metadata.get("split_metadata_path") or sidecar.get("path")
+    strict_validation_eligible = metadata.get("strict_validation_eligible")
+    reasons = list(metadata.get("eligibility_reasons") or [])
     warnings = []
     if split_metadata_available is False:
         warnings.append(
             {
                 "code": "split_metadata_missing",
-                "message": "Evaluation test CSV has no split metadata sidecar; treat split eligibility as unknown.",
+                "message": "Evaluation CSV has no split metadata sidecar; treat split eligibility as unknown.",
                 "expected_path": sidecar.get("expected_path"),
                 "fix_hint": "Regenerate or reference the prepared split metadata before using this run for strict conclusions.",
             }
@@ -194,18 +196,19 @@ def _evaluation_split_protocol_report(split_metadata: dict) -> dict:
             }
         )
     return {
-        "test_csv": test.get("csv_path"),
-        "test_csv_name": test.get("csv_name"),
-        "test_num_samples": test.get("num_samples"),
+        "evaluation_split": split,
+        "csv": metadata.get("csv_path"),
+        "csv_name": metadata.get("csv_name"),
+        "num_samples": metadata.get("num_samples"),
         "split_metadata_available": bool(split_metadata_available),
         "split_metadata_path": split_metadata_path,
         "split_metadata_expected_path": sidecar.get("expected_path"),
-        "split_protocol": test.get("split_protocol"),
-        "split_strategy": test.get("split_strategy"),
-        "split_protocol_version": test.get("split_protocol_version"),
+        "split_protocol": metadata.get("split_protocol"),
+        "split_strategy": metadata.get("split_strategy"),
+        "split_protocol_version": metadata.get("split_protocol_version"),
         "strict_validation_eligible": strict_validation_eligible,
         "eligibility_reasons": reasons,
-        "leakage_diagnostics": test.get("leakage_diagnostics"),
+        "leakage_diagnostics": metadata.get("leakage_diagnostics"),
         "warnings": warnings,
     }
 

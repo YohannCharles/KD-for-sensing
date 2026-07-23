@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Evaluate the Clean MMW validation matrix for U0 and retained baselines."""
+
+from __future__ import annotations
+
 import argparse
 import csv
 import hashlib
@@ -6,23 +10,21 @@ import itertools
 import json
 import math
 import random
-import time
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 import numpy as np
 import torch
-import yaml
 
+from kd_sensing.config import load_config
+from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
 from kd_sensing.data.temporal_missing import (
     DEFAULT_TEMPORAL_MODALITIES,
     apply_modality_temporal_mask_to_batch,
     sample_stratified_modality_temporal_mask,
 )
-from kd_sensing.engine.data_factory import build_dataloader, build_dataloaders
-from kd_sensing.engine.data_factory import shutdown_dataloader_workers
-from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch, sample_ids_from_batch
+from kd_sensing.engine.data_factory import build_dataloader, build_dataloaders, shutdown_dataloader_workers
+from kd_sensing.engine.evaluation_pass_runtime import prepare_evaluation_batch
 from kd_sensing.engine.modality_resolution import config_uses_gps
 from kd_sensing.engine.normalization_artifacts import (
     load_normalization_artifacts,
@@ -31,70 +33,33 @@ from kd_sensing.engine.normalization_artifacts import (
 from kd_sensing.engine.optim import build_device, build_model
 from kd_sensing.engine.runtime import configure_cuda_performance_settings, prepare_task_labels, run_model_step
 from kd_sensing.engine.trainer_runtime_helpers import shutdown_all_dataloaders
+from kd_sensing.eval.metrics import expected_calibration_error, reliability_error_stats
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import _beam_classification_metrics
 from kd_sensing.evaluation.metrics import beam_power_communication_summary
 from kd_sensing.utils.artifact_registry import (
     load_checkpoint_metadata,
+    validate_evaluation_checkpoint_route,
     validate_evaluation_gps_checkpoint_provenance,
-    validate_evaluation_training_profile_provenance,
 )
 from kd_sensing.utils.checkpoint import load_model_state
 from kd_sensing.utils.seed import set_seed
 
 
 ROOT = Path(__file__).resolve().parents[1]
-METHODS = ("S1", "T2", "amber_full", "rmbp_mm")
-T2_ABLATION_METHODS = (
-    "T2-NoBPA",
-    "T2-BPA2CMA",
-    "T2-Linear",
-    "T2-CLS",
-    "T2-CLS-CMA",
-)
-SUPPORTED_METHODS = (*METHODS, *T2_ABLATION_METHODS)
+METHODS = ("U0", "amber_full", "rmbp_mm")
 RATES = (0.0, 0.2, 0.4, 0.6, 0.8)
 MASK_TYPES = ("modality_frame", "frame_level", "block")
-MASK_CACHE_SEED = 20260713
-HISTORY_WINDOW = 5
-BASELINE_SCOPES = {
-    "S1": {
-        "reproduction_scope": "project_mainline",
-        "paper_equivalent": False,
-        "temporal_result_scope": "mainline_local_validation",
-    },
-    "T2": {
-        "reproduction_scope": "project_mainline",
-        "paper_equivalent": False,
-        "temporal_result_scope": "mainline_local_validation",
-    },
-    "amber_full": {
-        "reproduction_scope": "amber_full_local_adaptation",
-        "paper_equivalent": False,
-        "temporal_result_scope": "local_adaptation_diagnostic",
-    },
-    "rmbp_mm": {
-        "reproduction_scope": "rmbp_mm_channel_attention_local",
-        "paper_equivalent": False,
-        "temporal_result_scope": "out_of_paper_scope_diagnostic",
-    },
-    **{
-        method: {
-            "reproduction_scope": "project_mainline_t2_ablation",
-            "paper_equivalent": False,
-            "temporal_result_scope": "paired_objective_topology_head_ablation",
-        }
-        for method in T2_ABLATION_METHODS
-    },
-}
+MASK_CACHE_VERSION = "clean_mmw_temporal_masks_v1"
+MASK_CACHE_SEED = 20260723
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate MMW all-weather whole/temporal missing matrix.")
-    parser.add_argument("--root", default="outputs/mmw_all_weather_h5p1_seed1_v2")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Evaluate Clean MMW validation robustness for U0 and retained baselines.")
+    parser.add_argument("--root", default="outputs/mmw_clean_u0", help="Training output root created by the launcher.")
     parser.add_argument("--methods", default=",".join(METHODS))
     parser.add_argument("--seeds", default="1")
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--mask-cache", default="outputs/mmw_all_weather_h5p1_eval_masks_v2")
+    parser.add_argument("--mask-cache", default="outputs/mmw_clean_u0_eval_masks")
     parser.add_argument("--modality-frame-masks", type=int, default=16)
     parser.add_argument("--temporal-rates", default=",".join(str(rate) for rate in RATES))
     parser.add_argument("--temporal-mask-types", default=",".join(MASK_TYPES))
@@ -104,43 +69,33 @@ def main() -> int:
     parser.add_argument("--max-domains", type=int, default=None)
     parser.add_argument("--domain-shard-index", type=int, default=0)
     parser.add_argument("--domain-shard-count", type=int, default=1)
-    args = parser.parse_args()
-    if args.domain_shard_count <= 0 or not 0 <= args.domain_shard_index < args.domain_shard_count:
-        parser.error("domain shard requires count > 0 and 0 <= index < count")
-    args.temporal_rates = tuple(_csv_floats(args.temporal_rates))
-    args.temporal_mask_types = tuple(_csv(args.temporal_mask_types))
-    args.seeds = tuple(int(item) for item in _csv(args.seeds))
-    requested_methods = tuple(_csv(args.methods))
-    unknown_methods = sorted(set(requested_methods) - set(SUPPORTED_METHODS))
-    if not requested_methods or unknown_methods:
-        parser.error(f"methods must be a non-empty subset of {SUPPORTED_METHODS}; unknown={unknown_methods}")
-    if not args.seeds or any(seed <= 0 for seed in args.seeds) or len(set(args.seeds)) != len(args.seeds):
-        parser.error("seeds must be unique positive integers")
-    _validate_requested_temporal_protocol(args.temporal_rates, args.temporal_mask_types)
-    root = Path(args.root)
-    output_dir = Path(args.output_dir) if args.output_dir else root / "eval_matrix_v2"
-    cache = _load_or_create_temporal_cache(
-        Path(args.mask_cache),
-        modality_frame_masks=int(args.modality_frame_masks),
-        rates=args.temporal_rates,
-        mask_types=args.temporal_mask_types,
-    )
-    failures = []
-    seed_subdirs = args.seeds != (1,)
-    for method in requested_methods:
+    args = parser.parse_args(argv)
+
+    try:
+        args.methods = _parse_methods(args.methods)
+        args.seeds = tuple(int(value) for value in _csv(args.seeds))
+        args.temporal_rates = tuple(float(value) for value in _csv(args.temporal_rates))
+        args.temporal_mask_types = tuple(_csv(args.temporal_mask_types))
+        _validate_args(args)
+        root = _resolve_from_root(args.root)
+        output_dir = _resolve_from_root(args.output_dir) if args.output_dir else root / "evaluation"
+        cache = _load_or_create_temporal_cache(
+            _resolve_from_root(args.mask_cache),
+            history_window=5,
+            modality_frame_masks=args.modality_frame_masks,
+            rates=args.temporal_rates,
+            mask_types=args.temporal_mask_types,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        parser.error(str(exc))
+
+    failures: list[dict[str, str]] = []
+    for method in args.methods:
         for seed in args.seeds:
             try:
-                evaluate_method(method, root, output_dir, cache, args, seed=seed, seed_subdir=seed_subdirs)
-            except Exception as exc:  # noqa: BLE001 - preserve per-method failure evidence.
-                failures.append(
-                    {
-                        "method": method,
-                        "seed": seed,
-                        "status": "unavailable",
-                        "type": type(exc).__name__,
-                        "error": str(exc),
-                    }
-                )
+                evaluate_method(method, root, output_dir, cache, args, seed=seed)
+            except Exception as exc:
+                failures.append({"method": method, "seed": str(seed), "type": type(exc).__name__, "error": str(exc)})
     if failures:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "failed_jobs.json").write_text(json.dumps(failures, indent=2) + "\n", encoding="utf-8")
@@ -152,444 +107,379 @@ def evaluate_method(
     method: str,
     root: Path,
     output_dir: Path,
-    cache: dict,
+    cache: dict[float, dict[str, Any]],
     args: argparse.Namespace,
     *,
-    seed: int = 1,
-    seed_subdir: bool = False,
+    seed: int,
 ) -> None:
-    cfg_path, checkpoint = _seed_artifact_paths(root, method, seed)
-    if not cfg_path.exists() or not checkpoint.exists():
-        raise FileNotFoundError(f"{method}: missing config or fixed-epoch last checkpoint")
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(cfg, dict):
-        raise ValueError(f"{method}: generated config is not a mapping")
+    config_path, checkpoint = _seed_artifact_paths(root, method, seed)
+    if not config_path.is_file() or not checkpoint.is_file():
+        raise FileNotFoundError(f"{method}/seed{seed}: missing generated config or checkpoints/last.pth")
+
+    cfg = load_config(config_path)
+    protocol_audit = validate_clean_config_protocol(cfg)
+    if protocol_audit is None:
+        raise ValueError(f"{method}/seed{seed}: the matrix only accepts Clean MMW configurations")
     checkpoint_metadata = load_checkpoint_metadata(checkpoint)
     validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_metadata)
-    validate_evaluation_training_profile_provenance(cfg, checkpoint_metadata)
+    validate_evaluation_checkpoint_route(checkpoint_metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_metadata)
-    normalization_overrides = load_normalization_artifacts(checkpoint_metadata)
-    if config_uses_gps(cfg) and "gps_scaler" not in normalization_overrides:
-        raise ValueError(f"{method}: fixed-mask evaluation requires the checkpoint's train-fit GPS normalization artifact.")
-    cfg.setdefault("temporal_missing", {})["enabled"] = False
-    cfg["temporal_missing"]["mode"] = "none"
-    cfg.setdefault("training", {})["final_test"] = {"enabled": False, "reason": "fixed_mask_validation_only"}
-    loader_cfg = cfg.setdefault("data", {}).setdefault("dataloader", {})
-    loader_cfg["validation_batch_size"] = int(args.batch_size)
-    loader_cfg["test_batch_size"] = int(args.batch_size)
-    dataloaders = None
+    normalization = load_normalization_artifacts(checkpoint_metadata)
+    if config_uses_gps(cfg) and "gps_scaler" not in normalization:
+        raise ValueError(f"{method}/seed{seed}: checkpoint is missing its train-fit GPS normalization artifact")
+
+    cfg.setdefault("temporal_missing", {}).update({"enabled": False, "mode": "none"})
+    cfg.setdefault("training", {})["final_test"] = {"enabled": False}
+    cfg.setdefault("data", {}).setdefault("dataloader", {})["validation_batch_size"] = int(args.batch_size)
+
+    dataloaders = build_dataloaders(cfg, normalization_overrides=normalization)
     try:
-        dataloaders = build_dataloaders(cfg, normalization_overrides=normalization_overrides)
-        validation = dataloaders["validation"].dataset
-        components = list(getattr(validation, "datasets", []))
-        inventory = list(getattr(validation, "domain_inventory", []))
-        if len(components) != 15 or len(inventory) != 15:
-            raise ValueError(f"{method}: expected 15 validation domains, got components={len(components)} inventory={len(inventory)}")
+        validation_loader = dataloaders.get("validation")
+        if validation_loader is None:
+            raise ValueError("Clean MMW evaluation requires an inner-validation loader")
+        components = list(getattr(validation_loader.dataset, "datasets", []))
+        inventory = list(getattr(validation_loader.dataset, "domain_inventory", []))
+        if not components or len(components) != len(inventory):
+            raise ValueError("Clean MMW validation dataset must expose aligned domain components and inventory")
+
         set_seed(int(seed))
         device = build_device(cfg)
         configure_cuda_performance_settings(cfg, device)
         model = build_model(cfg["model"]["primary"]).to(device)
-        load_model_state(checkpoint, model, role="MMW all-weather fixed-epoch last", map_location=device, strict=True)
+        load_model_state(checkpoint, model, role="Clean MMW validation matrix", map_location=device, strict=True)
         model.eval()
-        rows = []
-        whole_masks = [] if args.skip_whole_modality else _whole_modality_masks()
+
         selected = list(zip(components, inventory))[int(args.domain_shard_index) :: int(args.domain_shard_count)]
         if args.max_domains is not None:
             selected = selected[: int(args.max_domains)]
-        is_partial = args.max_batches is not None or args.max_domains is not None
-        provenance = {
-            **_evaluation_provenance(cfg),
-            **_checkpoint_evidence_identity(cfg, checkpoint_metadata, checkpoint),
-            **BASELINE_SCOPES[method],
-            "checkpoint": str(checkpoint),
-            "checkpoint_policy": "fixed_epoch_last_pth",
-            "enabled_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
-            "weather_label_used_as_input": False,
-            "screening_role": "local_validation",
-            "temporal_mask_protocol": "mmw_temporal_geometry_v2",
-            "temporal_rates": ",".join(str(rate) for rate in args.temporal_rates),
-            "temporal_mask_types": ",".join(args.temporal_mask_types),
-            "domain_shard_index": int(args.domain_shard_index),
-            "domain_shard_count": int(args.domain_shard_count),
-            "expected_domain_count": len(inventory),
-            "selected_domain_count": len(selected),
-            "partial_request": bool(is_partial),
-            "seed": int(seed),
-        }
-        target = _seed_evaluation_target(output_dir, method, seed, seed_subdir=seed_subdir)
-        started = time.monotonic()
-        for domain_index, (component, domain) in enumerate(selected, start=1):
+        rows: list[dict[str, Any]] = []
+        masks = _condition_masks(cache, args.skip_whole_modality)
+        provenance = _provenance(method, seed, checkpoint, checkpoint_metadata, protocol_audit, args, len(inventory), len(selected))
+        loader_cfg = cfg["data"]["dataloader"]
+
+        for component, domain in selected:
             loader = build_dataloader(component, loader_cfg, split="validation", experiment_seed=int(seed))
             try:
-                split_path = Path(str(domain["split_path"]))
-                sample_checksum = _sha256(split_path)
-                base = {
-                    "method": method,
-                    "seed": int(seed),
-                    "domain_id": domain["id"],
-                    "condition": domain["condition"],
-                    "scene": domain["scene"],
-                    "expected_sample_count": len(component),
-                    "sample_csv": str(split_path),
-                    "sample_csv_sha256": sample_checksum,
-                    **provenance,
-                }
-                specs = []
-                for pattern, mask_item in whole_masks:
-                    identity = _mask_identity(
-                        mask_item,
-                        mask_index=0,
-                        modalities=DEFAULT_TEMPORAL_MODALITIES,
-                        cache_checksum="whole_modality_subsets_v1",
-                        cache_seed=20260712,
-                    )
-                    specs.append(
-                        (
-                            mask_item,
-                            {
-                                **base,
-                                "eval_family": "whole_modality",
-                                "pattern": pattern,
-                                "available_modalities": ",".join(mask_item["available_modalities"]),
-                                "missing_rate": 0.0,
-                                "drop_count": 4 - len(mask_item["available_modalities"]),
-                                **identity,
-                            },
-                        )
-                    )
-                for rate in args.temporal_rates:
-                    payload = cache[(rate, 0)]
-                    for index, mask_item in enumerate(payload["masks"]):
-                        identity = _mask_identity(
-                            mask_item,
-                            mask_index=index,
-                            modalities=payload.get("modalities"),
-                            cache_checksum=payload.get("checksum"),
-                            cache_seed=payload.get("seed"),
-                        )
-                        specs.append(
-                            (
-                                mask_item,
-                                {
-                                    **base,
-                                    "eval_family": "temporal_missing",
-                                    "pattern": str(mask_item.get("mask_type", "temporal")),
-                                    "available_modalities": ",".join(DEFAULT_TEMPORAL_MODALITIES),
-                                    "missing_rate": rate,
-                                    "drop_count": 0,
-                                    **identity,
-                                },
-                            )
-                        )
-                metrics_by_mask = _evaluate_masks(
-                    model,
-                    loader,
-                    cfg,
-                    device,
-                    [mask_item for mask_item, _ in specs],
-                    args.max_batches,
-                    mask_modalities=DEFAULT_TEMPORAL_MODALITIES,
-                )
-                for (_, row), metrics in zip(specs, metrics_by_mask):
-                    evaluated_count = int(metrics.pop("evaluated_sample_count"))
-                    evaluated_batches = int(metrics.pop("evaluated_batch_count"))
-                    complete = bool(metrics.pop("coverage_complete")) and not is_partial
-                    rows.append(
-                        {
-                            **row,
-                            **metrics,
-                            "sample_count": evaluated_count,
-                            "evaluated_batch_count": evaluated_batches,
-                            "coverage_status": "complete" if complete else "partial",
-                        }
-                    )
-                _write_csv(target, rows)
-                print(
-                    f"{method} shard {args.domain_shard_index}/{args.domain_shard_count}: "
-                    f"domain {domain_index}/{len(selected)} {domain['id']} complete, elapsed={time.monotonic() - started:.1f}s",
-                    flush=True,
-                )
+                metrics = _evaluate_masks(model, loader, cfg, device, [item for _label, item in masks], args.max_batches)
             finally:
                 shutdown_dataloader_workers(loader)
+            sample_path = Path(str(domain.get("split_path", "")))
+            base = {
+                "method": method,
+                "seed": int(seed),
+                "domain_id": str(domain.get("id", "")),
+                "condition": str(domain.get("condition", "")),
+                "scene": str(domain.get("scene", "")),
+                "sample_csv": str(sample_path),
+                "sample_csv_sha256": _sha256(sample_path) if sample_path.is_file() else "",
+                "expected_sample_count": len(component),
+                **provenance,
+            }
+            for (label, mask), result in zip(masks, metrics):
+                rows.append(
+                    {
+                        **base,
+                        "eval_family": "whole_modality" if mask["mask_type"] == "whole_modality" else "temporal_missing",
+                        "pattern": label,
+                        "available_modalities": ",".join(mask["available_modalities"]),
+                        "missing_rate": float(mask.get("rate", 0.0)),
+                        "mask_type": str(mask["mask_type"]),
+                        "mask_digest": _mask_digest(mask),
+                        "mask_cache_checksum": str(mask.get("cache_checksum", "")),
+                        "sample_count": int(result.pop("sample_count")),
+                        "evaluated_batch_count": int(result.pop("batch_count")),
+                        "coverage_status": "complete" if result.pop("coverage_complete") else "partial",
+                        **result,
+                    }
+                )
+        target = output_dir / method / f"seed{seed}" / "metrics.csv"
+        _write_csv(target, rows)
         (target.parent / "provenance.json").write_text(
-            json.dumps(
-                {
-                    "method": method,
-                    "row_count": len(rows),
-                    "domain_count": len(selected),
-                    "temporal_cache_checksums": [cache[(rate, 0)]["checksum"] for rate in args.temporal_rates],
-                    **provenance,
-                },
-                indent=2,
-            )
-            + "\n",
+            json.dumps({"method": method, "seed": seed, "row_count": len(rows), **provenance}, indent=2) + "\n",
             encoding="utf-8",
         )
     finally:
-        if dataloaders is not None:
-            shutdown_all_dataloaders(dataloaders)
+        shutdown_all_dataloaders(dataloaders)
 
 
-def _mask_identity(
-    mask_item: dict[str, Any],
-    *,
-    mask_index: int,
-    modalities: list[str] | tuple[str, ...] | None,
-    cache_checksum: Any,
-    cache_seed: Any,
-) -> dict[str, Any]:
-    source_modalities = [str(item) for item in (modalities or mask_item.get("modalities") or DEFAULT_TEMPORAL_MODALITIES)]
-    mask = torch.as_tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
-    if mask.ndim != 2 or int(mask.shape[-1]) != len(source_modalities):
-        raise ValueError(
-            "Mask identity requires a [T,M] mask matching the cache modality order, "
-            f"got mask={tuple(mask.shape)} modalities={source_modalities}."
-        )
-    canonical = {
-        "modalities": source_modalities,
-        "modality_temporal_mask": mask.to(dtype=torch.int8).tolist(),
-    }
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    trailing_fully_missing_frames = 0
-    for row in reversed(mask):
-        if bool(row.any()):
-            break
-        trailing_fully_missing_frames += 1
-    return {
-        "mask_index": int(mask_index),
-        "mask_type": str(mask_item.get("mask_type", "unknown")),
-        "mask_digest": hashlib.sha256(encoded).hexdigest()[:16],
-        "mask_cache_checksum": str(cache_checksum or ""),
-        "mask_cache_seed": str(cache_seed if cache_seed not in {None, ""} else ""),
-        "observed_missing_rate": float((~mask).to(dtype=torch.float32).mean().item()),
-        "last_frame_available": bool(mask[-1].any()),
-        "last_frame_available_modalities": int(mask[-1].sum().item()),
-        "trailing_fully_missing_frames": trailing_fully_missing_frames,
-    }
+def _condition_masks(cache: dict[float, dict[str, Any]], skip_whole_modality: bool) -> list[tuple[str, dict[str, Any]]]:
+    result = [] if skip_whole_modality else _whole_modality_masks()
+    for rate in sorted(cache):
+        for index, item in enumerate(cache[rate]["masks"]):
+            result.append(
+                (
+                    f"temporal_{item['mask_type']}_r{rate:g}_{index}",
+                    {
+                        **item,
+                        "rate": rate,
+                        "cache_checksum": cache[rate]["checksum"],
+                        "available_modalities": list(DEFAULT_TEMPORAL_MODALITIES),
+                    },
+                )
+            )
+    return result
 
 
-def _evaluation_provenance(cfg: dict[str, Any]) -> dict[str, Any]:
-    primary = cfg.get("model", {}).get("primary", {})
-    evaluation = cfg.get("evaluation", {})
-    experiment = cfg.get("experiment", {})
-    loss_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {})
-    is_t2 = str(primary.get("type", "")) == "u_mask_beam_jepa" or bool(loss_cfg)
-    head_type = str(primary.get("head_type", "baseline"))
-    prototype_head_enabled = is_t2 and head_type == "prototype"
-    bpa_auxiliary_enabled = is_t2 and bool(loss_cfg.get("use_beam_prototype_alignment", False)) and head_type != "classifier"
-    circular = bool(loss_cfg.get("circular_beam_distance", True))
-    geometry = "circular" if circular else "linear"
-    prototype_circular = bool(loss_cfg.get("prototype_target_circular", True))
-    prototype_geometry = "circular" if prototype_circular else "linear"
-    router_supervision = str(loss_cfg.get("router_supervision", "none")).lower()
-    router_oracle_geometry = geometry if router_supervision == "oracle" else "not_applicable"
-    prototype_target_geometry = prototype_geometry if bpa_auxiliary_enabled else "not_applicable"
-    active_geometries = [
-        value for value in (prototype_target_geometry, router_oracle_geometry) if value != "not_applicable"
-    ]
-    training_geometry = "+".join(dict.fromkeys(active_geometries)) if active_geometries else "not_applicable"
-    distance_mode = str(
-        evaluation.get("dba_distance_mode", "circular" if bool(evaluation.get("beam_distance_circular", True)) else "linear")
-    )
-    requested_metric_profile = str(evaluation.get("metric_profile", ""))
-    legacy_metric_profiles = {"", "64_beam_circular_topk", "64_beam_linear_topk"}
-    metric_profile = (
-        f"64_beam_{distance_mode}_topk_progressive_top3_dba_v1"
-        if requested_metric_profile in legacy_metric_profiles
-        else requested_metric_profile
-    )
-    return {
-        "ablation_id": str(experiment.get("ablation_id", "")),
-        "training_beam_geometry": training_geometry,
-        "prototype_target_geometry": prototype_target_geometry,
-        "router_oracle_geometry": router_oracle_geometry,
-        "head_type": head_type,
-        "prototype_enabled": bpa_auxiliary_enabled,
-        "prototype_head_enabled": prototype_head_enabled,
-        "bpa_auxiliary_enabled": bpa_auxiliary_enabled,
-        "use_amber_cma_analogue": bool(loss_cfg.get("use_amber_cma_analogue", False)),
-        "lambda_amber_cma": float(loss_cfg.get("lambda_amber_cma", 0.0)),
-        "amber_cma_temperature": float(loss_cfg.get("amber_cma_temperature", 0.2)),
-        "metric_profile": metric_profile,
-        "dba_distance_mode": distance_mode,
-    }
+def _whole_modality_masks() -> list[tuple[str, dict[str, Any]]]:
+    result = []
+    for size in range(len(DEFAULT_TEMPORAL_MODALITIES), 0, -1):
+        for available in itertools.combinations(DEFAULT_TEMPORAL_MODALITIES, size):
+            result.append(
+                (
+                    "full" if size == len(DEFAULT_TEMPORAL_MODALITIES) else "available_" + "_".join(available),
+                    {
+                        "mask_type": "whole_modality",
+                        "rate": 0.0,
+                        "available_modalities": list(available),
+                        "modality_temporal_mask": [
+                            [name in available for name in DEFAULT_TEMPORAL_MODALITIES] for _ in range(5)
+                        ],
+                    },
+                )
+            )
+    return result
 
 
-def _checkpoint_evidence_identity(
-    cfg: dict[str, Any],
-    metadata: dict[str, Any] | None,
-    checkpoint: Path,
-) -> dict[str, str]:
-    protocol = cfg.get("mmw_all_weather_protocol")
-    profile = protocol.get("training_profile") if isinstance(protocol, dict) else None
-    router_profile = protocol.get("router_architecture_profile") if isinstance(protocol, dict) else None
-    screen = cfg.get("mmw_tie_aware_router_screen", cfg.get("mmw_t2_design_screening"))
-    return {
-        "checkpoint_sha256": _sha256(checkpoint),
-        "checkpoint_role": str((metadata or {}).get("checkpoint_role", "fixed_epoch_last_pth")),
-        "training_profile_id": str(profile.get("id", "")) if isinstance(profile, dict) else "",
-        "training_profile_sha256": str(profile.get("sha256", "")) if isinstance(profile, dict) else "",
-        "router_architecture_profile_id": str(router_profile.get("id", "")) if isinstance(router_profile, dict) else "",
-        "router_architecture_profile_sha256": str(router_profile.get("sha256", "")) if isinstance(router_profile, dict) else "",
-        "design_candidate_id": str(screen.get("candidate_id", "")) if isinstance(screen, dict) else "",
-        "design_config_sha256": (
-            str(screen.get("config_sha256", screen.get("candidate_recipe_sha256", "")))
-            if isinstance(screen, dict)
-            else ""
-        ),
-    }
-
-
-def _evaluate_masks(
-    model,
-    dataloader,
-    cfg: dict[str, Any],
-    device: torch.device,
-    mask_items: list[dict[str, Any]],
-    max_batches: int | None,
-    mask_modalities: list[str] | tuple[str, ...] | None = None,
-    batch_transform: Callable[[dict[str, Any], int], dict[str, Any]] | None = None,
-    trace_sink: list[dict[str, Any]] | None = None,
-    trace_condition_indices: set[int] | None = None,
-) -> list[dict[str, float | int | bool]]:
-    states = [
-        {
-            "sums": {},
-            "count": 0,
-            "batch_count": 0,
-            "condition_index": index,
-            "mask": _mask_in_model_order(model, item, mask_modalities)[0],
-        }
-        for index, item in enumerate(mask_items)
-    ]
-    model_modalities = tuple(str(item) for item in getattr(model, "modalities", mask_modalities or DEFAULT_TEMPORAL_MODALITIES))
+def _evaluate_masks(model, dataloader, cfg: dict[str, Any], device: torch.device, masks: list[dict[str, Any]], max_batches: int | None) -> list[dict[str, Any]]:
+    states = [{"sums": {}, "sample_count": 0, "batch_count": 0, "mask": _model_order_mask(model, item)} for item in masks]
+    model_cfg = cfg["model"]["primary"]
+    task = cfg.get("experiment", {}).get("task", "fusion")
+    seq_length = int(model_cfg.get("seq_length", cfg.get("model", {}).get("seq_length", 5)))
+    num_pred = int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1)))
+    model_modalities = tuple(str(item) for item in getattr(model, "modalities", DEFAULT_TEMPORAL_MODALITIES))
     with torch.no_grad():
         for batch_index, raw_batch in enumerate(dataloader):
             if max_batches is not None and batch_index >= int(max_batches):
                 break
             prepared = prepare_evaluation_batch(raw_batch)
-            if batch_transform is not None:
-                prepared = batch_transform(_clone_batch(prepared), batch_index)
-            future_beam_power = _load_future_beam_power(prepared)
             for state in states:
                 batch = _clone_batch(prepared)
                 apply_modality_temporal_mask_to_batch(batch, state["mask"], modalities=model_modalities)
-                modality_mask = batch["modality_mask"].to(device=device, dtype=torch.bool)
-                model_cfg = cfg["model"]["primary"]
                 step = run_model_step(
                     model,
-                    cfg.get("experiment", {}).get("task", "fusion"),
+                    task,
                     batch,
-                    seq_length=int(model_cfg.get("seq_length", cfg.get("model", {}).get("seq_length", 5))),
-                    num_pred=int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1))),
+                    seq_length=seq_length,
+                    num_pred=num_pred,
                     device=device,
-                    extra_model_kwargs={"missing_mask": modality_mask},
+                    extra_model_kwargs={"missing_mask": batch["modality_mask"].to(device=device, dtype=torch.bool)},
                 )
-                num_pred = int(model_cfg.get("num_pred", cfg.get("model", {}).get("num_pred", 1)))
                 logits = step.logits[:, -1, :] if step.logits.ndim == 3 else step.logits
                 labels = prepare_task_labels(step.batch, num_pred=num_pred, device=device)
                 target = labels[:, -1].reshape(-1) if labels.ndim > 1 else labels.reshape(-1)
-                metrics = _beam_classification_metrics(logits, target, cfg)
-                metrics.update(beam_power_communication_summary(logits, future_beam_power))
-                metrics.update(_router_metrics(step.model_output.diagnostics, getattr(model, "modalities", ())))
-                if trace_sink is not None and (
-                    trace_condition_indices is None or int(state["condition_index"]) in trace_condition_indices
-                ):
-                    _append_prediction_trace(
-                        trace_sink,
-                        condition_index=int(state["condition_index"]),
-                        batch=step.batch,
-                        logits=logits,
-                        target=target,
-                        model_output=step.model_output,
-                    )
-                batch_count = int(target.numel())
-                state["count"] += batch_count
+                values = _batch_metrics(logits, target, step.batch, step.model_output.diagnostics, cfg)
+                count = int(target.numel())
+                state["sample_count"] += count
                 state["batch_count"] += 1
-                for key, value in metrics.items():
-                    if isinstance(value, float) and math.isfinite(value):
-                        state["sums"][key] = state["sums"].get(key, 0.0) + value * batch_count
-    expected_count = len(dataloader.dataset)
+                for key, value in values.items():
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        state["sums"][key] = state["sums"].get(key, 0.0) + float(value) * count
+    expected = len(dataloader.dataset)
     return [
         {
-            **{key: (value / state["count"] if state["count"] else math.nan) for key, value in state["sums"].items()},
-            "evaluated_sample_count": int(state["count"]),
-            "evaluated_batch_count": int(state["batch_count"]),
-            "coverage_complete": int(state["count"]) == int(expected_count),
+            **{key: value / state["sample_count"] for key, value in state["sums"].items()},
+            "sample_count": int(state["sample_count"]),
+            "batch_count": int(state["batch_count"]),
+            "coverage_complete": int(state["sample_count"]) == int(expected),
         }
         for state in states
     ]
 
 
-def _append_prediction_trace(
-    sink: list[dict[str, Any]],
-    *,
-    condition_index: int,
-    batch: dict[str, Any],
-    logits: torch.Tensor,
-    target: torch.Tensor,
-    model_output,
-) -> None:
-    predictions = logits.detach().argmax(dim=-1).cpu()
-    labels = target.detach().cpu()
-    ids = sample_ids_from_batch(batch)
-    if len(ids) != int(labels.numel()):
-        ids = [f"batch_sample_{index}" for index in range(int(labels.numel()))]
-    features = model_output.output_features
-    if torch.is_tensor(features):
-        features = features.detach().float().cpu()
-    diagnostics = model_output.diagnostics
-    router = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
-    unimodal = diagnostics.get("unimodal_logits")
-    router = router.detach().float().cpu() if torch.is_tensor(router) else None
-    unimodal = unimodal.detach().float().cpu() if torch.is_tensor(unimodal) else None
-    top2 = logits.detach().float().topk(min(2, logits.shape[-1]), dim=-1).values.cpu()
-    score_rows = logits.detach().float().cpu()
-    for index, sample_id in enumerate(ids):
-        row: dict[str, Any] = {
-            "condition_index": int(condition_index),
-            "sample_id": str(sample_id),
-            "target": int(labels[index]),
-            "prediction": int(predictions[index]),
-            "prediction_margin": float(top2[index, 0] - top2[index, -1]) if top2.shape[1] > 1 else float(top2[index, 0]),
-        }
-        beam_ids = torch.arange(score_rows.shape[1])
-        near = torch.minimum((beam_ids - labels[index]).abs(), score_rows.shape[1] - (beam_ids - labels[index]).abs()).le(1)
-        row["prototype_neighbor_margin"] = float(score_rows[index, near].max() - score_rows[index, ~near].max())
-        if torch.is_tensor(features):
-            row["output_features"] = features[index].reshape(-1).tolist()
-        if torch.is_tensor(router):
-            row["router_weights"] = router[index].reshape(-1).tolist()
-        if torch.is_tensor(unimodal):
-            unimodal_predictions = unimodal[index].argmax(dim=-1).reshape(-1)
-            distances = torch.minimum(
-                (unimodal_predictions - labels[index]).abs(),
-                logits.shape[-1] - (unimodal_predictions - labels[index]).abs(),
-            )
-            row["unimodal_predictions"] = unimodal_predictions.tolist()
-            row["router_oracle_modality"] = int(distances.argmin())
-            if torch.is_tensor(router):
-                row["router_selected_modality"] = int(router[index].reshape(-1).argmax())
-                row["router_oracle_aligned"] = row["router_selected_modality"] == row["router_oracle_modality"]
-        sink.append(row)
+def _batch_metrics(logits: torch.Tensor, target: torch.Tensor, batch: dict[str, Any], diagnostics: dict[str, Any], cfg: dict[str, Any]) -> dict[str, float]:
+    metrics = _beam_classification_metrics(logits, target, cfg)
+    metrics.update(beam_power_communication_summary(logits, _load_future_beam_power(batch)))
+    metrics.update(
+        reliability_error_stats(
+            logits,
+            target,
+            global_reliability=diagnostics.get("global_reliability"),
+            modality_reliability=diagnostics.get("modality_reliability"),
+            missing_mask=batch.get("modality_mask"),
+        )
+    )
+    metrics["ece"] = expected_calibration_error(logits, target)
+    return metrics
 
 
 def _load_future_beam_power(batch: dict[str, Any]) -> torch.Tensor:
     metadata = batch.get("metadata")
     paths = metadata.get("future_beam_path") if isinstance(metadata, dict) else None
     if not isinstance(paths, (list, tuple)) or not paths:
-        raise ValueError("Evaluation batch metadata is missing future_beam_path values.")
+        raise ValueError("Evaluation batch metadata is missing future_beam_path values")
     rows = []
     for value in paths:
-        path = Path(str(value))
         try:
-            powers = torch.as_tensor(np.loadtxt(path), dtype=torch.float32).reshape(-1)
+            powers = torch.as_tensor(np.loadtxt(Path(str(value))), dtype=torch.float32).reshape(-1)
         except Exception as exc:
-            raise ValueError(f"Failed to load future beam power vector {path}: {exc}") from exc
+            raise ValueError(f"Failed to load future beam power vector {value}: {exc}") from exc
         if powers.numel() != 64:
-            raise ValueError(f"Future beam power vector must contain 64 values: {path}")
+            raise ValueError(f"Future beam power vector must contain 64 values: {value}")
         rows.append(powers)
     return torch.stack(rows)
+
+
+def _model_order_mask(model, item: dict[str, Any]) -> torch.Tensor:
+    source = tuple(str(name) for name in item.get("modalities", DEFAULT_TEMPORAL_MODALITIES))
+    target = tuple(str(name) for name in getattr(model, "modalities", source))
+    if set(source) != set(DEFAULT_TEMPORAL_MODALITIES) or set(target) != set(DEFAULT_TEMPORAL_MODALITIES):
+        raise ValueError("Clean MMW matrix requires exactly image/radar/gps/lidar masks")
+    mask = torch.as_tensor(item["modality_temporal_mask"], dtype=torch.bool)
+    indices = torch.tensor([source.index(name) for name in target], dtype=torch.long)
+    return mask.index_select(-1, indices)
+
+
+def _load_or_create_temporal_cache(
+    cache_dir: Path,
+    *,
+    history_window: int,
+    modality_frame_masks: int,
+    rates: tuple[float, ...],
+    mask_types: tuple[str, ...],
+) -> dict[float, dict[str, Any]]:
+    _validate_temporal_request(history_window, modality_frame_masks, rates, mask_types)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    result = {}
+    for rate in rates:
+        path = cache_dir / f"rate_{rate:g}.json"
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            payload = _build_temporal_cache_payload(rate, history_window, modality_frame_masks, mask_types)
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _validate_temporal_cache_payload(payload, rate, history_window, modality_frame_masks, mask_types)
+        result[rate] = payload
+    return result
+
+
+def _build_temporal_cache_payload(rate: float, history_window: int, count: int, mask_types: tuple[str, ...]) -> dict[str, Any]:
+    if rate == 0.0:
+        masks = [{"mask_type": "clean", "modality_temporal_mask": [[1] * 4 for _ in range(history_window)]}]
+    else:
+        masks = []
+        for type_index, mask_type in enumerate(mask_types):
+            rng = random.Random(MASK_CACHE_SEED + int(rate * 1000) * 31 + type_index)
+            unique: dict[str, dict[str, Any]] = {}
+            for _ in range(10_000):
+                sampled = sample_stratified_modality_temporal_mask(
+                    history_window=history_window,
+                    modalities=DEFAULT_TEMPORAL_MODALITIES,
+                    fixed_drop_modalities=(),
+                    fixed_rate=rate,
+                    fixed_mask_type=mask_type,
+                    rng=rng,
+                )
+                matrix = sampled["modality_temporal_mask"].to(dtype=torch.int8).tolist()
+                unique.setdefault(_matrix_digest(matrix), {"mask_type": mask_type, "modality_temporal_mask": matrix})
+                if len(unique) == count:
+                    break
+            if len(unique) != count:
+                raise RuntimeError(f"Could not build {count} unique {mask_type} masks for rate={rate}")
+            masks.extend(unique.values())
+    payload: dict[str, Any] = {
+        "version": MASK_CACHE_VERSION,
+        "rate": rate,
+        "history_window": history_window,
+        "modalities": list(DEFAULT_TEMPORAL_MODALITIES),
+        "modality_frame_masks": count,
+        "mask_types": list(mask_types),
+        "seed": MASK_CACHE_SEED,
+        "masks": masks,
+    }
+    payload["checksum"] = _payload_checksum(payload)
+    return payload
+
+
+def _validate_temporal_request(history_window: int, count: int, rates: tuple[float, ...], mask_types: tuple[str, ...]) -> None:
+    if history_window <= 0 or count <= 0:
+        raise ValueError("history window and modality-frame mask count must be positive")
+    if not rates or len(set(rates)) != len(rates) or any(not 0.0 <= rate < 1.0 for rate in rates):
+        raise ValueError("temporal rates must be unique values in [0, 1)")
+    if not mask_types or set(mask_types) - set(MASK_TYPES):
+        raise ValueError(f"temporal mask types must be selected from {MASK_TYPES}")
+    cells = history_window * len(DEFAULT_TEMPORAL_MODALITIES)
+    for rate in rates:
+        if not math.isclose(rate * cells, round(rate * cells), abs_tol=1e-9):
+            raise ValueError(f"rate={rate} cannot be represented on a {history_window}x4 grid")
+        if any(kind in {"frame_level", "block"} for kind in mask_types) and not math.isclose(
+            rate * history_window, round(rate * history_window), abs_tol=1e-9
+        ):
+            raise ValueError(f"rate={rate} requires modality_frame-only masks on a {history_window}-frame window")
+
+
+def _validate_temporal_cache_payload(payload: dict[str, Any], rate: float, history_window: int, count: int, mask_types: tuple[str, ...]) -> None:
+    expected = {
+        "version": MASK_CACHE_VERSION,
+        "rate": rate,
+        "history_window": history_window,
+        "modalities": list(DEFAULT_TEMPORAL_MODALITIES),
+        "modality_frame_masks": count,
+        "mask_types": list(mask_types),
+        "seed": MASK_CACHE_SEED,
+    }
+    mismatched = [key for key, value in expected.items() if payload.get(key) != value]
+    if mismatched or payload.get("checksum") != _payload_checksum(payload):
+        raise ValueError(f"Temporal mask cache is incompatible or corrupted: {mismatched or ['checksum']}")
+    masks = payload.get("masks")
+    if not isinstance(masks, list) or not masks:
+        raise ValueError("Temporal mask cache has no masks")
+    for item in masks:
+        matrix = torch.as_tensor(item.get("modality_temporal_mask"), dtype=torch.bool)
+        if tuple(matrix.shape) != (history_window, 4):
+            raise ValueError(f"Temporal mask cache has invalid matrix shape {tuple(matrix.shape)}")
+        if not math.isclose(float((~matrix).float().mean()), rate, abs_tol=1e-6):
+            raise ValueError("Temporal mask cache has a mismatched missing rate")
+
+
+def _provenance(
+    method: str,
+    seed: int,
+    checkpoint: Path,
+    metadata: dict[str, Any] | None,
+    audit: dict[str, Any],
+    args: argparse.Namespace,
+    expected_domain_count: int,
+    selected_domain_count: int,
+) -> dict[str, Any]:
+    return {
+        "method_route": method,
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": _sha256(checkpoint),
+        "checkpoint_role": str((metadata or {}).get("checkpoint_role", "last")),
+        "protocol_id": str(audit["protocol_id"]),
+        "protocol_fingerprint": str(audit["protocol_fingerprint"]),
+        "clean_split_audit_id": str(audit["audit_id"]),
+        "generalization_validity": "clean_train_validation_isolation_passed",
+        "outer_test_accessed": False,
+        "temporal_rates": ",".join(str(rate) for rate in args.temporal_rates),
+        "temporal_mask_types": ",".join(args.temporal_mask_types),
+        "domain_shard_index": int(args.domain_shard_index),
+        "domain_shard_count": int(args.domain_shard_count),
+        "expected_domain_count": int(expected_domain_count),
+        "selected_domain_count": int(selected_domain_count),
+        "partial_request": bool(args.max_batches is not None or args.max_domains is not None),
+        "seed": int(seed),
+    }
+
+
+def _parse_methods(value: str) -> tuple[str, ...]:
+    methods = tuple(_csv(value))
+    if not methods or len(set(methods)) != len(methods) or set(methods) - set(METHODS):
+        raise ValueError(f"methods must be unique members of {METHODS}")
+    return methods
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if not args.seeds or len(set(args.seeds)) != len(args.seeds) or any(seed <= 0 for seed in args.seeds):
+        raise ValueError("seeds must be unique positive integers")
+    if args.batch_size <= 0 or args.max_batches is not None and args.max_batches <= 0 or args.max_domains is not None and args.max_domains <= 0:
+        raise ValueError("batch-size, max-batches, and max-domains must be positive")
+    if args.domain_shard_count <= 0 or not 0 <= args.domain_shard_index < args.domain_shard_count:
+        raise ValueError("domain shard requires count > 0 and 0 <= index < count")
+
+
+def _seed_artifact_paths(root: Path, method: str, seed: int) -> tuple[Path, Path]:
+    return root / "generated_configs" / f"{method}_seed{seed}.yaml", root / method / f"seed{seed}" / "checkpoints" / "last.pth"
 
 
 def _clone_batch(value: Any) -> Any:
@@ -604,343 +494,10 @@ def _clone_batch(value: Any) -> Any:
     return value
 
 
-def _mask_in_model_order(
-    model,
-    mask_item: dict[str, Any],
-    mask_modalities: list[str] | tuple[str, ...] | None = None,
-) -> tuple[torch.Tensor, tuple[str, ...]]:
-    source = tuple(str(item) for item in (mask_modalities or mask_item.get("modalities") or DEFAULT_TEMPORAL_MODALITIES))
-    target = tuple(str(item) for item in getattr(model, "modalities", source))
-    if len(set(source)) != len(source) or len(set(target)) != len(target):
-        raise ValueError(f"Modality order contains duplicates: cache={list(source)}, model={list(target)}.")
-    unknown = [name for name in target if name not in source]
-    if unknown:
-        raise ValueError(f"Eval mask cache is missing model modalities {unknown}; cache modalities={list(source)}.")
-    mask = torch.as_tensor(mask_item["modality_temporal_mask"], dtype=torch.bool)
-    if mask.ndim not in {2, 3} or int(mask.shape[-1]) != len(source):
-        raise ValueError(
-            f"Cached modality_temporal_mask must end with {len(source)} modality columns, got {tuple(mask.shape)}."
-        )
-    indices = torch.tensor([source.index(name) for name in target], dtype=torch.long, device=mask.device)
-    return mask.index_select(-1, indices), target
-
-
-def _router_metrics(diagnostics: dict[str, Any], modalities: tuple[str, ...] | list[str] = ()) -> dict[str, float]:
-    result: dict[str, float] = {}
-    for key, value in diagnostics.items():
-        if key.startswith("mean_gate_") or key.startswith("mean_temporal_gate_") or key.startswith("router_oracle_acc"):
-            scalar = _as_float(value)
-            if scalar is not None:
-                result[key] = scalar
-    for key in (
-        "gate_entropy",
-        "global_gate_entropy",
-        "gate_entropy_temporal",
-        "gate_entropy_modality",
-        "coverage_shrinkage_rho",
-        "coverage_shrinkage_mean_coverage",
-        "coverage_shrinkage_gate_entropy",
-        "coverage_shrinkage_gate_margin",
-        "temporal_pooling_param_count",
-        "temporal_recency_decay",
-    ):
-        if key in diagnostics:
-            scalar = _as_float(diagnostics[key])
-            if scalar is not None:
-                result[key] = scalar
-    temporal_gate = diagnostics.get("temporal_gate")
-    if torch.is_tensor(temporal_gate) and temporal_gate.ndim == 2:
-        for index in range(int(temporal_gate.shape[1])):
-            result[f"mean_temporal_gate_t{index}"] = float(temporal_gate[:, index].detach().float().mean().cpu().item())
-    weights = diagnostics.get("supervised_router_gate_weights", diagnostics.get("reliability_fusion_weights"))
-    if torch.is_tensor(weights) and weights.ndim == 2:
-        names = tuple(str(item) for item in modalities)
-        for index in range(int(weights.shape[1])):
-            name = names[index] if index < len(names) else f"modality_{index}"
-            result.setdefault(f"mean_gate_{name}", float(weights[:, index].detach().float().mean().cpu().item()))
-        entropy = -(weights.float() * weights.float().clamp_min(1e-8).log()).sum(dim=-1)
-        result.setdefault("gate_entropy", float(entropy.detach().mean().cpu().item()))
-    pooling_weights = diagnostics.get("temporal_pooling_weights")
-    if torch.is_tensor(pooling_weights) and pooling_weights.ndim >= 2:
-        for index in range(int(pooling_weights.shape[1])):
-            result[f"mean_temporal_pooling_weight_t{index}"] = float(
-                pooling_weights.select(1, index).detach().float().mean().cpu().item()
-            )
-    statistics = diagnostics.get("temporal_mask_statistics")
-    statistic_names = diagnostics.get("temporal_mask_statistic_names")
-    if torch.is_tensor(statistics) and statistics.ndim >= 1 and isinstance(statistic_names, (list, tuple)):
-        for index, name in enumerate(statistic_names):
-            if index < int(statistics.shape[-1]):
-                result[f"mean_mask_statistic_{name}"] = float(statistics[..., index].detach().float().mean().cpu().item())
-    residual_gate = diagnostics.get("temporal_residual_gate")
-    if torch.is_tensor(residual_gate) and residual_gate.ndim == 1:
-        names = tuple(str(item) for item in modalities)
-        for index in range(int(residual_gate.shape[0])):
-            name = names[index] if index < len(names) else f"modality_{index}"
-            result[f"temporal_residual_gate_{name}"] = float(residual_gate[index].detach().float().cpu().item())
-    return result
-
-
-def _as_float(value: Any) -> float | None:
-    if torch.is_tensor(value) and value.numel() > 0:
-        return float(value.detach().float().mean().cpu().item())
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
-
-
-def _load_or_create_temporal_cache(
-    cache_dir: Path,
-    *,
-    modality_frame_masks: int,
-    rates: tuple[float, ...] = RATES,
-    mask_types: tuple[str, ...] = MASK_TYPES,
-) -> dict[tuple[float, int], dict[str, Any]]:
-    if modality_frame_masks < 2:
-        raise ValueError("modality_frame_masks must be at least 2 for non-zero temporal rates.")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    result = {}
-    _validate_requested_temporal_protocol(rates, mask_types)
-    for rate in rates:
-        path = cache_dir / f"rate_{float(rate)}_drop0.json"
-        if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            payload = _build_temporal_cache_payload(
-                rate,
-                modality_frame_masks=modality_frame_masks,
-                mask_types=mask_types,
-            )
-            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        _validate_temporal_cache_payload(
-            payload,
-            rate=rate,
-            modality_frame_masks=modality_frame_masks,
-            mask_types=mask_types,
-        )
-        result[(rate, 0)] = payload
-    return result
-
-
-def _build_temporal_cache_payload(
-    rate: float,
-    *,
-    modality_frame_masks: int,
-    mask_types: tuple[str, ...] = MASK_TYPES,
-) -> dict[str, Any]:
-    if rate == 0.0:
-        masks = [
-            {
-                "modality_temporal_mask": [[1] * len(DEFAULT_TEMPORAL_MODALITIES) for _ in range(HISTORY_WINDOW)],
-                "dropped_modalities": [],
-                "mask_type": "clean",
-                "num_fallback_fixes": 0,
-            }
-        ]
-    else:
-        masks = []
-        for type_index, mask_type in enumerate(mask_types):
-            target = _expected_unique_masks(mask_type, rate, modality_frame_masks)
-            rng = random.Random(MASK_CACHE_SEED * 1009 + int(round(rate * 1000)) * 17 + type_index)
-            unique = {}
-            attempts = 0
-            while len(unique) < target and attempts < 10000:
-                attempts += 1
-                item = sample_stratified_modality_temporal_mask(
-                    history_window=HISTORY_WINDOW,
-                    modalities=DEFAULT_TEMPORAL_MODALITIES,
-                    fixed_drop_modalities=(),
-                    fixed_rate=rate,
-                    fixed_mask_type=mask_type,
-                    rng=rng,
-                )
-                matrix = item["modality_temporal_mask"].to(dtype=torch.int8).tolist()
-                digest = _matrix_digest(matrix)
-                unique.setdefault(
-                    digest,
-                    {
-                        "modality_temporal_mask": matrix,
-                        "dropped_modalities": [],
-                        "mask_type": mask_type,
-                        "num_fallback_fixes": item["num_fallback_fixes"],
-                    },
-                )
-            if len(unique) != target:
-                raise RuntimeError(
-                    f"Could not build {target} unique {mask_type} masks for rate={rate}; generated {len(unique)}."
-                )
-            masks.extend(unique.values())
-    payload = {
-        "version": "mmw_temporal_geometry_v2",
-        "rate": float(rate),
-        "drop_count": 0,
-        "num_masks": len(masks),
-        "modality_frame_masks_requested": int(modality_frame_masks),
-        "mask_types": list(mask_types),
-        "history_window": HISTORY_WINDOW,
-        "num_modalities": len(DEFAULT_TEMPORAL_MODALITIES),
-        "modalities": list(DEFAULT_TEMPORAL_MODALITIES),
-        "seed": MASK_CACHE_SEED,
-        "masks": masks,
-    }
-    payload["checksum"] = _payload_checksum(payload)
-    return payload
-
-
-def _validate_temporal_cache_payload(
-    payload: dict[str, Any],
-    *,
-    rate: float,
-    modality_frame_masks: int,
-    mask_types: tuple[str, ...] = MASK_TYPES,
-) -> None:
-    errors = []
-    if payload.get("version") != "mmw_temporal_geometry_v2":
-        errors.append(f"version={payload.get('version')!r}")
-    if float(payload.get("rate", -1.0)) != float(rate):
-        errors.append(f"rate={payload.get('rate')!r}")
-    if payload.get("modalities") != list(DEFAULT_TEMPORAL_MODALITIES):
-        errors.append(f"modalities={payload.get('modalities')!r}")
-    if int(payload.get("history_window", -1)) != HISTORY_WINDOW:
-        errors.append(f"history_window={payload.get('history_window')!r}")
-    if int(payload.get("seed", -1)) != MASK_CACHE_SEED:
-        errors.append(f"seed={payload.get('seed')!r}")
-    if int(payload.get("modality_frame_masks_requested", -1)) != int(modality_frame_masks):
-        errors.append(f"modality_frame_masks_requested={payload.get('modality_frame_masks_requested')!r}")
-    cached_types = tuple(payload.get("mask_types", MASK_TYPES))
-    if cached_types != tuple(mask_types):
-        errors.append(f"mask_types={cached_types!r}")
-    if payload.get("checksum") != _payload_checksum(payload):
-        errors.append("checksum mismatch")
-    masks = payload.get("masks")
-    if not isinstance(masks, list):
-        errors.append("masks is not a list")
-        masks = []
-    grouped = {mask_type: [] for mask_type in ("clean", *mask_types)}
-    for index, item in enumerate(masks):
-        mask_type = str(item.get("mask_type", ""))
-        if mask_type not in grouped:
-            errors.append(f"mask[{index}].mask_type={mask_type!r}")
-            continue
-        matrix = torch.as_tensor(item.get("modality_temporal_mask"), dtype=torch.bool)
-        if tuple(matrix.shape) != (HISTORY_WINDOW, len(DEFAULT_TEMPORAL_MODALITIES)):
-            errors.append(f"mask[{index}].shape={tuple(matrix.shape)}")
-            continue
-        observed_rate = float((~matrix).to(dtype=torch.float32).mean().item())
-        if not math.isclose(observed_rate, rate, abs_tol=1e-6):
-            errors.append(f"mask[{index}].observed_rate={observed_rate}")
-        grouped[mask_type].append(_matrix_digest(matrix.to(dtype=torch.int8).tolist()))
-    if rate == 0.0:
-        if len(masks) != 1 or len(set(grouped["clean"])) != 1:
-            errors.append(f"clean_mask_count={len(masks)}")
-    else:
-        if grouped["clean"]:
-            errors.append("non-zero rate contains clean mask")
-        for mask_type in mask_types:
-            expected = _expected_unique_masks(mask_type, rate, modality_frame_masks)
-            observed = len(grouped[mask_type])
-            unique = len(set(grouped[mask_type]))
-            if observed != expected or unique != expected:
-                errors.append(f"{mask_type}=count:{observed},unique:{unique},expected:{expected}")
-    if int(payload.get("num_masks", -1)) != len(masks):
-        errors.append(f"num_masks={payload.get('num_masks')!r},actual={len(masks)}")
-    if errors:
-        raise ValueError(
-            f"MMW temporal cache contract mismatch for rate={rate}: {'; '.join(errors)}. "
-            "Use a new --mask-cache directory or remove only the incompatible local cache."
-        )
-
-
-def _expected_unique_masks(mask_type: str, rate: float, modality_frame_masks: int) -> int:
-    if mask_type == "modality_frame":
-        return int(modality_frame_masks)
-    dropped_frames = int(round(rate * HISTORY_WINDOW))
-    if mask_type == "frame_level":
-        return math.comb(HISTORY_WINDOW, dropped_frames)
-    if mask_type == "block":
-        return HISTORY_WINDOW - max(1, dropped_frames) + 1
-    raise ValueError(f"Unsupported mask type: {mask_type}")
-
-
-def _validate_requested_temporal_protocol(rates: tuple[float, ...], mask_types: tuple[str, ...]) -> None:
-    if not rates or len(set(rates)) != len(rates) or any(not 0.0 <= rate < 1.0 for rate in rates):
-        raise ValueError("temporal rates must be unique values in [0, 1).")
-    if not mask_types or any(mask_type not in MASK_TYPES for mask_type in mask_types):
-        raise ValueError(f"temporal mask types must be selected from {MASK_TYPES}.")
-    for rate in rates:
-        if not math.isclose(rate * HISTORY_WINDOW * len(DEFAULT_TEMPORAL_MODALITIES), round(rate * HISTORY_WINDOW * len(DEFAULT_TEMPORAL_MODALITIES)), abs_tol=1e-9):
-            raise ValueError(f"rate={rate} cannot be represented exactly on a 5x4 modality-time grid.")
-        if any(mask_type in {"frame_level", "block"} for mask_type in mask_types) and not math.isclose(
-            rate * HISTORY_WINDOW,
-            round(rate * HISTORY_WINDOW),
-            abs_tol=1e-9,
-        ):
-            raise ValueError(
-                f"rate={rate} cannot be represented by frame_level/block on a {HISTORY_WINDOW}-frame window; "
-                "use modality_frame only."
-            )
-
-
-def _matrix_digest(matrix: list[list[int]]) -> str:
-    encoded = json.dumps(matrix, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def _payload_checksum(payload: dict[str, Any]) -> str:
-    clone = dict(payload)
-    clone.pop("checksum", None)
-    encoded = json.dumps(clone, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def _whole_modality_masks() -> list[tuple[str, dict[str, Any]]]:
-    modalities = tuple(DEFAULT_TEMPORAL_MODALITIES)
-    result = []
-    for size in range(len(modalities), 0, -1):
-        for available in itertools.combinations(modalities, size):
-            mask = [[name in available for name in modalities] for _ in range(5)]
-            pattern = "full" if size == len(modalities) else "available_" + "_".join(available)
-            result.append(
-                (
-                    pattern,
-                    {
-                        "mask_type": "whole_modality",
-                        "modalities": list(modalities),
-                        "available_modalities": list(available),
-                        "dropped_modalities": [name for name in modalities if name not in available],
-                        "modality_temporal_mask": mask,
-                    },
-                )
-            )
-    return result
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def _seed_artifact_paths(root: Path, method: str, seed: int) -> tuple[Path, Path]:
-    return (
-        root / "generated_configs" / f"{method}_seed{seed}.yaml",
-        root / method / f"seed{seed}" / "checkpoints" / "last.pth",
-    )
-
-
-def _seed_evaluation_target(output_dir: Path, method: str, seed: int, *, seed_subdir: bool) -> Path:
-    return output_dir / method / (f"seed{seed}/metrics.csv" if seed_subdir else "metrics.csv")
-
-
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    columns = []
-    for row in rows:
-        for key in row:
-            if key not in columns:
-                columns.append(key)
-    with path.open("w", newline="", encoding="utf-8") as handle:
+    columns = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
@@ -950,8 +507,28 @@ def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _csv_floats(value: str) -> list[float]:
-    return [float(item) for item in _csv(value)]
+def _resolve_from_root(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _matrix_digest(matrix: list[list[int]]) -> str:
+    return hashlib.sha256(json.dumps(matrix, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+def _mask_digest(mask: dict[str, Any]) -> str:
+    return _matrix_digest(torch.as_tensor(mask["modality_temporal_mask"], dtype=torch.int8).tolist())
+
+
+def _payload_checksum(payload: dict[str, Any]) -> str:
+    canonical = dict(payload)
+    canonical.pop("checksum", None)
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 if __name__ == "__main__":

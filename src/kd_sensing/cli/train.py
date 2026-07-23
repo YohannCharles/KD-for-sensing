@@ -4,7 +4,7 @@ from kd_sensing.cli.common import load_cli_config, parse_cli_args, print_result
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train a T2 or baseline model from a YAML config.")
+    parser = argparse.ArgumentParser(description="Train U0, DeepSense6G, or a retained baseline from a YAML config.")
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument("--resume", help="Resume from an explicit checkpoint path.")
     parser.add_argument("--auto-resume", action="store_true", help="Resume from checkpoints/last.pth.")

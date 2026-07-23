@@ -13,14 +13,35 @@ PUBLIC_SCRIPTS = {
     "kd-sensing-preprocess": "kd_sensing.cli.preprocess:main",
 }
 RETAINED_SCRIPTS = {
+    "audit_clean_inner_protocol.py",
     "eval_mmw_all_weather_matrix.py",
     "launch_mmw_all_weather_matrix.py",
     "summarize_mmw_all_weather_matrix.py",
-    "summarize_mmw_multiseed_baselines.py",
     "verify_compile.py",
 }
 RETAINED_CLI_MODULES = {"__init__.py", "common.py", "evaluate.py", "preprocess.py", "train.py"}
 PROTECTED_SYSTEM_PATHS = ("/root/.container_env", "/etc/profile", "/etc/environment", "/etc/ssh/sshd_config")
+RETIRED_OWNERS = {
+    "configs/mmw/t2.yaml",
+    "configs/mmw/s1.yaml",
+    "configs/modality_competition",
+    "src/kd_sensing/config/historical_u2.py",
+    "src/kd_sensing/config/standalone_capacity.py",
+    "src/kd_sensing/data/mmw/nested_capacity.py",
+    "src/kd_sensing/losses/bcacl.py",
+    "src/kd_sensing/losses/bcacl_config.py",
+    "src/kd_sensing/losses/cmsbl.py",
+    "src/kd_sensing/losses/cmsbl_config.py",
+    "src/kd_sensing/models/bcacl.py",
+    "src/kd_sensing/baselines/clean_recovery.py",
+    "src/kd_sensing/evaluation/clean_recovery_summary.py",
+    "src/kd_sensing/evaluation/clean_stage.py",
+    "src/kd_sensing/evaluation/gps_shortcut.py",
+    "src/kd_sensing/evaluation/independent_metrics.py",
+    "src/kd_sensing/evaluation/modality_competition.py",
+    "src/kd_sensing/losses/clean_capacity_reference.py",
+    "src/kd_sensing/losses/modality_alignment_contrastive.py",
+}
 
 
 def test_public_cli_surface_is_exactly_the_three_core_workflows():
@@ -40,7 +61,7 @@ def test_public_cli_targets_exist():
         assert function_name in {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
-def test_cli_and_script_trees_only_keep_t2_baseline_owners():
+def test_cli_and_script_trees_only_keep_clean_u0_baseline_owners():
     cli_modules = {path.name for path in (SRC / "kd_sensing/cli").glob("*.py")}
     scripts = {
         path.relative_to(ROOT / "scripts").as_posix()
@@ -50,6 +71,20 @@ def test_cli_and_script_trees_only_keep_t2_baseline_owners():
 
     assert cli_modules == RETAINED_CLI_MODULES
     assert scripts == RETAINED_SCRIPTS
+
+
+def test_retired_u2_and_capacity_owners_are_absent():
+    assert all(not (ROOT / path).exists() for path in RETIRED_OWNERS)
+
+
+def test_openspec_current_context_is_limited_to_the_u0_mainline() -> None:
+    specs = {
+        path.parent.name
+        for path in (ROOT / "openspec/specs").glob("*/spec.md")
+    }
+
+    assert specs == {"clean-data-integrity", "repo-boundaries", "u0-mainline"}
+    assert not (ROOT / "openspec/changes/archive").exists()
 
 
 def test_sources_do_not_mutate_protected_system_configuration():

@@ -93,7 +93,19 @@ def run_model_step(
     if task != "fusion":
         raise ValueError("Only experiment.task='fusion' is retained.")
     prepared = prepare_task_batch(batch)
-    inputs = prepare_fusion_inputs(prepared, seq_length=seq_length, device=device, non_blocking=non_blocking)
+    declared_modalities = getattr(model, "modalities", None)
+    modalities = (
+        ("image", "radar", "gps", "lidar")
+        if declared_modalities is None
+        else tuple(str(value) for value in declared_modalities)
+    )
+    inputs = prepare_fusion_inputs(
+        prepared,
+        seq_length=seq_length,
+        device=device,
+        non_blocking=non_blocking,
+        modalities=modalities,
+    )
     inputs.update(extra_model_kwargs or {})
     output = adapt_model_output(forward_model(model, force_modality_mask=force_modality_mask, **inputs))
     return TaskForwardResult(batch=prepared, model_output=output, logits=select_prediction_slots(output.logits, num_pred))

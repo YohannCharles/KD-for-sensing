@@ -102,12 +102,3 @@ def test_finalize_training_run_keeps_final_test_enabled_by_default(monkeypatch, 
     assert evaluate_final_test.call_args.args[1] is test_loader
     assert context.state.checkpoint_loads == [checkpoint_load]
     assert result["final_test_metrics"] == metrics
-
-
-@pytest.mark.parametrize("final_test", [None, True, {"enabled": True}])
-def test_development_screen_cannot_enable_outer_test(final_test) -> None:
-    cfg = _dataloader_config(final_test)
-    cfg["mmw_t2_design_screening"] = {"development_only": True}
-
-    with pytest.raises(ValueError, match="Development-only"):
-        data_factory.final_test_enabled(cfg)

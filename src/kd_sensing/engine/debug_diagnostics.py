@@ -9,7 +9,6 @@ import torch.nn as nn
 from kd_sensing.config.io import safe_load_yaml
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.models.architecture_summary import summarize_model_architecture
-from kd_sensing.utils.artifact_registry import training_profile_checkpoint_provenance
 from kd_sensing.utils.paths import resolve_path
 
 
@@ -125,7 +124,6 @@ def build_startup_summary(
         cfg=primary_cfg,
         source={"kind": "instance", "config_path": "startup_summary"},
     )
-    training_profile = training_profile_checkpoint_provenance(cfg)
     return {
         "experiment": {
             "name": cfg.get("experiment", {}).get("name"),
@@ -157,7 +155,6 @@ def build_startup_summary(
             "scheduler": type(scheduler).__name__ if scheduler is not None else None,
             "loss": cfg.get("loss", {}).get("type"),
             "max_epochs": cfg.get("training", {}).get("epochs"),
-            **training_profile,
         },
         "model": {
             "type": primary_cfg.get("type"),

@@ -141,7 +141,7 @@ ENCODERS.register("resnet34_spatial_tokens")(_resnet34_spatial_tokens)
 def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[nn.Module, int]:
     del weights
     if pretrained:
-        raise ValueError("Current T2/baseline recipes use scratch ResNet encoders only.")
+        raise ValueError("Retained recipes use scratch ResNet encoders only.")
     try:
         import torchvision.models as models
     except Exception as exc:  # pragma: no cover - environment dependent.
@@ -155,7 +155,7 @@ def _build_resnet18_backbone(*, pretrained: bool, weights: str | None) -> tuple[
 def _build_resnet34_backbone(*, pretrained: bool, weights: str | None) -> tuple[nn.Module, int]:
     del weights
     if pretrained:
-        raise ValueError("Current T2/baseline recipes use scratch ResNet encoders only.")
+        raise ValueError("Retained recipes use scratch ResNet encoders only.")
     try:
         import torchvision.models as models
     except Exception as exc:  # pragma: no cover - environment dependent.

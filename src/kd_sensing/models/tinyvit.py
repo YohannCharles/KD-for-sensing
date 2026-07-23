@@ -486,7 +486,7 @@ class TinyViT(nn.Module):
 
 def _build_tinyvit_backbone(variant: str, *, in_chans: int = 3) -> tuple[TinyViT, int]:
     if str(variant).strip().lower() not in {"5m", "tinyvit_5m", "tinyvit-5m"}:
-        raise ValueError("T2 only retains the TinyViT-5M scratch encoder.")
+        raise ValueError("The retained U0 route uses the TinyViT-5M scratch encoder only.")
     model = TinyViT(
         img_size=TINYVIT_IMAGE_SIZE[0],
         in_chans=int(in_chans),
@@ -519,7 +519,7 @@ class TinyViTImageEncoder(nn.Module):
     ) -> None:
         super().__init__()
         if pretrained:
-            raise ValueError("T2 only supports the scratch TinyViT encoder.")
+            raise ValueError("The retained U0 route supports the scratch TinyViT encoder only.")
         self.variant = "5m"
         self.registry_name = registry_name or "tinyvit_5m_scratch_rgb"
         validate_image_encoder_profile(

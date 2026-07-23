@@ -16,7 +16,7 @@ def adapt_model_output(output: dict[str, Any]) -> ModelOutput:
     """Adapt the canonical current model output dictionary."""
 
     if not isinstance(output, dict):
-        raise TypeError("Current T2/baseline models must return a dictionary.")
+        raise TypeError("Retained models must return a dictionary.")
     logits = output.get("logits")
     if not torch.is_tensor(logits):
         raise ValueError("Model output must contain Tensor field 'logits'.")

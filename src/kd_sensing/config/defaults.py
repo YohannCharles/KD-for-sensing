@@ -1,7 +1,7 @@
-"""Defaults for the retained MMW T2 and baseline workflows."""
+"""Defaults for the Clean MMW U0 and retained baseline workflows."""
 
 DEFAULT_CONFIG = {
-    "experiment": {"name": "T2", "task": "fusion", "objective": "beam", "seed": 1, "device": "auto"},
+    "experiment": {"name": "U0", "task": "fusion", "objective": "beam", "seed": 1, "device": "auto"},
     "data": {
         "dataset": {
             "type": "mmw",
@@ -71,6 +71,6 @@ DEFAULT_CONFIG = {
     },
     "scheduler": {"type": "none"},
     "evaluation": {"k_values": [1, 5], "dba_delta": 5},
-    "output": {"dir": "outputs/mmw_all_weather", "run_name": None, "group_by_scene": False, "overwrite": False, "progress": {"enabled": False}, "tensorboard": {"enabled": False}},
+    "output": {"dir": "outputs/mmw_clean_u0", "run_name": None, "group_by_scene": False, "overwrite": False, "progress": {"enabled": False}, "tensorboard": {"enabled": False}},
     "checkpoint": {"strict_load": True},
 }

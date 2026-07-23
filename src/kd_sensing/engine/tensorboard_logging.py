@@ -98,7 +98,7 @@ def write_tensorboard_method_scalars(writer, epoch_log: dict, step: int) -> None
     for key, value in epoch_log.items():
         if not isinstance(value, (int, float)):
             continue
-        if key.startswith(("loss/", "optimizer/", "val/subset/", "cmsbl/")):
+        if key.startswith(("loss/", "optimizer/", "val/subset/")):
             writer.add_scalar(key, float(value), step)
     writer.flush()
 

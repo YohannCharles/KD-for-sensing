@@ -19,7 +19,7 @@ from kd_sensing.registries import DATASETS
 
 @DATASETS.register("mmw")
 class MMWDataset(Dataset):
-    """Four-sensor MMW sequence dataset used by T2 and its retained baselines."""
+    """Four-sensor MMW sequence dataset used by U0 and retained baselines."""
 
     def __init__(
         self,
@@ -88,7 +88,7 @@ class MMWDataset(Dataset):
         )
         unsupported = sorted(set(requested) - {"image", "radar", "gps", "lidar"})
         if unsupported:
-            raise ValueError(f"MMW T2 surface supports only image/radar/gps/lidar, got {unsupported}.")
+            raise ValueError(f"MMW retained surface supports only image/radar/gps/lidar, got {unsupported}.")
         self.enabled_modalities = requested
         self.use_gps = bool(use_gps and "gps" in requested)
         self.use_lidar = bool(use_lidar and "lidar" in requested)

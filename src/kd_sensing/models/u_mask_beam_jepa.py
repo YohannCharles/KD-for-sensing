@@ -25,7 +25,7 @@ def _freeze(module: nn.Module) -> None:
 
 @MODELS.register("u_mask_beam_jepa")
 class UMaskBeamJEPA(nn.Module):
-    """Current T2/S1 model: masked pooling, supervised routing, and Beam heads."""
+    """Retained U0 model: masked pooling, supervised routing, and beam heads."""
 
     supports_modality_kwargs = True
     supports_force_modality_mask = True
@@ -51,7 +51,6 @@ class UMaskBeamJEPA(nn.Module):
         router_use_confidence: bool = True,
         router_use_logit_norm: bool = True,
         router_hidden_dim: int = 64,
-        bcacl: dict[str, Any] | None = None,
         image_profile: str = "rgb_imagenet",
         consume_missing_modality_metadata: bool = True,
         image_channels: int = 3,
@@ -79,9 +78,9 @@ class UMaskBeamJEPA(nn.Module):
         if min(self.d_model, self.num_classes, self.num_pred, self.seq_length) <= 0:
             raise ValueError("d_model, num_classes, num_pred, and seq_length must be positive.")
         if self.fusion_type != "supervised_router":
-            raise ValueError("Current T2/S1 supports fusion_type=supervised_router only.")
+            raise ValueError("Retained U0 supports fusion_type=supervised_router only.")
         if self.head_type not in {"prototype", "classifier"}:
-            raise ValueError("Current T2/S1 head_type must be prototype or classifier.")
+            raise ValueError("Retained U0 head_type must be prototype or classifier.")
 
         encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.modalities}
         missing = [name for name, config in encoder_configs.items() if not config]
@@ -151,17 +150,6 @@ class UMaskBeamJEPA(nn.Module):
             else None
         )
 
-        self.bcacl_config = dict(bcacl) if isinstance(bcacl, dict) and bcacl.get("enabled") else None
-        if self.bcacl_config is not None:
-            from kd_sensing.models.bcacl import BCACLModule
-
-            self.bcacl = BCACLModule(
-                modalities=self.modalities,
-                input_dim=self.d_model,
-                num_classes=self.num_classes,
-                config=self.bcacl_config,
-            )
-
     def forward(
         self,
         *,
@@ -174,9 +162,6 @@ class UMaskBeamJEPA(nn.Module):
         temporal_mask: torch.Tensor | None = None,
         modality_temporal_mask: torch.Tensor | None = None,
         available_modalities: torch.Tensor | None = None,
-        bcacl_observed_inputs: dict[str, torch.Tensor] | None = None,
-        bcacl_observed_temporal_mask: torch.Tensor | None = None,
-        bcacl_fusion_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         inputs = {
             "image": image_batch,
@@ -228,54 +213,12 @@ class UMaskBeamJEPA(nn.Module):
             "reliability_fusion_weights": router_weights,
             "metadata": self.training_strategy_metadata(),
         }
-        if hasattr(self, "bcacl"):
-            observed_sequence = latent_sequence
-            if bcacl_observed_inputs is not None:
-                observed_sequence = torch.stack(
-                    [
-                        self._encode_sequence(name, bcacl_observed_inputs.get(f"{name}_batch"))
-                        for name in self.modalities
-                    ],
-                    dim=2,
-                )
-            observed_cell_mask = cell_mask
-            if bcacl_observed_temporal_mask is not None:
-                observed_raw = torch.as_tensor(
-                    bcacl_observed_temporal_mask,
-                    device=latent_sequence.device,
-                    dtype=torch.bool,
-                )
-                observed_cell_mask = self._resolve_temporal_mask(
-                    observed_sequence,
-                    observed_raw.any(dim=1),
-                    None,
-                    observed_raw,
-                )
-            observed_latent = _masked_mean(observed_sequence, observed_cell_mask)
-            auxiliary = self.bcacl(observed_latent)
-            observed = observed_cell_mask.any(dim=1)
-            fusion_mask = available if bcacl_fusion_mask is None else torch.as_tensor(
-                bcacl_fusion_mask,
-                device=observed.device,
-                dtype=torch.bool,
-            )
-            if fusion_mask.shape != observed.shape or bool((fusion_mask & ~observed).any().item()):
-                raise ValueError("bcacl_fusion_mask must be a [B,M] subset of observed modalities.")
-            output.update(
-                {
-                    "bcacl_features": auxiliary["features"],
-                    "bcacl_private_logits": auxiliary["private_logits"],
-                    "bcacl_shared_logits": auxiliary["shared_logits"],
-                    "bcacl_observed_mask": observed,
-                    "bcacl_fusion_mask": fusion_mask,
-                }
-            )
         return output
 
     def training_strategy_metadata(self) -> dict[str, Any]:
         return {
             "type": "u_mask_beam_jepa",
-            "architecture_category": "t2_temporal_supervised_router",
+            "architecture_category": "u0_temporal_supervised_router",
             "modalities": list(self.modalities),
             "enabled_modalities": list(self.modalities),
             "consumes_missing_mask": True,
@@ -434,7 +377,7 @@ def _masked_mean(sequence: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 def _temporal_pooling_config(raw: dict[str, Any] | bool | None) -> dict[str, Any]:
     config = dict(raw) if isinstance(raw, dict) else {"enabled": bool(raw)}
     if not bool(config.get("enabled", False)) or str(config.get("type", "masked_mean")) != "masked_mean":
-        raise ValueError("Current T2/S1 requires temporal_pooling enabled with type=masked_mean.")
+        raise ValueError("Retained U0 requires temporal_pooling enabled with type=masked_mean.")
     unknown = sorted(set(config) - {"enabled", "type"})
     if unknown:
         raise ValueError(f"Unsupported temporal_pooling fields: {unknown}.")

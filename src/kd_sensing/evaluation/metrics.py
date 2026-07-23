@@ -35,7 +35,8 @@ def circular_topk_min_distance(
     if torch.is_tensor(outputs) or torch.is_tensor(target):
         scores = torch.as_tensor(outputs)
         labels = torch.as_tensor(target, device=scores.device)
-        topk = scores.topk(max(1, min(int(k), scores.shape[-1])), dim=-1).indices
+        count = max(1, min(int(k), scores.shape[-1]))
+        topk = torch.argsort(scores, dim=-1, descending=True, stable=True)[..., :count]
         return _beam_distance(
             topk,
             labels.to(scores.device, torch.long).unsqueeze(-1),
@@ -43,7 +44,8 @@ def circular_topk_min_distance(
             distance_mode,
         ).min(dim=-1).values
     scores = np.asarray(outputs)
-    topk = np.argsort(scores, axis=-1)[..., -max(1, min(int(k), scores.shape[-1])) :]
+    count = max(1, min(int(k), scores.shape[-1]))
+    topk = np.argsort(-scores, axis=-1, kind="stable")[..., :count]
     labels = np.expand_dims(np.asarray(target, dtype=np.int64), -1)
     if _normalized_distance_mode(distance_mode) == "circular":
         distances = circular_beam_distance(topk, labels, num_beams=num_beams or scores.shape[-1])

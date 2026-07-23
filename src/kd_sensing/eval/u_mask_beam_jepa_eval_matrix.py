@@ -147,6 +147,57 @@ def evaluate_missing_matrix(
     return results
 
 
+def evaluate_missing_matrix_single_pass(
+    model,
+    dataloader,
+    device,
+    modalities: list[str],
+    patterns: dict[str, list[int]],
+    cfg: dict[str, Any],
+    prediction_index: int | str = "last",
+    max_batches: int | None = None,
+) -> list[dict]:
+    """Evaluate all patterns per loaded batch to avoid repeated dataset preprocessing."""
+    device = torch.device(device)
+    model.to(device)
+    model.eval()
+    accumulators = {name: _Accumulator() for name in patterns}
+    with torch.no_grad():
+        for batch_index, raw_batch in enumerate(dataloader):
+            if max_batches is not None and batch_index >= int(max_batches):
+                break
+            batch_size = _batch_size(raw_batch)
+            for name, pattern in patterns.items():
+                metrics, count = _evaluate_pattern_batch(
+                    model,
+                    raw_batch,
+                    device,
+                    pattern_name=name,
+                    pattern=pattern,
+                    batch_size=batch_size,
+                    prediction_index=prediction_index,
+                    cfg=cfg,
+                    modalities=modalities,
+                )
+                accumulators[name].update(metrics, count)
+    results = [
+        {
+            "pattern": name,
+            "mask": ",".join(str(int(value)) for value in pattern),
+            "num_samples": accumulators[name].num_samples,
+            "sample_count": accumulators[name].num_samples,
+            "count": accumulators[name].num_samples,
+            **accumulators[name].mean(),
+        }
+        for name, pattern in patterns.items()
+    ]
+    avg = _average_missing_results(results)
+    if avg is not None:
+        results.append(avg)
+    _attach_comparability_metadata(results, modalities, cfg)
+    return results
+
+
 def _evaluate_pattern(
     model,
     dataloader,
@@ -165,39 +216,18 @@ def _evaluate_pattern(
         if max_batches is not None and batch_index >= int(max_batches):
             break
         batch_size = _batch_size(raw_batch)
-        metric_missing_mask = make_fixed_missing_mask(batch_size, pattern, device=device)
-        forward_missing_mask = None if _is_full_pattern(pattern) else metric_missing_mask
-        logits, target, diagnostics = _forward_batch(
+        metrics, count = _evaluate_pattern_batch(
             model,
             raw_batch,
-            forward_missing_mask,
             device,
+            pattern_name=pattern_name,
+            pattern=pattern,
+            batch_size=batch_size,
             prediction_index=prediction_index,
             cfg=cfg,
+            modalities=modalities,
         )
-        metrics = {
-            "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
-            **_beam_classification_metrics(logits, target, cfg),
-            **reliability_error_stats(
-                logits,
-                target,
-                global_reliability=_diagnostic_tensor(diagnostics, "global_reliability"),
-                modality_reliability=_diagnostic_tensor(diagnostics, "modality_reliability"),
-                missing_mask=metric_missing_mask,
-            ),
-            "ece": expected_calibration_error(logits, target),
-        }
-        metrics.update(
-            _supervised_router_diagnostic_metrics(
-                diagnostics,
-                target,
-                metric_missing_mask,
-                modalities,
-                pattern_name,
-                circular_beam_distance=_training_beam_distance_circular(cfg),
-            )
-        )
-        accumulator.update(metrics, int(target.numel()))
+        accumulator.update(metrics, count)
     return {
         "pattern": pattern_name,
         "mask": mask_label,
@@ -206,6 +236,53 @@ def _evaluate_pattern(
         "count": accumulator.num_samples,
         **accumulator.mean(),
     }
+
+
+def _evaluate_pattern_batch(
+    model,
+    raw_batch,
+    device: torch.device,
+    *,
+    pattern_name: str,
+    pattern: list[int],
+    batch_size: int,
+    prediction_index: int | str,
+    cfg: dict[str, Any],
+    modalities: list[str],
+) -> tuple[dict[str, float], int]:
+    metric_missing_mask = make_fixed_missing_mask(batch_size, pattern, device=device)
+    forward_missing_mask = None if _is_full_pattern(pattern) else metric_missing_mask
+    logits, target, diagnostics = _forward_batch(
+        model,
+        raw_batch,
+        forward_missing_mask,
+        device,
+        prediction_index=prediction_index,
+        cfg=cfg,
+    )
+    metrics = {
+        "loss": float(F.cross_entropy(logits, target).detach().cpu().item()),
+        **_beam_classification_metrics(logits, target, cfg),
+        **reliability_error_stats(
+            logits,
+            target,
+            global_reliability=_diagnostic_tensor(diagnostics, "global_reliability"),
+            modality_reliability=_diagnostic_tensor(diagnostics, "modality_reliability"),
+            missing_mask=metric_missing_mask,
+        ),
+        "ece": expected_calibration_error(logits, target),
+    }
+    metrics.update(
+        _supervised_router_diagnostic_metrics(
+            diagnostics,
+            target,
+            metric_missing_mask,
+            modalities,
+            pattern_name,
+            circular_beam_distance=_training_beam_distance_circular(cfg),
+        )
+    )
+    return metrics, int(target.numel())
 
 
 def _forward_batch(

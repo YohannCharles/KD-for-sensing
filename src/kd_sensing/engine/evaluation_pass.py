@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -61,6 +61,7 @@ def run_evaluation_pass(
     *,
     force_modality_mask: torch.Tensor | None = None,
     capture_outputs: bool = False,
+    batch_transform: Callable[[Any], Any] | None = None,
 ) -> EvaluationPassResult:
     objective = resolve_prediction_objective(cfg)
     model.eval()
@@ -73,6 +74,8 @@ def run_evaluation_pass(
 
     with torch.no_grad():
         for raw_batch in dataloader:
+            if batch_transform is not None:
+                raw_batch = batch_transform(raw_batch)
             batch = prepare_evaluation_batch(raw_batch)
             labels = prepare_task_labels(
                 batch,

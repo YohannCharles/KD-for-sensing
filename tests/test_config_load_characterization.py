@@ -7,8 +7,7 @@ from kd_sensing.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPES = {
-    "t2": ("T2", "u_mask_beam_jepa"),
-    "s1": ("S1", "u_mask_beam_jepa"),
+    "u0": ("U0", "u_mask_beam_jepa"),
     "amber_full": ("amber_full", "modular_sequence"),
     "rmbp_mm": ("rmbp_mm", "modular_sequence"),
 }
@@ -27,20 +26,13 @@ def test_tracked_mmw_recipe_loads_without_runtime_input(recipe: str, expected: t
     assert cfg["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
 
 
-def test_t2_and_s1_only_differ_in_superset_consistency():
-    t2 = load_config(ROOT / "configs/mmw/t2.yaml")
-    s1 = load_config(ROOT / "configs/mmw/s1.yaml")
+def test_u0_recipe_contains_no_retired_training_sections():
+    cfg = load_config(ROOT / "configs/mmw/u0.yaml")
 
-    assert t2["loss"]["u_mask_beam_jepa"]["superset_consistency"]["enabled"] is True
-    assert s1["loss"]["u_mask_beam_jepa"]["superset_consistency"]["enabled"] is False
-    assert t2["temporal_missing"]["preserve_unmasked_for_superset"] is True
-    assert s1["temporal_missing"]["preserve_unmasked_for_superset"] is False
-    assert t2["training"]["weight_decay"] == 1.0e-4
-    assert s1["training"]["weight_decay"] == 1.0e-4
-    assert t2["scheduler"] == {"type": "none"}
-    assert s1["scheduler"] == {"type": "none"}
-    assert "training_profile" not in t2["mmw_all_weather_protocol"]
-    assert "training_profile" not in s1["mmw_all_weather_protocol"]
+    assert cfg["loss"]["u_mask_beam_jepa"]["superset_consistency"]["enabled"] is True
+    assert cfg["temporal_missing"]["preserve_unmasked_for_superset"] is True
+    assert "bcacl" not in cfg
+    assert "cmsbl" not in cfg
 
 
 def test_tracked_deepsense6g_t2_recipe_loads_without_runtime_input():
@@ -55,7 +47,7 @@ def test_tracked_deepsense6g_t2_recipe_loads_without_runtime_input():
 
 def test_recipe_base_and_cli_overrides_keep_temporal_windows_in_sync():
     cfg = load_config(
-        ROOT / "configs/mmw/t2.yaml",
+        ROOT / "configs/mmw/u0.yaml",
         overrides=[
             "temporal_missing.history_window=3",
             "temporal_missing.prediction_window=2",

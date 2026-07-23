@@ -32,31 +32,47 @@ def prepare_fusion_inputs(
     seq_length: int,
     device: torch.device,
     non_blocking: bool = False,
+    modalities: tuple[str, ...] = ("image", "radar", "gps", "lidar"),
 ) -> dict[str, Any]:
-    image = _sequence(batch, "image", seq_length, device, non_blocking)
-    radar_ra = _sequence(batch, "radar_ra", seq_length, device, non_blocking)
-    radar_da = _sequence(batch, "radar_da", seq_length, device, non_blocking)
-    gps = _sequence(batch, "gps", seq_length, device, non_blocking)
-    lidar = _sequence(batch, "lidar", seq_length, device, non_blocking)
-    if image.ndim != 5 or lidar.ndim != 5 or gps.ndim != 3:
-        raise ValueError("Four-modality image/lidar/gps inputs must have [B,T,C,H,W], [B,T,C,H,W], [B,T,F] shapes.")
-    if radar_ra.ndim == 4:
-        radar_ra = radar_ra.unsqueeze(2)
-    if radar_da.ndim == 4:
-        radar_da = radar_da.unsqueeze(2)
-    if radar_ra.ndim != 5 or radar_da.ndim != 5 or radar_ra.shape != radar_da.shape:
-        raise ValueError("Four-modality radar RA/DA inputs must share shape [B,T,C,H,W].")
-    if tuple(radar_ra.shape[-2:]) != (128, 64):
-        raise ValueError("Four-modality radar maps must have spatial shape [128, 64].")
-    inputs: dict[str, Any] = {
-        "image_batch": image,
-        "radar_batch": torch.cat([radar_ra, radar_da], dim=2),
-        "gps_batch": gps,
-        "lidar_batch": lidar,
-    }
+    canonical = ("image", "radar", "gps", "lidar")
+    names = tuple(str(value) for value in modalities)
+    if not names or len(set(names)) != len(names) or set(names) - set(canonical):
+        raise ValueError("Fusion modalities must be a unique non-empty canonical subset.")
+    inputs: dict[str, Any] = {}
+    if "image" in names:
+        image = _sequence(batch, "image", seq_length, device, non_blocking)
+        if image.ndim != 5:
+            raise ValueError("image must have shape [B,T,C,H,W].")
+        inputs["image_batch"] = image
+    if "radar" in names:
+        radar_ra = _sequence(batch, "radar_ra", seq_length, device, non_blocking)
+        radar_da = _sequence(batch, "radar_da", seq_length, device, non_blocking)
+        if radar_ra.ndim == 4:
+            radar_ra = radar_ra.unsqueeze(2)
+        if radar_da.ndim == 4:
+            radar_da = radar_da.unsqueeze(2)
+        if radar_ra.ndim != 5 or radar_da.ndim != 5 or radar_ra.shape != radar_da.shape:
+            raise ValueError("Radar RA/DA inputs must share shape [B,T,C,H,W].")
+        if tuple(radar_ra.shape[-2:]) != (128, 64):
+            raise ValueError("Radar maps must have spatial shape [128, 64].")
+        inputs["radar_batch"] = torch.cat([radar_ra, radar_da], dim=2)
+    if "gps" in names:
+        gps = _sequence(batch, "gps", seq_length, device, non_blocking)
+        if gps.ndim != 3:
+            raise ValueError("gps must have shape [B,T,F].")
+        inputs["gps_batch"] = gps
+    if "lidar" in names:
+        lidar = _sequence(batch, "lidar", seq_length, device, non_blocking)
+        if lidar.ndim != 5:
+            raise ValueError("lidar must have shape [B,T,C,H,W].")
+        inputs["lidar_batch"] = lidar
+    selected = [canonical.index(name) for name in names]
     for key in ("temporal_mask", "modality_temporal_mask", "available_modalities"):
         if key in batch:
-            inputs[key] = torch.as_tensor(batch[key], device=device, dtype=torch.bool)
+            value = torch.as_tensor(batch[key], device=device, dtype=torch.bool)
+            if key != "temporal_mask" and value.shape[-1] == len(canonical) and len(names) != len(canonical):
+                value = value[..., selected]
+            inputs[key] = value
     return inputs
 
 

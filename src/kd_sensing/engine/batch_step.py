@@ -196,9 +196,9 @@ def _respect_temporal_availability(controls: ForwardControls, batch: dict[str, A
     mask = missing.to(dtype=torch.bool)
     usable = available.to(device=mask.device, dtype=torch.bool)
     if mask.shape != usable.shape:
-        raise ValueError("T2 missing_mask must match temporal available_modalities.")
+        raise ValueError("U0 missing_mask must match temporal available_modalities.")
     if not bool(usable.any(dim=1).all().item()):
-        raise ValueError("T2 temporal missing must retain one modality per sample.")
+        raise ValueError("U0 temporal missing must retain one modality per sample.")
     mask = mask & usable
     empty = ~mask.any(dim=1)
     if bool(empty.any().item()):

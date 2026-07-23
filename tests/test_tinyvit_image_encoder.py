@@ -19,7 +19,7 @@ class FakeTinyViTBackbone(nn.Module):
         return features
 
 
-def test_t2_tinyvit_encoder_is_registered_and_keeps_frame_axis(monkeypatch) -> None:
+def test_u0_tinyvit_encoder_is_registered_and_keeps_frame_axis(monkeypatch) -> None:
     monkeypatch.setattr(tinyvit, "_build_tinyvit_backbone", lambda variant, *, in_chans=3: (FakeTinyViTBackbone(), 8))
     import_default_components()
     encoder = ENCODERS.build({"type": "tinyvit_5m_scratch_rgb", "output_dim": 12, "pretrained": False})

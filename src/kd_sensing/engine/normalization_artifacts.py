@@ -1,5 +1,9 @@
+import csv
 import hashlib
 import json
+import shlex
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +24,21 @@ def save_normalization_artifacts(dataloaders: dict[str, DataLoader], run_dir: st
         return {}
     path = Path(run_dir) / "artifacts" / "gps_scaler.npz"
     scaler.save(path)
-    return {"gps_scaler": str(path), "metadata": split_dependent_artifact_metadata(train_dataset)}
+    metadata = split_dependent_artifact_metadata(train_dataset)
+    sidecar = path.with_suffix(path.suffix + ".json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                **metadata,
+                "artifact": str(path),
+                "artifact_sha256": _sha256_file(path),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {"gps_scaler": str(path), "metadata": metadata, "metadata_sidecar": str(sidecar)}
 
 
 def load_normalization_artifacts(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -51,12 +69,19 @@ def split_dependent_artifact_metadata(train_dataset: Any) -> dict[str, Any]:
     }
     if len(modes) > 1:
         raise ValueError(f"Pooled GPS datasets must use one gps_feature_mode, got {sorted(modes)}.")
+    source_paths = {Path(str(item["source_csv_path"])) for item in sources}
+    source_names = {path.name for path in source_paths}
+    source_split = "inner_train" if source_names == {"inner_train.csv"} else "train"
     payload = {
         "schema_version": 1,
         "fit_split": "train",
+        "source_split": source_split,
         "normalization_modalities": ["gps"],
         "gps_feature_mode": next(iter(modes), None),
         "effective_sample_count": sum(int(item["sample_count"]) for item in sources),
+        "sample_id_hash": _sample_id_hash(train_dataset),
+        "creation_command": shlex.join(sys.argv),
+        "creation_time": datetime.now(timezone.utc).isoformat(),
         "source_components": sources,
     }
     payload["normalization_fingerprint"] = _fingerprint(payload)
@@ -73,6 +98,19 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
         recorded = artifacts["metadata"].get("gps_feature_mode")
         if recorded != expected:
             raise ValueError(f"GPS normalization artifact feature mode {recorded!r} does not match evaluation config {expected!r}.")
+    protocol = cfg.get("data_protocol")
+    if isinstance(protocol, dict) and protocol.get("mode") == "clean_inner_development":
+        report = json.loads(Path(str(protocol.get("audit_report", ""))).read_text(encoding="utf-8"))
+        recorded = artifacts["metadata"]
+        expected_source_split = str(protocol.get("train_role", "inner_train"))
+        if recorded.get("source_split") != expected_source_split:
+            raise ValueError(
+                "Clean GPS normalization artifact source split does not match the clean protocol train role."
+            )
+        if recorded.get("sample_id_hash") != report.get("train_sample_id_hash"):
+            raise ValueError("Clean GPS normalization artifact sample identity does not match the split audit.")
+        if int(recorded.get("effective_sample_count", 0)) != int(report.get("train_sample_count", -1)):
+            raise ValueError("Clean GPS normalization artifact sample count does not match the split audit.")
 
 
 def _shared_gps_scaler(dataset: Any) -> Any:
@@ -101,10 +139,48 @@ def _validate_artifact_metadata_integrity(artifacts: dict[str, Any]) -> None:
         raise ValueError("GPS normalization artifact fingerprint does not match its provenance metadata.")
     if metadata.get("normalization_modalities") != ["gps"]:
         raise ValueError("GPS normalization artifact modalities do not match saved artifacts.")
+    sidecar = artifacts.get("metadata_sidecar")
+    if sidecar:
+        recorded = json.loads(_existing_path(sidecar, "GPS scaler metadata sidecar").read_text(encoding="utf-8"))
+        if any(recorded.get(key) != value for key, value in metadata.items()):
+            raise ValueError("GPS normalization sidecar does not match checkpoint provenance metadata.")
+        if recorded.get("artifact_sha256") != _sha256_file(_existing_path(artifacts.get("gps_scaler"), "GPS scaler")):
+            raise ValueError("GPS normalization artifact SHA256 does not match its sidecar.")
 
 
 def _fingerprint(payload: Any) -> str:
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _sample_id_hash(dataset: Any) -> str:
+    values = []
+    for leaf, indices in leaf_datasets_with_indices(dataset):
+        rows = getattr(getattr(leaf, "samples", None), "rows", None)
+        if not isinstance(rows, list):
+            rows = _csv_rows(Path(str(getattr(leaf, "root_csv", ""))))
+        domain = str(getattr(leaf, "domain_id", ""))
+        for index in indices:
+            row = rows[int(index)] if int(index) < len(rows) else {}
+            sample_id = str(row.get("sample_id", "")).strip()
+            if not sample_id:
+                raise ValueError("GPS normalization provenance requires a sample_id for every train sample.")
+            values.append(f"{domain}:{sample_id}")
+    return hashlib.sha256("\n".join(sorted(values)).encode("utf-8")).hexdigest()
+
+
+def _csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 __all__ = ["load_normalization_artifacts", "save_normalization_artifacts", "split_dependent_artifact_metadata", "validate_normalization_artifact_fingerprint"]

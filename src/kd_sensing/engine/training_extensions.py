@@ -22,6 +22,7 @@ class ExtensionContext:
     num_classes: int
     seq_length: int
     non_blocking: bool
+    dataloaders: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

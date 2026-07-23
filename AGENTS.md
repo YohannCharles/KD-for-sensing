@@ -8,13 +8,13 @@
 - 先阅读已有实现、README 和相关 OpenSpec，再改代码；优先沿用现有模块边界和配置风格。
 - 非平凡改动前先阅读 `docs/agent_navigation.md`，并通过其中指向的 `docs/maintainer_context_index.yaml` 确认任务路由、机器可读治理表和最小验证命令；若任务匹配，按 `docs/agent_context/README.md` 只加载 scoped context；本文件仍不维护完整目录清单。
 - 非平凡功能、架构调整、训练流程变化、数据契约变化和兼容性变化应先走 OpenSpec change。
-- 高频模型、配置、claim、诊断和 archive 流程可使用 `.codex/skills/kd-*/SKILL.md` 项目技能；技能只描述流程，不替代 OpenSpec、README 或 current specs。
+- 高频模型、配置和诊断流程可使用 `.codex/skills/kd-*/SKILL.md` 项目技能；技能只描述流程，不替代 OpenSpec、README 或 current specs。
 - 不要把本地数据、训练输出、日志、缓存、checkpoint 或临时验证产物纳入源码变更。
 - 不要新增旧入口、兼容聚合层或绕过当前 `src/kd_sensing` 包结构的运行方式。
 
 ## OpenSpec
 
-- 当前架构和需求权威在 `openspec/specs/`，其中项目结构与模块边界主要看 `openspec/specs/project-architecture/spec.md`。
+- 当前架构和需求权威在 `openspec/specs/`：模型与保留路线看 `u0-mainline`，数据隔离看 `clean-data-integrity`，仓库与产物边界看 `repo-boundaries`。
 - 有 active change 时，先读对应 `openspec/changes/<change>/proposal.md`、`design.md`、`tasks.md` 和 specs。
 - 实现过程中发现范围、需求或设计决策变化时，先更新对应 OpenSpec artifact，再继续落代码。
 - 没有 active change 且只是窄修复、文档小改或测试修复时，可以直接改，但仍需遵守现有 specs。

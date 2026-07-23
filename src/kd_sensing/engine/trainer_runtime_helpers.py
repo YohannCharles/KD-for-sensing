@@ -26,7 +26,7 @@ from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
     save_results_json,
     save_results_markdown,
 )
-from kd_sensing.eval.bcacl_missing_summary import save_missing_summary, summarize_missing_patterns
+from kd_sensing.eval.missing_summary import save_missing_summary, summarize_missing_patterns
 from kd_sensing.utils.artifact_registry import sanitize_slug
 from kd_sensing.utils.checkpoint import checkpoint_load_summary, load_model_state
 
@@ -178,7 +178,7 @@ def run_training_epoch_loop(
             tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
         )
         _write_tensorboard_method_scalars(tensorboard_writer, epoch_log, epoch + 1)
-        checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
+        last_checkpoint = checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
         if (
             checkpoint_selection == "best_validation_loss"
             and val_loss is not None

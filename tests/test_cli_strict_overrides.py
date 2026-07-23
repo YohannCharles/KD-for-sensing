@@ -7,7 +7,7 @@ from kd_sensing.cli.common import load_cli_config, parse_cli_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "configs/mmw/t2.yaml"
+CONFIG = ROOT / "configs/mmw/u0.yaml"
 
 
 @pytest.mark.parametrize("runner", (train.run, evaluate.run))

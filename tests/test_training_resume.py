@@ -36,17 +36,17 @@ def _payload(contract: dict) -> dict:
 
 def test_resume_requires_the_current_run_last_checkpoint(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=r"checkpoints/last\.pth"):
-        resolve_resume_checkpoint({"training": {"resume": True}, "output": {"run_name": "T2"}}, tmp_path / "T2")
+        resolve_resume_checkpoint({"training": {"resume": True}, "output": {"run_name": "U0"}}, tmp_path / "U0")
 
 
 def test_current_resume_payload_and_publication_preflight(tmp_path: Path) -> None:
-    cfg = {"training": {"epochs": 4}, "model": {"primary": {"type": "u_mask_beam_jepa"}}, "output": {"run_name": "T2"}}
+    cfg = {"training": {"epochs": 4}, "model": {"primary": {"type": "u_mask_beam_jepa"}}, "output": {"run_name": "U0"}}
     contract = build_resume_contract(cfg, {}, {})
     payload = _payload(contract)
-    checkpoint, _ = publish_checkpoint(payload, tmp_path / "T2" / "checkpoints", "last.pth")
+    checkpoint, _ = publish_checkpoint(payload, tmp_path / "U0" / "checkpoints", "last.pth")
 
     assert validate_resume_payload(payload, path=checkpoint, scheduler_enabled=False)["epoch"] == 2
-    plan = preflight_resume({**cfg, "training": {"epochs": 4, "resume": str(checkpoint)}}, tmp_path / "T2", scheduler_enabled=False)
+    plan = preflight_resume({**cfg, "training": {"epochs": 4, "resume": str(checkpoint)}}, tmp_path / "U0", scheduler_enabled=False)
     assert plan is not None and plan.path == checkpoint and plan.trajectory_equivalence is True
 
 

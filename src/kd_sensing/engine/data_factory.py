@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
+from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
 from kd_sensing.engine.data_factory_scalers import (
     fit_gps_scaler,
     gps_scaler_kwargs,
@@ -72,11 +73,7 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
 
 def final_test_enabled(cfg: dict[str, Any]) -> bool:
     final_test = cfg.get("training", {}).get("final_test")
-    design_screen = cfg.get("mmw_t2_design_screening")
-    development_only = isinstance(design_screen, dict) and bool(design_screen.get("development_only", False))
     if final_test is None:
-        if development_only:
-            raise ValueError("Development-only T2 design screening must explicitly disable training.final_test.")
         return True
     if isinstance(final_test, bool):
         enabled = final_test
@@ -84,8 +81,6 @@ def final_test_enabled(cfg: dict[str, Any]) -> bool:
         raise ValueError("training.final_test must be a mapping or boolean.")
     else:
         enabled = bool(final_test.get("enabled", True))
-    if development_only and enabled:
-        raise ValueError("Development-only T2 design screening must not enable final test.")
     return enabled
 
 
@@ -113,16 +108,29 @@ def build_dataloaders(
     *,
     normalization_overrides: dict[str, Any] | None = None,
 ) -> dict[str, DataLoader]:
+    protocol_audit = validate_clean_config_protocol(cfg)
     loader_cfg = cfg["data"]["dataloader"]
     provided = dict(normalization_overrides or {})
-    train_dataset = build_split_dataset(cfg, "train", normalization_overrides=provided or None)
+    train_dataset = build_split_dataset(
+        cfg,
+        "train",
+        normalization_overrides=provided or None,
+        _clean_protocol_validated=protocol_audit is not None,
+    )
     fit_gps_scaler(
         train_dataset,
         source="provided_train_artifact" if provided else "train_split_streaming_fit",
         provided=provided.get("gps_scaler"),
     )
     artifacts = gps_scaler_kwargs(train_dataset)
-    validation_dataset = build_split_dataset(cfg, "validation", **artifacts) if has_validation_csv(cfg) else None
+    validation_dataset = (
+        build_split_dataset(cfg, "validation", _clean_protocol_validated=protocol_audit is not None, **artifacts)
+        if has_validation_csv(cfg)
+        else None
+    )
+    dataset_type = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
+    if dataset_type == "mmw" and validation_dataset is None:
+        raise ValueError("Clean MMW training requires an inner-validation DataLoader.")
     dataloaders = {
         "train": build_dataloader(
             train_dataset,
@@ -140,13 +148,17 @@ def build_dataloaders(
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         )
     if final_test_enabled(cfg):
-        test_dataset = build_split_dataset(cfg, "test", **artifacts)
+        test_dataset = build_split_dataset(cfg, "test", _clean_protocol_validated=protocol_audit is not None, **artifacts)
         dataloaders["test"] = build_dataloader(
             test_dataset,
             loader_cfg,
             split="test",
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         )
+    if protocol_audit is not None:
+        identity = _clean_protocol_identity(protocol_audit, cfg)
+        for loader in dataloaders.values():
+            loader.clean_protocol_identity = dict(identity)
     return dataloaders
 
 
@@ -155,8 +167,12 @@ def build_split_dataset(
     split: str,
     *,
     normalization_overrides: dict[str, Any] | None = None,
+    _clean_protocol_validated: bool = False,
     **extra_dataset_kwargs: Any,
 ) -> Any:
+    dataset_type = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
+    if dataset_type == "mmw" and not _clean_protocol_validated:
+        validate_clean_config_protocol(cfg)
     kwargs = dict(extra_dataset_kwargs)
     kwargs.update(normalization_overrides or {})
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
@@ -347,6 +363,23 @@ def _domain_csv_for_split(domain: dict[str, Any], split: str) -> tuple[str, str]
     if domain.get(key):
         return key, str(domain[key])
     raise ValueError(f"Pooled domain {domain.get('id', '<unknown>')} is missing {split} CSV field ({key}).")
+
+
+def _clean_protocol_identity(audit: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    section = cfg["data_protocol"]
+    report_path = Path(str(section["audit_report"])).resolve()
+    return {
+        "protocol_id": "mmw_clean_inner_development_v1",
+        "protocol_fingerprint": audit["protocol_fingerprint"],
+        "protocol_file_sha256": audit["protocol_file_sha256"],
+        "audit_id": audit["audit_id"],
+        "audit_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+        "train_sample_id_hash": audit["train_sample_id_hash"],
+        "validation_sample_id_hash": audit["validation_sample_id_hash"],
+        "train_sample_count": int(audit["train_sample_count"]),
+        "validation_sample_count": int(audit["validation_sample_count"]),
+        "outer_test_accessed": False,
+    }
 
 
 def build_domain_balanced_sampler(

@@ -34,8 +34,8 @@ def _temporal_batch(batch_size: int) -> dict[str, torch.Tensor]:
     }
 
 
-def test_t2_recipe_declares_the_retained_temporal_protocol() -> None:
-    cfg = load_config(ROOT / "configs/mmw/t2.yaml")
+def test_u0_recipe_declares_the_retained_temporal_protocol() -> None:
+    cfg = load_config(ROOT / "configs/mmw/u0.yaml")
 
     assert cfg["temporal_missing"]["enabled"] is True
     assert cfg["model"]["primary"]["temporal_pooling"] == {"enabled": True, "type": "masked_mean"}
@@ -48,7 +48,7 @@ def test_masked_temporal_mean_ignores_unavailable_cells() -> None:
     assert torch.allclose(masked_temporal_mean(values, mask), torch.tensor([[50.5], [7.0]]))
 
 
-def test_t2_temporal_missing_preserves_only_the_same_model_superset_payload() -> None:
+def test_u0_temporal_missing_preserves_only_the_same_model_superset_payload() -> None:
     batch = {
         "image": torch.ones(2, 5, 3, 2, 2),
         "radar_ra": torch.ones(2, 5, 1, 2, 2),
@@ -79,16 +79,16 @@ def test_t2_temporal_missing_preserves_only_the_same_model_superset_payload() ->
     assert torch.equal(payload["inputs"]["image"], torch.ones_like(batch["image"]))
     assert torch.equal(payload["base_mask"], torch.ones_like(mask))
 
-    s1_batch = {
+    without_superset = {
         key: value.clone()
         for key, value in payload["inputs"].items()
     }
     cfg["temporal_missing"]["preserve_unmasked_for_superset"] = False
-    apply_training_temporal_missing(s1_batch, cfg, epoch=0, step=0)
-    assert TEMPORAL_SUPERSET_PAYLOAD_KEY not in s1_batch
+    apply_training_temporal_missing(without_superset, cfg, epoch=0, step=0)
+    assert TEMPORAL_SUPERSET_PAYLOAD_KEY not in without_superset
 
 
-def test_t2_random_modality_mask_keeps_a_temporally_available_modality() -> None:
+def test_u0_random_modality_mask_keeps_a_temporally_available_modality() -> None:
     controls = ForwardControls(
         model_kwargs={"missing_mask": torch.tensor([[0, 0, 0, 1], [1, 0, 0, 0]], dtype=torch.bool)}
     )

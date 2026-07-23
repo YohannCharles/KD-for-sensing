@@ -17,6 +17,9 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     dataset_type = str(data.get("type", "")).strip().lower()
     if dataset_type not in RETAINED_DATASETS:
         raise ValueError(f"Supported data.dataset.type values are {sorted(RETAINED_DATASETS)}.")
+    retired = sorted(set(cfg) & {"bcacl", "cmsbl", "standalone_capacity_reference"})
+    if retired:
+        raise ValueError(f"Retired training sections are not supported: {retired}.")
     modalities = normalize_modalities(model.get("modalities", ()), context="model.primary.modalities")
     if modalities != RETAINED_MODALITIES:
         raise ValueError(f"Retained workflows require modalities {list(RETAINED_MODALITIES)}.")

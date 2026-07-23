@@ -1,36 +1,34 @@
-schema_version: 4
+schema_version: 1
 kind: maintainer_context_index
 purpose:
-  summary: 仅记录 MMW T2/baseline 与受限 DeepSense6G T2 的最小维护路由；不复制源码目录、历史路线或运行配置。
+  summary: 只路由 Clean MMW U0、两个保留 baseline、DeepSense6G 和数据隔离边界。
 agent_context:
   root: docs/agent_context/README.md
 task_routes:
   - id: model
     context_path: docs/agent_context/models.md
     authority_paths:
-      - openspec/specs/t2-baseline-surface/spec.md
-      - openspec/specs/u-mask-beam-jepa/spec.md
+      - openspec/specs/u0-mainline/spec.md
     owner_modules:
       - src/kd_sensing/models/
       - src/kd_sensing/losses/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_bcacl.py tests/test_cmsbl.py tests/test_s1_temporal_superset_training.py -q
+      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_amber_full_architecture.py tests/test_component_registry.py -q
   - id: data
     context_path: docs/agent_context/data.md
     authority_paths:
-      - openspec/specs/t2-baseline-surface/spec.md
-      - openspec/specs/dataset-loader-behavior/spec.md
-      - openspec/specs/project-architecture/spec.md
+      - openspec/specs/clean-data-integrity/spec.md
+      - openspec/specs/repo-boundaries/spec.md
     owner_modules:
       - src/kd_sensing/data/
-      - src/kd_sensing/engine/batch.py
+      - src/kd_sensing/engine/data_factory.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_deepsense6g_dataset.py tests/test_mmw_prepared_sequence.py tests/test_mmw_all_weather_runtime.py -q
+      - conda run -n kd_mm_beam pytest tests/test_clean_inner_protocol.py tests/test_train_only_normalization.py tests/test_deepsense6g_dataset.py -q
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:
-      - openspec/specs/canonical-config-resolution/spec.md
-      - openspec/specs/t2-baseline-surface/spec.md
+      - openspec/specs/u0-mainline/spec.md
+      - openspec/specs/clean-data-integrity/spec.md
     owner_modules:
       - src/kd_sensing/config/
       - configs/mmw/
@@ -40,26 +38,15 @@ task_routes:
   - id: cli
     context_path: docs/agent_context/cli.md
     authority_paths:
-      - openspec/specs/project-entrypoint-lifecycle/spec.md
-      - openspec/specs/canonical-config-resolution/spec.md
+      - openspec/specs/repo-boundaries/spec.md
       - pyproject.toml
     owner_modules:
       - src/kd_sensing/cli/
       - scripts/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_cli_strict_overrides.py tests/test_architecture_boundaries.py -q
-  - id: runtime
-    context_path: docs/agent_context/diagnostics.md
-    authority_paths:
-      - openspec/specs/training-evaluation-runtime/spec.md
-      - openspec/specs/mmw-baseline-multiseed-robustness-evidence/spec.md
-    owner_modules:
-      - src/kd_sensing/engine/
-      - src/kd_sensing/eval/
-    focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_mmw_all_weather_runtime.py tests/test_cmsbl.py -q
   - id: openspec
-    context_path: docs/agent_context/openspec.md
+    context_path: docs/agent_context/README.md
     authority_paths:
       - openspec/specs/
       - AGENTS.md
@@ -67,25 +54,3 @@ task_routes:
       - openspec/
     focused_validation:
       - openspec validate --all --strict
-  - id: documentation
-    context_path: docs/agent_context/documentation.md
-    authority_paths:
-      - openspec/specs/ai-maintainer-navigation/spec.md
-      - openspec/specs/maintainer-context-index/spec.md
-      - openspec/specs/openspec-document-health/spec.md
-    owner_modules:
-      - docs/
-      - README.md
-    focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
-  - id: claims
-    context_path: docs/agent_context/claims.md
-    authority_paths:
-      - docs/result_claims_registry.md
-      - docs/experiment_protocols.md
-      - openspec/specs/mmw-baseline-multiseed-robustness-evidence/spec.md
-    owner_modules:
-      - docs/result_claims_registry.md
-      - scripts/summarize_mmw_multiseed_baselines.py
-    focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_summarize_mmw_multiseed_baselines.py -q

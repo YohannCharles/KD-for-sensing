@@ -45,24 +45,16 @@ def _model_config(*, head_type: str = "prototype") -> dict[str, object]:
     }
 
 
-def test_t2_and_s1_resolve_to_the_current_surface() -> None:
-    t2 = u_mask_beam_jepa_config(load_config(ROOT / "configs/mmw/t2.yaml"))
-    s1 = u_mask_beam_jepa_config(load_config(ROOT / "configs/mmw/s1.yaml"))
+def test_u0_and_deepsense_recipes_resolve_to_the_retained_surface() -> None:
+    u0 = u_mask_beam_jepa_config(load_config(ROOT / "configs/mmw/u0.yaml"))
     deep = u_mask_beam_jepa_config(load_config(ROOT / "configs/deepsense6g/t2.yaml"))
 
-    assert t2["use_beam_prototype_alignment"] is True
-    assert t2["superset_consistency"]["enabled"] is True
-    assert t2["missing_mask"] == {"mode": "external"}
-    assert t2["bcacl"] == {"enabled": False}
-    assert t2["cmsbl"] == {"enabled": False}
-    assert s1["superset_consistency"]["enabled"] is False
-    assert deep["missing_mask"]["p_missing"] == [0.25, 0.25, 0.25, 0.1]
-
-
-@pytest.mark.parametrize("field", ["pcer", "pgcd", "dynamic_router", "router_quality_pairing"])
-def test_retired_loss_fields_fail_closed(field: str) -> None:
-    with pytest.raises(ValueError, match="does not support fields"):
-        u_mask_beam_jepa_config({"loss": {"u_mask_beam_jepa": {field: {"enabled": True}}}})
+    assert u0["use_beam_prototype_alignment"] is True
+    assert u0["superset_consistency"]["enabled"] is True
+    assert u0["missing_mask"] == {"mode": "external"}
+    assert deep["enabled"] is True
+    with pytest.raises(ValueError, match="retired training sections"):
+        u_mask_beam_jepa_config({"bcacl": {"enabled": True}})
 
 
 def test_model_masks_temporal_cells_and_routes_only_available_modalities() -> None:
@@ -77,28 +69,10 @@ def test_model_masks_temporal_cells_and_routes_only_available_modalities() -> No
     assert torch.equal(output["input_features"], torch.full((1, 2, 4), 2.0))
     assert output["logits"].shape == (1, 1, 4)
     assert torch.allclose(output["supervised_router_gate_weights"].sum(dim=1), torch.ones(1))
-    assert output["supervised_router_gate_weights"][0, 1] > 0
-    assert output["metadata"]["temporal_pooling_type"] == "masked_mean"
-
-    dropped = model(
-        image_batch=torch.ones(1, 3, 1),
-        radar_batch=torch.ones(1, 3, 1),
-        missing_mask=torch.tensor([[True, False]]),
-    )
-    assert dropped["supervised_router_gate_weights"].tolist() == [[1.0, 0.0]]
+    assert output["metadata"]["architecture_category"] == "u0_temporal_supervised_router"
 
 
-def test_only_the_active_head_is_trainable() -> None:
-    prototype = MODELS.build(_model_config(head_type="prototype"))
-    classifier = MODELS.build(_model_config(head_type="classifier"))
-
-    assert all(not parameter.requires_grad for parameter in prototype.classifier.parameters())
-    assert all(parameter.requires_grad for parameter in prototype.prototype_bank.parameters())
-    assert all(parameter.requires_grad for parameter in classifier.classifier.parameters())
-    assert all(not parameter.requires_grad for parameter in classifier.prototype_bank.parameters())
-
-
-def test_loss_combines_fusion_bpa_and_router_supervision() -> None:
+def test_u0_loss_keeps_only_fusion_bpa_and_router_supervision() -> None:
     model = MODELS.build(_model_config())
     output = model(
         image_batch=torch.randn(2, 3, 1),
@@ -118,24 +92,11 @@ def test_loss_combines_fusion_bpa_and_router_supervision() -> None:
 
     assert torch.isfinite(result["loss"])
     assert result["diagnostics"]["router_oracle_enabled"] == 1.0
-    assert result["diagnostics"]["prototype/modality_sample_count"] == 3.0
     assert any(parameter.grad is not None for parameter in model.supervised_router.parameters())
 
 
-def test_bpa_and_cma_remain_mutually_exclusive() -> None:
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        u_mask_beam_jepa_loss(
-            {"logits": torch.zeros(1, 1, 2)},
-            torch.zeros(1, 1, dtype=torch.long),
-            use_beam_prototype_alignment=True,
-            use_amber_cma_analogue=True,
-        )
-
-
-def test_non_current_fusion_and_pooling_are_rejected() -> None:
+def test_non_u0_fusion_and_pooling_are_rejected() -> None:
     with pytest.raises(ValueError, match="supervised_router only"):
         MODELS.build({**_model_config(), "fusion_type": "uniform_mean"})
     with pytest.raises(ValueError, match="masked_mean"):
-        MODELS.build(
-            {**_model_config(), "temporal_pooling": {"enabled": True, "type": "masked_attention"}}
-        )
+        MODELS.build({**_model_config(), "temporal_pooling": {"enabled": True, "type": "masked_attention"}})

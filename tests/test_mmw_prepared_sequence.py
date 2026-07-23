@@ -305,7 +305,7 @@ def test_split_identity_audit_fails_closed_on_shared_resource_or_missing_identit
     assert missing["missing_fields"]["train"] == ["target_sample_id"]
 
 
-def test_manifest_split_builder_writes_t2_sequence_inputs(tmp_path: Path):
+def test_manifest_split_builder_writes_u0_sequence_inputs(tmp_path: Path):
     scene = "Town03_5wayroad_seed28"
     manifest = tmp_path / "Prepared" / scene / "manifests" / "frame_manifest.csv"
     manifest.parent.mkdir(parents=True)

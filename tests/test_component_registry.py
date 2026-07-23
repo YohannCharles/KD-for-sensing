@@ -18,7 +18,7 @@ def test_registry_builds_components_and_reports_bad_configs() -> None:
         registry.build({"type": "example"})
 
 
-def test_registry_exposes_only_the_t2_baseline_components_needed_by_recipes() -> None:
+def test_registry_exposes_only_the_u0_baseline_components_needed_by_recipes() -> None:
     import_default_components()
 
     assert {"u_mask_beam_jepa", "modular_sequence"} <= set(MODELS.list())

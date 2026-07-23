@@ -4,7 +4,7 @@ from kd_sensing.cli.common import load_cli_config, parse_cli_args, print_result
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Evaluate a T2 or baseline model from a YAML config.")
+    parser = argparse.ArgumentParser(description="Evaluate U0, DeepSense6G, or a retained baseline from a YAML config.")
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument("--weights", help="Model weights or checkpoint path to evaluate.")
     parser.add_argument("--output-dir", help="Directory for metrics and report outputs.")

@@ -97,7 +97,7 @@ evaluation:
       - missing_gps_lidar
     prediction_index: last
 output:
-  dir: outputs/mmw_all_weather
+  dir: outputs/mmw_clean_u0
   run_name: seed1
   group_by_scene: false
   overwrite: false
@@ -105,10 +105,3 @@ output:
     enabled: false
   tensorboard:
     enabled: false
-mmw_all_weather_protocol:
-  split_tag: h5p1_strict_v2
-  screening_role: local_validation
-  checkpoint_policy: fixed_epoch_last_pth
-  domain_macro_primary: true
-  weather_label_used_as_input: false
-  enabled_modalities: [image, radar, gps, lidar]
