@@ -189,6 +189,9 @@ class UMaskBeamJEPA(nn.Module):
         router_logits, router_weights = self.route_from_features(router_features, available)
         fused_features = (router_weights.unsqueeze(-1) * latent).sum(dim=1)
         fused_logits = (router_weights.unsqueeze(-1) * unimodal_logits).sum(dim=1)
+        prototype_state = (
+            self.prototype_bank.describe(fused_features) if self.head_type == "prototype" else None
+        )
         output: dict[str, Any] = {
             "logits": fused_logits.unsqueeze(1).expand(-1, self.num_pred, -1),
             "input_features": latent,
@@ -211,6 +214,7 @@ class UMaskBeamJEPA(nn.Module):
             "supervised_router_feature_names": self.router_feature_names,
             "reliability_fusion_mode": "supervised_router",
             "reliability_fusion_weights": router_weights,
+            "prototype_state": prototype_state,
             "metadata": self.training_strategy_metadata(),
         }
         return output

@@ -5,7 +5,7 @@ import torch
 
 from kd_sensing.engine.artifacts import ArtifactWriter, final_config_with_runtime
 from kd_sensing.engine.batch_step import BatchStepRunner
-from kd_sensing.engine.checkpointing import CheckpointManager
+from kd_sensing.engine.checkpointing import CheckpointManager, resolve_resume_checkpoint
 from kd_sensing.engine.data_factory import build_dataloaders, final_test_enabled
 from kd_sensing.engine.debug_diagnostics import (
     ModuleHealthTracker,
@@ -16,7 +16,11 @@ from kd_sensing.engine.debug_diagnostics import (
     write_startup_summary,
 )
 from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
-from kd_sensing.engine.normalization_artifacts import save_normalization_artifacts
+from kd_sensing.engine.normalization_artifacts import (
+    load_normalization_artifacts,
+    save_normalization_artifacts,
+    validate_normalization_artifact_fingerprint,
+)
 from kd_sensing.engine.objectives.metadata import objective_runtime_metadata, resolve_prediction_objective
 from kd_sensing.engine.optim import (
     build_device,
@@ -51,6 +55,7 @@ from kd_sensing.engine.training_run_context import TrainingRunContext
 from kd_sensing.engine.training_state import TrainingState
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.paths import output_dir as resolve_output_dir
+from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
 from kd_sensing.utils.runtime_output_layout import evaluation_output_base, scoped_output_base
 from kd_sensing.utils.seed import set_seed
 
@@ -127,9 +132,31 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     run_dir = create_run_dir(cfg)
     write_running_status(run_dir, cfg, kind="training")
     artifact_writer = ArtifactWriter(cfg=cfg, run_dir=run_dir)
-    dataloaders = build_dataloaders(cfg)
-    split_metadata = dataloaders_run_metadata(dataloaders)
-    normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
+    resume_checkpoint = resolve_resume_checkpoint(cfg, run_dir)
+    resume_metadata = load_checkpoint_metadata(resume_checkpoint) if resume_checkpoint is not None else None
+    configured_artifacts = cfg.get("data", {}).get("normalization_artifacts")
+    if resume_metadata is not None and configured_artifacts:
+        raise ValueError("Fresh normalization_artifacts cannot be combined with checkpoint resume metadata.")
+    normalization_metadata = (
+        resume_metadata
+        if resume_metadata is not None
+        else {"normalization_artifacts": configured_artifacts}
+        if configured_artifacts
+        else None
+    )
+    validate_normalization_artifact_fingerprint(cfg, normalization_metadata)
+    normalization_overrides = load_normalization_artifacts(normalization_metadata)
+    dataloaders = build_dataloaders(cfg, normalization_overrides=normalization_overrides or None)
+    recorded_split_metadata = (resume_metadata or {}).get("split_metadata")
+    split_metadata = (
+        dict(recorded_split_metadata)
+        if isinstance(recorded_split_metadata, dict) and normalization_overrides
+        else dataloaders_run_metadata(dataloaders)
+    )
+    if resume_metadata is not None and normalization_overrides:
+        normalization_artifacts = dict((resume_metadata or {}).get("normalization_artifacts") or {})
+    else:
+        normalization_artifacts = save_normalization_artifacts(dataloaders, run_dir)
     device = build_device(cfg)
     cuda_performance = configure_cuda_performance_settings(cfg, device)
     throughput_metadata = throughput_run_metadata(cfg, dataloaders, device)

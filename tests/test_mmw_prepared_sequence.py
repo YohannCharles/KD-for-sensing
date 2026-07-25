@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -6,9 +7,17 @@ import pytest
 import torch
 from PIL import Image
 
+from kd_sensing.data import samples as samples_module
 from kd_sensing.data.datasets.mmw import MMWDataset
+from kd_sensing.data.mmw import full_pool_protocol as full_pool_module
 from kd_sensing.data.mmw.preparation_splits import build_sequence_splits_from_manifest, compute_split_identity_audit
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler
+from kd_sensing.data.transform_ops.image import (
+    build_rgb_imagenet_transform,
+    image_derived_cache_path,
+    read_image_array,
+)
+from kd_sensing.data.transform_ops.lidar import lidar_cache_path, parameterized_lidar_cache_dir
 from kd_sensing.engine.evaluation_pass_runtime import sample_ids_from_batch
 
 
@@ -201,6 +210,111 @@ def test_mmw_dataset_rejects_missing_derived_radar_da_map(tmp_path: Path):
         )
 
 
+def test_mmw_resource_validation_deduplicates_paths_and_caps_domain_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = samples_module.pd.DataFrame(
+        [
+            {
+                "camera1": "camera.png",
+                "radar1": "radar_RA.npy",
+                "gps1": "gps.yaml",
+                "bs_gps1": "bs_gps.yaml",
+                "lidar1": "lidar.npy",
+                "future_beam_label1": 3,
+            },
+            {
+                "camera1": "camera.png",
+                "radar1": "radar_RA.npy",
+                "gps1": "gps.yaml",
+                "bs_gps1": "bs_gps.yaml",
+                "lidar1": "lidar.npy",
+                "future_beam_label1": 4,
+            },
+        ]
+    )
+    columns = {
+        prefix: [f"{prefix}1"]
+        for prefix in ("camera", "radar", "gps", "bs_gps", "lidar", "future_beam_label")
+    }
+    validated: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        samples_module,
+        "_validate_resource",
+        lambda _root, _csv, _row, column, value: validated.append((column, value)),
+    )
+    monkeypatch.setattr(samples_module.os, "cpu_count", lambda: 256)
+
+    samples_module._validate_rows(
+        "prepared.csv",
+        frame,
+        modalities=("image", "radar", "gps", "lidar"),
+        columns=columns,
+        data_root="/dataset",
+    )
+
+    assert validated == [
+        ("camera1", "camera.png"),
+        ("radar1", "radar_RA.npy"),
+        ("radar1 (_DA)", "radar_DA.npy"),
+        ("gps1", "gps.yaml"),
+        ("bs_gps1", "bs_gps.yaml"),
+        ("lidar1", "lidar.npy"),
+    ]
+    assert samples_module._resource_validation_worker_count(1000) == 6
+
+
+def test_full_pool_identity_audit_preserves_all_scoped_identity_families() -> None:
+    frame = full_pool_module.pd.DataFrame(
+        [
+            {
+                "domain_id": "sunny/scene",
+                "sample_id": "sample-1",
+                "target_sample_id": "target-1",
+                "contiguous_segment_id": "segment-a",
+                "history_frame_ids_json": "[1, 2]",
+                "future_frame_ids_json": "[3]",
+                "camera1": "camera.png",
+                "radar1": "radar_RA.npy",
+                "gps1": "gps.yaml",
+                "bs_gps1": "bs_gps.yaml",
+                "lidar1": "lidar.npy",
+                "beam1": "beam.txt",
+                "future_beam_label1": 7,
+            },
+            {
+                "domain_id": "rain/scene",
+                "sample_id": "sample-1",
+                "target_sample_id": "target-2",
+                "contiguous_segment_id": "",
+                "history_frame_ids_json": "[4, 5]",
+                "future_frame_ids_json": "[6]",
+                "camera1": "camera.png",
+                "radar1": "radar_RA.npy",
+                "gps1": "-99",
+                "bs_gps1": "bs_gps.yaml",
+                "lidar1": "lidar.npy",
+                "beam1": "beam.txt",
+                "future_beam_label1": 8,
+            },
+        ]
+    )
+
+    identities = full_pool_module._audit_identity_sets(frame)
+
+    assert identities["sample_id"] == {"sunny/scene:sample-1", "rain/scene:sample-1"}
+    assert identities["target_sample_id"] == {"sunny/scene:target-1", "rain/scene:target-2"}
+    assert identities["window_frame"] == {"sunny/scene:1", "sunny/scene:2", "rain/scene:4", "rain/scene:5"}
+    assert identities["target_frame"] == {"sunny/scene:3", "rain/scene:6"}
+    assert identities["all_frame_dependency"] == identities["window_frame"] | identities["target_frame"]
+    assert identities["trajectory_session"] == {"sunny/scene:segment-a"}
+    assert identities["camera_resource"] == {"sunny/scene:camera.png", "rain/scene:camera.png"}
+    assert identities["radar_resource"] == {"sunny/scene:radar_RA.npy", "rain/scene:radar_RA.npy"}
+    assert identities["ue_gps_resource"] == {"sunny/scene:gps.yaml"}
+    assert identities["bs_gps_resource"] == {"sunny/scene:bs_gps.yaml", "rain/scene:bs_gps.yaml"}
+    assert identities["lidar_resource"] == {"sunny/scene:lidar.npy", "rain/scene:lidar.npy"}
+    assert identities["channel_resource"] == {"sunny/scene:beam.txt", "rain/scene:beam.txt"}
+    assert len(identities["full_csv_row"]) == 2
+
+
 def test_mmw_dataset_rejects_non_contiguous_columns_before_loading_resources(tmp_path: Path):
     fields = ["camera1", "camera3", "radar1", "gps1", "bs_gps1", "lidar1", "future_beam_label1"]
     row = {field: "missing" for field in fields}
@@ -282,6 +396,106 @@ def test_mmw_dataset_loads_prepared_four_sensor_sample(tmp_path: Path):
     assert sample["lidar"].shape == (5, 3, 224, 224)
     assert sample["target_beam"].tolist() == [63]
     assert "input_beam" not in sample
+
+
+def test_mmw_dataset_strictly_reuses_frame_and_gps_caches_without_raw_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scene = "Town03_5wayroad_seed28"
+    image_rel = "camera.png"
+    lidar_rel = "lidar.npy"
+    gps_rel = "gps.yaml"
+    bs_gps_rel = "bs_gps.yaml"
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(tmp_path / image_rel)
+    np.save(tmp_path / "radar_RA.npy", np.zeros((128, 64), dtype=np.float32))
+    np.save(tmp_path / "radar_DA.npy", np.zeros((128, 64), dtype=np.float32))
+    np.save(tmp_path / lidar_rel, np.ones((3, 224, 224), dtype=np.float32))
+    (tmp_path / gps_rel).write_text("sensors:\n  GPS:\n    location: {x: 2.0, y: 1.0}\n", encoding="utf-8")
+    (tmp_path / bs_gps_rel).write_text("sensors:\n  GPS:\n    location: {x: 0.0, y: 0.0}\n", encoding="utf-8")
+    fields = ["camera1", "radar1", "gps1", "bs_gps1", "lidar1", "future_beam_label1"]
+    row = {
+        "camera1": image_rel,
+        "radar1": "radar_RA.npy",
+        "gps1": gps_rel,
+        "bs_gps1": bs_gps_rel,
+        "lidar1": lidar_rel,
+        "future_beam_label1": 7,
+    }
+    for name in ("train.csv", "test.csv"):
+        with (tmp_path / name).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerow(row)
+
+    frame_cache_root = tmp_path / "frame_cache"
+    image_root = frame_cache_root / "sunny/image_derived"
+    image_path, expected = image_derived_cache_path(tmp_path, image_rel, cache_dir=image_root)
+    image_path.parent.mkdir(parents=True)
+    image = build_rgb_imagenet_transform((224, 224))(read_image_array(tmp_path / image_rel)).numpy()
+    np.save(image_path, image)
+    image_path.with_suffix(image_path.suffix + ".json").write_text(
+        json.dumps({"version": "image_derived_cache_metadata_v1", **expected}),
+        encoding="utf-8",
+    )
+    lidar_root = parameterized_lidar_cache_dir(frame_cache_root / "sunny/lidar_bev")
+    lidar_root.mkdir(parents=True)
+    (lidar_root / "metadata.json").write_text(
+        json.dumps(
+            {
+                "type": "lidar_bev_cache",
+                "parameters": {
+                    "cache_version": "v1",
+                    "bev_size": [224, 224],
+                    "roi": [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0],
+                    "fov_degrees": None,
+                    "remove_ground": False,
+                    "ground_z_threshold": 0.1,
+                    "background_path": None,
+                    "background_distance_threshold": 0.2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    np.save(lidar_cache_path(lidar_root, lidar_rel), np.ones((3, 224, 224), dtype=np.float32))
+    gps_cache_root = tmp_path / "gps_cache"
+    gps_cache_root.mkdir()
+    np.savez(
+        gps_cache_root / f"sunny__{scene}.npz",
+        paths=np.asarray([gps_rel, bs_gps_rel]),
+        coordinates=np.asarray([[2.0, 1.0], [0.0, 0.0]], dtype=np.float64),
+    )
+
+    dataset = MMWDataset(
+        condition="sunny",
+        scene=scene,
+        data_root=str(tmp_path),
+        train_csv_name="train.csv",
+        test_csv_name="test.csv",
+        split="train",
+        seq_len=1,
+        frame_cache_root=str(frame_cache_root),
+        frame_cache_strict=True,
+        gps_coordinate_cache_root=str(gps_cache_root),
+    )
+    monkeypatch.setattr(
+        "kd_sensing.data.transform_ops.image.read_image_array",
+        lambda _path: (_ for _ in ()).throw(AssertionError("raw image fallback")),
+    )
+    monkeypatch.setattr(
+        "kd_sensing.data.transform_ops.lidar.build_lidar_bev",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("raw LiDAR fallback")),
+    )
+
+    sample = dataset[0]
+
+    assert sample["image"].shape == (1, 3, 224, 224)
+    assert sample["lidar"].shape == (1, 3, 224, 224)
+    np.testing.assert_allclose(sample["gps"], [[np.sqrt(5.0), 1.0 / np.sqrt(5.0), 2.0 / np.sqrt(5.0)]])
+    image_path.unlink()
+    with pytest.raises(FileNotFoundError, match="Strict RGB cache miss"):
+        dataset[0]
 
 
 def test_mmw_dataset_requires_explicit_domain(tmp_path: Path):

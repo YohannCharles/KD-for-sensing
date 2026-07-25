@@ -71,7 +71,12 @@ def split_dependent_artifact_metadata(train_dataset: Any) -> dict[str, Any]:
         raise ValueError(f"Pooled GPS datasets must use one gps_feature_mode, got {sorted(modes)}.")
     source_paths = {Path(str(item["source_csv_path"])) for item in sources}
     source_names = {path.name for path in source_paths}
-    source_split = "inner_train" if source_names == {"inner_train.csv"} else "train"
+    if source_names == {"inner_train.csv"}:
+        source_split = "inner_train"
+    elif source_names == {"full_pool_train.csv"}:
+        source_split = "full_pool_train"
+    else:
+        source_split = "train"
     payload = {
         "schema_version": 1,
         "fit_split": "train",
@@ -99,18 +104,18 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
         if recorded != expected:
             raise ValueError(f"GPS normalization artifact feature mode {recorded!r} does not match evaluation config {expected!r}.")
     protocol = cfg.get("data_protocol")
-    if isinstance(protocol, dict) and protocol.get("mode") == "clean_inner_development":
+    if isinstance(protocol, dict) and protocol.get("mode") in {"clean_inner_development", "full_pool_development"}:
         report = json.loads(Path(str(protocol.get("audit_report", ""))).read_text(encoding="utf-8"))
         recorded = artifacts["metadata"]
         expected_source_split = str(protocol.get("train_role", "inner_train"))
         if recorded.get("source_split") != expected_source_split:
             raise ValueError(
-                "Clean GPS normalization artifact source split does not match the clean protocol train role."
+                "MMW GPS normalization artifact source split does not match the protocol train role."
             )
         if recorded.get("sample_id_hash") != report.get("train_sample_id_hash"):
-            raise ValueError("Clean GPS normalization artifact sample identity does not match the split audit.")
+            raise ValueError("MMW GPS normalization artifact sample identity does not match the split audit.")
         if int(recorded.get("effective_sample_count", 0)) != int(report.get("train_sample_count", -1)):
-            raise ValueError("Clean GPS normalization artifact sample count does not match the split audit.")
+            raise ValueError("MMW GPS normalization artifact sample count does not match the split audit.")
 
 
 def _shared_gps_scaler(dataset: Any) -> Any:

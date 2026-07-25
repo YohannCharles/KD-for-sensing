@@ -1,4 +1,6 @@
+import hashlib
 import io as text_io
+import json
 from pathlib import Path
 
 import numpy as np
@@ -200,27 +202,126 @@ def load_lidar_bev_sequence(
     point_dropout: float = 0.0,
     jitter_std: float = 0.0,
     rng: np.random.Generator | None = None,
+    cache_dir: str | Path | None = None,
+    strict_cache: bool = False,
 ) -> np.ndarray:
     selected_lidar = lidar_paths[-seq_len:]
     frames = []
     for rel_path in selected_lidar:
-        bev = build_lidar_bev(
-            data_root,
-            rel_path,
-            bev_size=bev_size,
-            roi=roi,
-            fov_degrees=fov_degrees,
-            remove_ground=remove_ground,
-            ground_z_threshold=ground_z_threshold,
-            background_points=background_points,
-            background_distance_threshold=background_distance_threshold,
-            augment=augment,
-            point_dropout=point_dropout,
-            jitter_std=jitter_std,
-            rng=rng,
-        )
+        cache_path = lidar_cache_path(cache_dir, rel_path) if cache_dir is not None else None
+        if cache_path is not None and cache_path.is_file():
+            cached = np.load(cache_path, allow_pickle=False)
+            expected_shape = (3, int(bev_size[0]), int(bev_size[1]))
+            if strict_cache and (
+                cached.shape != expected_shape or cached.dtype != np.float32 or not np.isfinite(cached).all()
+            ):
+                raise ValueError(f"LiDAR cache tensor mismatch for {rel_path}: {cache_path}")
+            bev = _resize_or_validate_lidar_bev(cached, bev_size)
+        else:
+            if strict_cache:
+                raise FileNotFoundError(f"Strict LiDAR cache miss for {rel_path}: {cache_path}")
+            bev = build_lidar_bev(
+                data_root,
+                rel_path,
+                bev_size=bev_size,
+                roi=roi,
+                fov_degrees=fov_degrees,
+                remove_ground=remove_ground,
+                ground_z_threshold=ground_z_threshold,
+                background_points=background_points,
+                background_distance_threshold=background_distance_threshold,
+                augment=augment,
+                point_dropout=point_dropout,
+                jitter_std=jitter_std,
+                rng=rng,
+            )
         frames.append(bev.astype(np.float32))
     return np.stack(frames, axis=0).astype(np.float32)
+
+
+def lidar_cache_path(cache_dir: str | Path, rel_path: str) -> Path:
+    rel = str(rel_path).lstrip("/").replace("\\", "/")
+    digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:10]
+    safe_name = rel.replace("/", "__").replace("..", "__")
+    stem = Path(safe_name).with_suffix("").name
+    return Path(cache_dir) / f"{stem}_{digest}.npy"
+
+
+def lidar_cache_config_hash(
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_path: str | None = None,
+    background_distance_threshold: float = 0.2,
+) -> str:
+    payload = {
+        "bev_size": [int(value) for value in bev_size],
+        "roi": [float(value) for value in roi],
+        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
+        "remove_ground": bool(remove_ground),
+        "ground_z_threshold": float(ground_z_threshold),
+        "background_path": str(background_path) if background_path else None,
+        "background_distance_threshold": float(background_distance_threshold),
+    }
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return f"bev_{digest}"
+
+
+def parameterized_lidar_cache_dir(
+    cache_dir: str | Path,
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_path: str | None = None,
+    background_distance_threshold: float = 0.2,
+) -> Path:
+    return Path(cache_dir) / lidar_cache_config_hash(
+        bev_size=bev_size,
+        roi=roi,
+        fov_degrees=fov_degrees,
+        remove_ground=remove_ground,
+        ground_z_threshold=ground_z_threshold,
+        background_path=background_path,
+        background_distance_threshold=background_distance_threshold,
+    )
+
+
+def validate_lidar_cache_metadata(
+    cache_dir: str | Path,
+    *,
+    bev_size: list[int] | tuple[int, int] = DEFAULT_LIDAR_BEV_SIZE,
+    roi: list[float] | tuple[float, ...] = DEFAULT_LIDAR_ROI,
+    fov_degrees: list[float] | tuple[float, float] | None = None,
+    remove_ground: bool = False,
+    ground_z_threshold: float = 0.1,
+    background_distance_threshold: float = 0.2,
+) -> dict[str, object]:
+    path = Path(cache_dir) / "metadata.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"LiDAR cache metadata is missing: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid LiDAR cache metadata: {path}") from exc
+    expected = {
+        "cache_version": "v1",
+        "bev_size": [int(value) for value in bev_size],
+        "roi": [float(value) for value in roi],
+        "fov_degrees": None if fov_degrees is None else [float(value) for value in fov_degrees],
+        "remove_ground": bool(remove_ground),
+        "ground_z_threshold": float(ground_z_threshold),
+        "background_path": None,
+        "background_distance_threshold": float(background_distance_threshold),
+    }
+    if payload.get("type") != "lidar_bev_cache" or payload.get("parameters") != expected:
+        raise ValueError(f"LiDAR cache metadata does not match current transform parameters: {path}")
+    return payload
 
 
 def _read_ascii_pcd(path: Path) -> np.ndarray:
@@ -357,7 +458,11 @@ __all__ = [
     "augment_lidar_points",
     "build_lidar_bev",
     "filter_lidar_points",
+    "lidar_cache_config_hash",
+    "lidar_cache_path",
     "lidar_points_to_bev",
     "load_lidar_bev_sequence",
+    "parameterized_lidar_cache_dir",
     "read_lidar_point_cloud",
+    "validate_lidar_cache_metadata",
 ]

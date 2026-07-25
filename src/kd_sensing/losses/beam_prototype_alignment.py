@@ -21,6 +21,27 @@ class BeamPrototypeBank(nn.Module):
             raise ValueError(f"features must have shape [B, {self.d_model}], got {tuple(features.shape)}.")
         return F.normalize(features, dim=-1) @ F.normalize(self.prototypes, dim=-1).t() / self.temperature
 
+    def describe(self, features: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return label-free prototype relations without changing the forward path."""
+        logits = self(features)
+        normalized_features = F.normalize(features, dim=-1)
+        normalized_prototypes = F.normalize(self.prototypes, dim=-1)
+        distances = 1.0 - normalized_features @ normalized_prototypes.t()
+        nearest = distances.topk(min(2, self.num_beams), dim=-1, largest=False)
+        nearest_distance = nearest.values[:, 0]
+        second_distance = nearest.values[:, 1] if self.num_beams > 1 else nearest_distance
+        assignment = torch.softmax(logits, dim=-1)
+        tiny = torch.finfo(assignment.dtype).tiny
+        nearest_prototypes = normalized_prototypes[nearest.indices[:, 0]]
+        return {
+            "assignment": assignment,
+            "nearest_id": nearest.indices[:, 0],
+            "nearest_distance": nearest_distance,
+            "distance_margin": second_distance - nearest_distance,
+            "entropy": -(assignment * assignment.clamp_min(tiny).log()).sum(dim=-1),
+            "restoration_residual_norm": (normalized_features - nearest_prototypes).norm(dim=-1),
+        }
+
 
 def make_soft_beam_labels(
     labels: torch.Tensor,

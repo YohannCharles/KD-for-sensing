@@ -8,10 +8,14 @@ from torch.utils.data import Dataset, get_worker_info
 
 from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.samples import create_samples
-from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_feature_sequence
+from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_coordinate_cache, load_gps_feature_sequence
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, load_rgb_imagenet_frames
 from kd_sensing.data.transform_ops.io import joined_resource
-from kd_sensing.data.transform_ops.lidar import load_lidar_bev_sequence
+from kd_sensing.data.transform_ops.lidar import (
+    load_lidar_bev_sequence,
+    parameterized_lidar_cache_dir,
+    validate_lidar_cache_metadata,
+)
 from kd_sensing.data.transform_ops.radar import load_radar_maps
 from kd_sensing.modalities import normalize_modalities, resolve_image_profile
 from kd_sensing.registries import DATASETS
@@ -38,6 +42,9 @@ class MMWDataset(Dataset):
         portion_seed: int = 42,
         image_profile: str | None = "rgb_imagenet",
         image_size: list[int] | tuple[int, int] = (224, 224),
+        frame_cache_root: str | None = None,
+        frame_cache_strict: bool = False,
+        gps_coordinate_cache_root: str | None = None,
         fft_tuple: list[int] | tuple[int, int, int] = (64, 256, 128),
         clipped_range: int = 128,
         use_gps: bool = True,
@@ -100,7 +107,6 @@ class MMWDataset(Dataset):
         self.gps_feature_mode = str(gps_feature_mode)
         self.gps_normalize = bool(gps_normalize)
         self.gps_scaler = gps_scaler
-        self._gps_feature_cache: dict[str, np.ndarray] = {}
         self.include_router_utility_targets = bool(include_router_utility_targets)
         self.include_router_corruption_metadata = bool(include_router_corruption_metadata)
         self._beam_power_cache: dict[str, torch.Tensor] = {}
@@ -116,6 +122,49 @@ class MMWDataset(Dataset):
         self._lidar_augmentation_seed = int(portion_seed)
         self._lidar_epoch = 0
         self.lidar_stats_path = None
+        self.frame_cache_strict = bool(frame_cache_strict)
+        if self.frame_cache_strict and frame_cache_root is None:
+            raise ValueError("frame_cache_strict=true requires frame_cache_root.")
+        condition_cache_root = Path(frame_cache_root) / self.condition if frame_cache_root is not None else None
+        self.image_cache_dir = condition_cache_root / "image_derived" if condition_cache_root is not None else None
+        self.lidar_cache_dir = (
+            parameterized_lidar_cache_dir(
+                condition_cache_root / "lidar_bev",
+                bev_size=self.lidar_bev_size,
+                roi=self.lidar_roi,
+                fov_degrees=self.lidar_fov_degrees,
+                remove_ground=self.lidar_remove_ground,
+                ground_z_threshold=self.lidar_ground_z_threshold,
+                background_distance_threshold=self.lidar_background_distance_threshold,
+            )
+            if condition_cache_root is not None
+            else None
+        )
+        if self.frame_cache_strict:
+            if self.lidar_augment:
+                raise ValueError("Strict LiDAR BEV cache cannot be combined with train-time point augmentation.")
+            if self.image_cache_dir is None or not self.image_cache_dir.is_dir():
+                raise FileNotFoundError(f"Strict RGB cache directory is missing: {self.image_cache_dir}")
+            assert self.lidar_cache_dir is not None
+            validate_lidar_cache_metadata(
+                self.lidar_cache_dir,
+                bev_size=self.lidar_bev_size,
+                roi=self.lidar_roi,
+                fov_degrees=self.lidar_fov_degrees,
+                remove_ground=self.lidar_remove_ground,
+                ground_z_threshold=self.lidar_ground_z_threshold,
+                background_distance_threshold=self.lidar_background_distance_threshold,
+            )
+        self.gps_coordinate_cache_path = (
+            Path(gps_coordinate_cache_root) / f"{self.condition}__{self.scene_slug}.npz"
+            if gps_coordinate_cache_root is not None
+            else None
+        )
+        if self.gps_coordinate_cache_path is not None:
+            self._gps_persistent_coordinate_cache = load_gps_coordinate_cache(self.gps_coordinate_cache_path)
+        else:
+            self._gps_persistent_coordinate_cache = {}
+        self._gps_feature_cache: dict[str, np.ndarray] = dict(self._gps_persistent_coordinate_cache)
         self.samples = create_samples(
             self.root_csv,
             portion=float(portion),
@@ -151,6 +200,8 @@ class MMWDataset(Dataset):
                 self.seq_len,
                 self.transform,
                 image_size=self.image_size,
+                cache_dir=self.image_cache_dir,
+                strict_cache=self.frame_cache_strict,
             )
         if "radar" in self.enabled_modalities:
             sample["radar_ra"], sample["radar_da"] = load_radar_maps(
@@ -233,6 +284,13 @@ class MMWDataset(Dataset):
     def _gps_features_for_index(self, idx: int) -> np.ndarray:
         if self.samples.gps_paths is None or self.samples.bs_gps_paths is None:
             raise ValueError("MMW GPS paths are unavailable for an enabled GPS modality.")
+        if self.gps_coordinate_cache_path is not None and self.frame_cache_strict:
+            required = self.samples.gps_paths[idx][-self.seq_len :] + self.samples.bs_gps_paths[idx][-self.seq_len :]
+            missing = [path for path in required if path not in self._gps_feature_cache]
+            if missing:
+                raise FileNotFoundError(
+                    f"Strict GPS coordinate cache miss in {self.gps_coordinate_cache_path}: {missing[0]}"
+                )
         return load_gps_feature_sequence(
             self.data_root,
             self.samples.gps_paths[idx],
@@ -259,7 +317,12 @@ class MMWDataset(Dataset):
             point_dropout=self.lidar_point_dropout,
             jitter_std=self.lidar_jitter_std,
             rng=self._lidar_rng(idx) if augment else None,
+            cache_dir=self.lidar_cache_dir,
+            strict_cache=self.frame_cache_strict,
         )
+
+    def reset_gps_feature_cache(self) -> None:
+        self._gps_feature_cache = dict(self._gps_persistent_coordinate_cache)
 
     def set_epoch(self, epoch: int) -> None:
         self._lidar_epoch = int(epoch)

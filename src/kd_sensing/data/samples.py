@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,7 @@ from kd_sensing.data.transform_ops.io import joined_resource
 
 
 MMW_BEAM_CLASS_COUNT = 64
+MMW_RESOURCE_VALIDATION_WORKERS_PER_DOMAIN = 6
 
 
 @dataclass
@@ -130,21 +133,51 @@ def _validate_rows(
         resource_prefixes.append("lidar")
     resource_columns = [column for prefix in resource_prefixes for column in columns[prefix]]
     label_columns = columns["future_beam_label"]
-    for row_index, row in frame.iterrows():
-        for column in resource_columns:
-            value = _cell_text(row.get(column))
-            if value is None:
-                raise ValueError(f"MMW CSV {Path(csv_path)} row {row_index} is missing {column}.")
-            if data_root is not None:
-                _validate_resource(data_root, csv_path, row_index, column, value)
-                if column.startswith("radar"):
-                    if "_RA" not in value:
-                        raise ValueError(
-                            f"MMW CSV {Path(csv_path)} row {row_index} {column} must reference an _RA map so its _DA map can be verified."
-                        )
-                    _validate_resource(data_root, csv_path, row_index, f"{column} (_DA)", value.replace("_RA", "_DA"))
-        for column in label_columns:
-            _validate_beam_label(csv_path, row_index, column, row.get(column))
+    validation_tasks: dict[str, tuple[int, str, str]] = {}
+    for column in resource_columns:
+        texts = frame[column].astype(str).str.strip()
+        missing = texts.eq("") | texts.str.lower().isin({"-99", "-99.0", "nan", "none"})
+        if bool(missing.any()):
+            row_index = missing.index[missing][0]
+            raise ValueError(f"MMW CSV {Path(csv_path)} row {row_index} is missing {column}.")
+        if column.startswith("radar"):
+            invalid_radar = ~texts.str.contains("_RA", regex=False)
+            if bool(invalid_radar.any()):
+                row_index = invalid_radar.index[invalid_radar][0]
+                raise ValueError(
+                    f"MMW CSV {Path(csv_path)} row {row_index} {column} must reference an _RA map so its _DA map can be verified."
+                )
+        if data_root is None:
+            continue
+        unique = pd.DataFrame({"row_index": frame.index, "value": texts}).drop_duplicates("value", keep="first")
+        for row_index, value in unique.itertuples(index=False, name=None):
+            validation_tasks.setdefault(value, (row_index, column, value))
+            if column.startswith("radar"):
+                da_value = value.replace("_RA", "_DA")
+                validation_tasks.setdefault(da_value, (row_index, f"{column} (_DA)", da_value))
+
+    if data_root is not None and validation_tasks:
+        tasks = list(validation_tasks.values())
+        workers = _resource_validation_worker_count(len(tasks))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mmw-resource") as executor:
+            list(
+                executor.map(
+                    lambda task: _validate_resource(data_root, csv_path, task[0], task[1], task[2]),
+                    tasks,
+                )
+            )
+
+    for column in label_columns:
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        valid = numeric.notna() & np.isfinite(numeric) & numeric.mod(1).eq(0) & numeric.between(0, MMW_BEAM_CLASS_COUNT - 1)
+        invalid = ~valid
+        if bool(invalid.any()):
+            row_index = invalid.index[invalid][0]
+            _validate_beam_label(csv_path, row_index, column, frame.at[row_index, column])
+
+
+def _resource_validation_worker_count(task_count: int) -> int:
+    return max(1, min(task_count, MMW_RESOURCE_VALIDATION_WORKERS_PER_DOMAIN, os.cpu_count() or 1))
 
 
 def _validate_resource(data_root: str | Path, csv_path: str | Path, row_index: int, column: str, value: str) -> None:

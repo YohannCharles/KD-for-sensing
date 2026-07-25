@@ -73,6 +73,10 @@ def run_training_epoch_loop(
     checkpoint_selection = _checkpoint_selection(training_cfg)
     best_validation_loss = _best_observed_validation_loss(state.epoch_logs)
     last_observed_validation: dict[str, Any] | None = None
+    early_stopping_cfg = dict(training_cfg.get("early_stopping") or {})
+    early_stopping_monitor = str(early_stopping_cfg.get("monitor", "train_task_loss"))
+    early_stopping_losses: list[float] = []
+    final_early_stopping: dict[str, Any] | None = None
     timing_logger = _TimingCsvLogger(cfg, run_dir, device=device)
     for epoch in _flush_timing_when_epoch_loop_exits(epoch_progress, timing_logger):
         _set_epoch_recursive(primary_model, epoch)
@@ -161,6 +165,14 @@ def run_training_epoch_loop(
                 ),
             }
         )
+        monitor_value = epoch_log.get(early_stopping_monitor)
+        if monitor_value is None:
+            raise ValueError(f"Early-stopping monitor is unavailable: {early_stopping_monitor}")
+        early_stopping_losses.append(float(monitor_value))
+        early_stopping = training_loss_early_stop_state(early_stopping_losses, early_stopping_cfg)
+        early_stopping["monitor"] = early_stopping_monitor
+        epoch_log["early_stopping"] = early_stopping
+        final_early_stopping = early_stopping
         timing_logger.flush()
         if progress_enabled:
             metrics = recorder.progress_metrics()
@@ -194,6 +206,17 @@ def run_training_epoch_loop(
             epoch_log["best_checkpoint_saved"] = False
             epoch_log["best_validation_loss"] = best_validation_loss if math.isfinite(best_validation_loss) else None
         _write_epoch_metrics_snapshot(run_dir, state.epoch_logs)
+        if early_stopping["should_stop"]:
+            print(json.dumps({"event": "training_early_stop", **early_stopping}), flush=True)
+            break
+    if final_early_stopping is not None:
+        payload = dict(final_early_stopping)
+        payload["max_epochs"] = int(total_epochs)
+        payload["stop_reason"] = payload["stop_reason"] or "max_epochs_reached"
+        (run_dir / "early_stopping.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _validation_interval_epochs(training_cfg: dict[str, Any]) -> int:
@@ -212,6 +235,42 @@ def _checkpoint_selection(training_cfg: dict[str, Any]) -> str:
     if value not in {"last", "best_validation_loss"}:
         raise ValueError("training.checkpoint_selection must be 'last' or 'best_validation_loss'.")
     return value
+
+
+def training_loss_early_stop_state(
+    losses: list[float],
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cfg = dict(config or {})
+    enabled = bool(cfg.get("enabled", False))
+    min_epochs = int(cfg.get("min_epochs", 1))
+    patience = int(cfg.get("patience", 1))
+    relative_min_delta = float(cfg.get("relative_min_delta", 0.0))
+    if min_epochs < 1 or patience < 1 or not 0.0 <= relative_min_delta < 1.0:
+        raise ValueError("Training-loss early stopping requires min_epochs/patience >= 1 and 0 <= relative_min_delta < 1.")
+    values = [float(value) for value in losses]
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("Training-loss early stopping received a non-finite loss.")
+    best = math.inf
+    bad_epochs = 0
+    for value in values:
+        if value < best * (1.0 - relative_min_delta):
+            best = value
+            bad_epochs = 0
+        else:
+            bad_epochs += 1
+    should_stop = enabled and len(values) >= min_epochs and bad_epochs >= patience
+    return {
+        "enabled": enabled,
+        "min_epochs": min_epochs,
+        "patience": patience,
+        "relative_min_delta": relative_min_delta,
+        "actual_epochs": len(values),
+        "best_training_loss": None if not values else best,
+        "epochs_without_improvement": bad_epochs,
+        "should_stop": should_stop,
+        "stop_reason": "training_loss_plateau" if should_stop else None,
+    }
 
 
 def _best_observed_validation_loss(epoch_logs: list[dict[str, Any]]) -> float:

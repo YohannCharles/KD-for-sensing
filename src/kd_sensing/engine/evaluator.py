@@ -8,7 +8,7 @@ from kd_sensing.engine.data_factory import (
     build_split_dataset,
     shutdown_dataloader_workers,
 )
-from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
+from kd_sensing.data.mmw.protocol import validate_mmw_config_protocol
 from kd_sensing.engine.data_factory_scalers import fit_gps_scaler
 from kd_sensing.engine.modality_resolution import (
     config_uses_gps,
@@ -66,8 +66,8 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_resolution.metadata)
     validate_evaluation_checkpoint_route(checkpoint_resolution.metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
-    clean_protocol_audit = validate_clean_config_protocol(cfg)
-    evaluation_split = "validation" if clean_protocol_audit is not None else "test"
+    mmw_protocol_audit = validate_mmw_config_protocol(cfg)
+    evaluation_split = "validation" if mmw_protocol_audit is not None else "test"
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
     if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):

@@ -6,6 +6,7 @@ import torch
 from kd_sensing.engine.checkpointing import resolve_resume_checkpoint
 from kd_sensing.engine.training_resume import (
     CHECKPOINT_SCHEMA_VERSION,
+    _fingerprint,
     build_resume_contract,
     preflight_resume,
     validate_resume_contract,
@@ -61,3 +62,36 @@ def test_resume_contract_rejects_model_drift() -> None:
 
     with pytest.raises(CheckpointLoadError, match=r"model\.primary\.type"):
         validate_resume_contract(recorded, changed, next_epoch=2)
+
+
+def test_resume_contract_ignores_cli_config_provenance_path() -> None:
+    base = {
+        "runtime": {"cli_config_path": "/tmp/timing.yaml"},
+        "training": {"epochs": 1},
+        "model": {"primary": {"type": "u_mask_beam_jepa"}},
+    }
+    resumed = {
+        **base,
+        "runtime": {"cli_config_path": "/tmp/resume.yaml"},
+        "training": {"epochs": 4, "resume": True},
+    }
+
+    validate_resume_contract(
+        build_resume_contract(base, {"ids": [1]}, {"sha256": "a"}),
+        build_resume_contract(resumed, {"ids": [1]}, {"sha256": "a"}),
+        next_epoch=1,
+    )
+
+
+def test_resume_contract_projects_cli_path_from_older_recorded_contract() -> None:
+    base = {"training": {"epochs": 1}, "model": {"primary": {"type": "u_mask_beam_jepa"}}}
+    recorded = build_resume_contract(base, {"ids": [1]}, {"sha256": "a"})
+    recorded["config"]["runtime"] = {"cli_config_path": "/tmp/timing.yaml"}
+    recorded["config_sha256"] = _fingerprint(recorded["config"])
+    resumed = build_resume_contract(
+        {**base, "training": {"epochs": 4, "resume": True}},
+        {"ids": [1]},
+        {"sha256": "a"},
+    )
+
+    validate_resume_contract(recorded, resumed, next_epoch=1)

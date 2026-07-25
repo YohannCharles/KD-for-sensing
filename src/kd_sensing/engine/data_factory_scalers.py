@@ -1,4 +1,6 @@
+import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -26,14 +28,22 @@ def fit_gps_scaler(
         raise ValueError(f"Pooled GPS datasets must use one gps_feature_mode, got {sorted(modes)}.")
     mode = modes.pop()
     if provided is None:
+        worker_count = _worker_count(len(pairs))
         mean, scale, frame_count, sample_count = _streaming_mean_scale(pairs)
         scaler = GPSStandardScaler(mean_=mean, scale_=scale, feature_mode_=mode)
-        metadata = _fit_metadata(source, sample_count=sample_count, observation_count=frame_count) | {"gps_feature_mode": mode}
+        metadata = _fit_metadata(
+            source,
+            sample_count=sample_count,
+            observation_count=frame_count,
+            worker_count=worker_count,
+        ) | {"gps_feature_mode": mode}
     else:
         scaler = provided
-        metadata = _fit_metadata("provided_train_artifact", sample_count=sum(len(indices) for _, indices in pairs)) | {
-            "gps_feature_mode": mode
-        }
+        metadata = _fit_metadata(
+            "provided_train_artifact",
+            sample_count=sum(len(indices) for _, indices in pairs),
+            worker_count=0,
+        ) | {"gps_feature_mode": mode}
     apply_gps_scaler(scaler, train_dataset, *apply_datasets, metadata=metadata)
 
 
@@ -62,7 +72,11 @@ def apply_gps_scaler(scaler: GPSStandardScaler, *datasets: Any, metadata: dict[s
                 raise ValueError(f"GPS scaler feature mode {scaler.feature_mode_!r} does not match dataset mode {mode!r}.")
             leaf.gps_scaler = scaler
             leaf.gps_scaler_metadata = dict(metadata or {"source": "checkpoint", "gps_feature_mode": mode})
-            leaf._gps_feature_cache.clear()
+            reset_cache = getattr(leaf, "reset_gps_feature_cache", None)
+            if callable(reset_cache):
+                reset_cache()
+            else:
+                leaf._gps_feature_cache.clear()
 
 
 def _gps_enabled(leaf: Any) -> bool:
@@ -87,17 +101,19 @@ def _eligible_leaves(dataset: Any, enabled: Callable[[Any], bool]) -> list[Any]:
 
 
 def _streaming_mean_scale(pairs: list[tuple[Any, list[int]]]) -> tuple[np.ndarray, np.ndarray, int, int]:
+    workers = _worker_count(len(pairs))
+    if workers == 1:
+        partials = [_pair_moments(pair) for pair in pairs]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gps-scaler") as executor:
+            partials = list(executor.map(_pair_moments, pairs))
     total = total_sq = None
     observations = samples = 0
-    for leaf, indices in pairs:
-        for index in indices:
-            values = np.asarray(leaf._gps_features_for_index(int(index)), dtype=np.float64)
-            if values.ndim != 2:
-                raise ValueError(f"GPS features must have shape [T,D], got {values.shape}.")
-            total = values.sum(axis=0) if total is None else total + values.sum(axis=0)
-            total_sq = np.square(values).sum(axis=0) if total_sq is None else total_sq + np.square(values).sum(axis=0)
-            observations += int(values.shape[0])
-            samples += 1
+    for partial_total, partial_total_sq, partial_observations, partial_samples in partials:
+        total = partial_total if total is None else total + partial_total
+        total_sq = partial_total_sq if total_sq is None else total_sq + partial_total_sq
+        observations += partial_observations
+        samples += partial_samples
     if observations <= 0 or total is None or total_sq is None:
         raise ValueError("Cannot fit GPS normalization from an empty train feature stream.")
     mean = total / observations
@@ -106,8 +122,40 @@ def _streaming_mean_scale(pairs: list[tuple[Any, list[int]]]) -> tuple[np.ndarra
     return mean.astype(np.float32), scale.astype(np.float32), observations, samples
 
 
-def _fit_metadata(source: str, *, sample_count: int, observation_count: int | None = None) -> dict[str, Any]:
-    metadata = {"source": source, "fit_split": "train", "sample_count": int(sample_count), "streaming": source != "provided_train_artifact"}
+def _pair_moments(pair: tuple[Any, list[int]]) -> tuple[np.ndarray, np.ndarray, int, int]:
+    leaf, indices = pair
+    total = total_sq = None
+    observations = 0
+    for index in indices:
+        values = np.asarray(leaf._gps_features_for_index(int(index)), dtype=np.float64)
+        if values.ndim != 2:
+            raise ValueError(f"GPS features must have shape [T,D], got {values.shape}.")
+        total = values.sum(axis=0) if total is None else total + values.sum(axis=0)
+        total_sq = np.square(values).sum(axis=0) if total_sq is None else total_sq + np.square(values).sum(axis=0)
+        observations += int(values.shape[0])
+    if total is None or total_sq is None:
+        raise ValueError("Cannot fit GPS normalization from an empty train leaf.")
+    return total, total_sq, observations, len(indices)
+
+
+def _worker_count(pair_count: int) -> int:
+    return max(1, min(int(pair_count), os.cpu_count() or 1))
+
+
+def _fit_metadata(
+    source: str,
+    *,
+    sample_count: int,
+    observation_count: int | None = None,
+    worker_count: int,
+) -> dict[str, Any]:
+    metadata = {
+        "source": source,
+        "fit_split": "train",
+        "sample_count": int(sample_count),
+        "streaming": source != "provided_train_artifact",
+        "parallel_workers": int(worker_count),
+    }
     if observation_count is not None:
         metadata["frame_count"] = int(observation_count)
     return metadata

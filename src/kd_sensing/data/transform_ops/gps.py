@@ -150,10 +150,26 @@ def load_gps_scaler(path: str | Path) -> GPSStandardScaler:
     return GPSStandardScaler.load(path)
 
 
+def load_gps_coordinate_cache(path: str | Path) -> dict[str, np.ndarray]:
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"GPS coordinate cache not found: {source}")
+    with np.load(source, allow_pickle=False) as payload:
+        paths = np.asarray(payload["paths"])
+        coordinates = np.asarray(payload["coordinates"], dtype=np.float64)
+    if paths.ndim != 1 or coordinates.shape != (len(paths), 2):
+        raise ValueError(f"GPS coordinate cache must contain paths[N] and coordinates[N,2]: {source}")
+    values = [str(value) for value in paths.tolist()]
+    if len(set(values)) != len(values) or not np.isfinite(coordinates).all():
+        raise ValueError(f"GPS coordinate cache contains duplicate paths or non-finite coordinates: {source}")
+    return {key: coordinates[index] for index, key in enumerate(values)}
+
+
 __all__ = [
     "GPSStandardScaler",
     "SUPPORTED_GPS_FEATURE_MODE",
     "latlon_to_utm_xy",
+    "load_gps_coordinate_cache",
     "load_gps_feature_sequence",
     "load_gps_scaler",
     "normalize_gps_feature_mode",

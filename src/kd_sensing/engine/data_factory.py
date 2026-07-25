@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
-from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
+from kd_sensing.data.mmw.protocol import validate_mmw_config_protocol
 from kd_sensing.engine.data_factory_scalers import (
     fit_gps_scaler,
     gps_scaler_kwargs,
@@ -108,14 +110,14 @@ def build_dataloaders(
     *,
     normalization_overrides: dict[str, Any] | None = None,
 ) -> dict[str, DataLoader]:
-    protocol_audit = validate_clean_config_protocol(cfg)
+    protocol_audit = validate_mmw_config_protocol(cfg)
     loader_cfg = cfg["data"]["dataloader"]
     provided = dict(normalization_overrides or {})
     train_dataset = build_split_dataset(
         cfg,
         "train",
         normalization_overrides=provided or None,
-        _clean_protocol_validated=protocol_audit is not None,
+        _mmw_protocol_validated=protocol_audit is not None,
     )
     fit_gps_scaler(
         train_dataset,
@@ -124,7 +126,7 @@ def build_dataloaders(
     )
     artifacts = gps_scaler_kwargs(train_dataset)
     validation_dataset = (
-        build_split_dataset(cfg, "validation", _clean_protocol_validated=protocol_audit is not None, **artifacts)
+        build_split_dataset(cfg, "validation", _mmw_protocol_validated=protocol_audit is not None, **artifacts)
         if has_validation_csv(cfg)
         else None
     )
@@ -148,7 +150,7 @@ def build_dataloaders(
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         )
     if final_test_enabled(cfg):
-        test_dataset = build_split_dataset(cfg, "test", _clean_protocol_validated=protocol_audit is not None, **artifacts)
+        test_dataset = build_split_dataset(cfg, "test", _mmw_protocol_validated=protocol_audit is not None, **artifacts)
         dataloaders["test"] = build_dataloader(
             test_dataset,
             loader_cfg,
@@ -156,7 +158,7 @@ def build_dataloaders(
             experiment_seed=cfg.get("experiment", {}).get("seed", 0),
         )
     if protocol_audit is not None:
-        identity = _clean_protocol_identity(protocol_audit, cfg)
+        identity = _mmw_protocol_identity(protocol_audit, cfg)
         for loader in dataloaders.values():
             loader.clean_protocol_identity = dict(identity)
     return dataloaders
@@ -167,12 +169,12 @@ def build_split_dataset(
     split: str,
     *,
     normalization_overrides: dict[str, Any] | None = None,
-    _clean_protocol_validated: bool = False,
+    _mmw_protocol_validated: bool = False,
     **extra_dataset_kwargs: Any,
 ) -> Any:
     dataset_type = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
-    if dataset_type == "mmw" and not _clean_protocol_validated:
-        validate_clean_config_protocol(cfg)
+    if dataset_type == "mmw" and not _mmw_protocol_validated:
+        validate_mmw_config_protocol(cfg)
     kwargs = dict(extra_dataset_kwargs)
     kwargs.update(normalization_overrides or {})
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
@@ -317,9 +319,9 @@ def _build_pooled_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwar
         if domain_id in seen:
             raise ValueError(f"Duplicate pooled domain id: {domain_id}.")
         seen.add(domain_id)
-    datasets = []
-    inventory = []
-    for domain in domains:
+    import_default_components()
+
+    def build_domain(domain: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         assert isinstance(domain, dict)
         domain_id = str(domain["id"])
         csv_key, csv_name = _domain_csv_for_split(domain, split)
@@ -339,20 +341,25 @@ def _build_pooled_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwar
         dataset.domain_condition = str(domain.get("condition", ""))
         dataset.domain_scene = str(domain["scene"])
         dataset.domain_split_path = str(csv_path)
-        datasets.append(dataset)
-        inventory.append(
-            {
-                "id": domain_id,
-                "condition": str(domain.get("condition", "")),
-                "scene": str(domain["scene"]),
-                "data_root": str(domain["data_root"]),
-                "split": split,
-                "split_path": str(csv_path),
-                "sample_count": int(len(dataset)),
-            }
-        )
+        inventory = {
+            "id": domain_id,
+            "condition": str(domain.get("condition", "")),
+            "scene": str(domain["scene"]),
+            "data_root": str(domain["data_root"]),
+            "split": split,
+            "split_path": str(csv_path),
+            "sample_count": int(len(dataset)),
+        }
+        return dataset, inventory
+
+    workers = min(len(domains), os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"{dataset_type}-{split}") as executor:
+        built = list(executor.map(build_domain, domains))
+    datasets = [dataset for dataset, _ in built]
+    inventory = [item for _, item in built]
     pooled = ConcatDataset(datasets)
     pooled.domain_inventory = inventory
+    pooled.initialization_workers = workers
     return pooled
 
 
@@ -365,13 +372,14 @@ def _domain_csv_for_split(domain: dict[str, Any], split: str) -> tuple[str, str]
     raise ValueError(f"Pooled domain {domain.get('id', '<unknown>')} is missing {split} CSV field ({key}).")
 
 
-def _clean_protocol_identity(audit: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def _mmw_protocol_identity(audit: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     section = cfg["data_protocol"]
+    protocol_path = Path(str(section["path"])).resolve()
     report_path = Path(str(section["audit_report"])).resolve()
     return {
-        "protocol_id": "mmw_clean_inner_development_v1",
+        "protocol_id": str(section["protocol_id"]),
         "protocol_fingerprint": audit["protocol_fingerprint"],
-        "protocol_file_sha256": audit["protocol_file_sha256"],
+        "protocol_file_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
         "audit_id": audit["audit_id"],
         "audit_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
         "train_sample_id_hash": audit["train_sample_id_hash"],

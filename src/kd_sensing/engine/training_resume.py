@@ -109,7 +109,14 @@ def validate_resume_contract(
         ("split", "split_sha256"),
         ("normalization", "normalization_sha256"),
     ):
-        differences = _structured_diff(recorded[section], current[section], prefix=section)
+        recorded_value = recorded[section]
+        current_value = current[section]
+        if section == "config":
+            # Re-apply the current closed runtime projection to older contracts
+            # that legitimately recorded fields added to the allowlist later.
+            recorded_value = _semantic_config(recorded_value)
+            current_value = _semantic_config(current_value)
+        differences = _structured_diff(recorded_value, current_value, prefix=section)
         if differences:
             path, expected, actual = differences[0]
             raise CheckpointLoadError(
@@ -255,6 +262,7 @@ def _semantic_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
 
 # This is deliberately closed: no user supplied glob can relax resume compatibility.
 _RUNTIME_CONTROL_PATHS = (
+    ("runtime", "cli_config_path"),
     ("training", "resume"),
     ("training", "epochs"),
     ("training", "timing"),
@@ -646,12 +654,20 @@ def _structured_diff(expected: Any, actual: Any, *, prefix: str) -> list[tuple[s
 
 def _delete_path(mapping: dict[str, Any], path: tuple[str, ...]) -> None:
     current: Any = mapping
+    parents: list[tuple[dict[str, Any], str]] = []
     for key in path[:-1]:
         if not isinstance(current, dict):
             return
+        parents.append((current, key))
         current = current.get(key)
     if isinstance(current, dict):
         current.pop(path[-1], None)
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+        else:
+            break
 
 
 def _fingerprint(value: Any) -> str:

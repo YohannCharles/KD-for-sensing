@@ -633,6 +633,22 @@ def _stage_split_with_columns(
     return report, (staged_target, target)
 
 
+def augment_mmw_sequence_resource_columns(frame: pd.DataFrame, scene: str) -> pd.DataFrame:
+    """Deterministically add the verified RSU Radar and BS-GPS sequence columns."""
+    output = frame.copy()
+    beam_columns = _numbered_columns(output.columns, "beam")
+    gps_columns = _numbered_columns(output.columns, "gps")
+    if not beam_columns or not gps_columns:
+        raise ValueError("MMW sequence augmentation requires numbered beam and gps columns.")
+    for beam_col in beam_columns:
+        suffix = beam_col[len("beam") :]
+        output[f"radar{suffix}"] = [_radar_rel_path_for_beam(value, scene) for value in output[beam_col].tolist()]
+    for gps_col in gps_columns:
+        suffix = gps_col[len("gps") :]
+        output[f"bs_gps{suffix}"] = [_rsu_gps_rel_path_for_gps(value, scene) for value in output[gps_col].tolist()]
+    return output
+
+
 def _staged_file_path(stage_root: Path, target: Path, index: int) -> Path:
     stage_root.mkdir(parents=True, exist_ok=True)
     return stage_root / f"{index:04d}_{target.name}"
@@ -795,6 +811,7 @@ class MMWRadarMapsPreprocessor:
 
 __all__ = [
     "MMWRadarMapsPreprocessor",
+    "augment_mmw_sequence_resource_columns",
     "generate_mmw_radar_maps",
     "materialize_mmw_radar_split_csv",
 ]
