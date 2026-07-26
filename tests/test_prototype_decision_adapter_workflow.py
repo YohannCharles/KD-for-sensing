@@ -29,6 +29,8 @@ from tools.run_full_pool_capacity import (
     MASK_BIAS_ABLATION_EPOCHS,
     MASK_BIAS_ALL_SEEN_JOBS,
     MASK_BIAS_UNSEEN_JOBS,
+    CIRCULAR_TRANSPORT_EPOCHS,
+    CIRCULAR_TRANSPORT_JOBS,
     apply_reference_u0_profile,
     choose_epochs,
     physical_gpu_uuid,
@@ -131,6 +133,14 @@ def test_mask_bias_ablation_job_mapping_is_preregistered() -> None:
     assert MASK_BIAS_UNSEEN_JOBS == {
         "mask_mlp": ("a1", 6),
         "factorized_bias": ("factorized_bias", 7),
+    }
+
+
+def test_circular_transport_job_mapping_is_preregistered() -> None:
+    assert CIRCULAR_TRANSPORT_EPOCHS == 8
+    assert CIRCULAR_TRANSPORT_JOBS == {
+        "circular_transport": ("circular_transport", 0),
+        "factorized_all_seen": ("factorized_all_seen", 4),
     }
 
 

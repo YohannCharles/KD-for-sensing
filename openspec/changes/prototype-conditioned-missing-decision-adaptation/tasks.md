@@ -47,3 +47,45 @@
 - [ ] 6.15 在物理 GPU0/4/6/7 并行运行 B1/B4/B6/B7，完成 15-mask、Full 等价、B6-B7 对照和最终 ADBA 导向分析。
 - [x] 6.16 实现 Global/Lookup/Factorized bias、允许 mask schedule、确定性分层 fold、weight-space probe、条件四卡编排与独立重算，并以聚焦测试验证零初始化、Full 旁路和 held-out 零曝光。
 - [x] 6.17 复用 B1 并运行单 seed Global/Lookup；若 MLP All-14 ADBA 严格高于 Lookup，则运行 fold 0 的 MLP/Factorized unseen pilot，输出阶段门槛和 held-out 结果。
+- [x] 6.18 实现半径为 3 的 `circular_transport` 概率算子、Full 显式恒等、局部核审计、all-seen Factorized 对照和独立指标重算，并以聚焦测试验证概率质量、回绕和组合顺序。
+- [x] 6.19 在物理 GPU0/4 上按相同 8-epoch ADBA-surrogate 协议并行运行 Circular Transport 与 all-seen Factorized Bias，输出 A0/B1/Factorized/Transport 的阶段性比较。
+
+## 7. Full-Pool BT-SCL
+
+- [x] 7.1 实现 Full-pool protocol/input/topology 强制审计、训练期 normalization manifest 与均衡 nested-subset schedule。
+- [x] 7.2 实现专用轻量四模态 token-Fusion-Prototype 模型、R0--R5 预注册损失与 R5 固定 round-robin 日程；不得接入 Router、attention 或 Adapter。
+- [x] 7.3 实现训练、统一选择、15-pattern 评测、拓扑/粗细一致性/证据/梯度/分域诊断和独立汇总工具。
+- [x] 7.4 添加并运行模型、数据隔离、topology、schedule、auxiliary 与 smoke-test 覆盖。
+- [x] 7.5 以物理 GPU0--5 启动单 seed R0--R5，记录 PID、状态与日志；不启动 multi-seed、outer test 或下一轮。
+- [x] 7.6 实现 R6 标签锚定 4/8/16-sector 层次损失、半径 0/3/5 随机占优损失、机制诊断与 R0 只读基线补算，并添加聚焦测试。
+- [x] 7.7 保留失稳 R6 轨迹，实施统一 stable profile 并从相同初始化并行训练 R0/R3/R6，完成 15-pattern、机制诊断与创新性判断；不得自动启动 multi-seed 或 outer test。
+
+## 8. Full-Pool Candidate12
+
+- [x] 8.1 实现 Candidate12 Full-pool/input/BPA/topology/signed-angle fail-closed 审计与 27 项 preflight。
+- [x] 8.2 实现共享 prototype 模型、公共 BPA、KL/risk assignment、15%--40% 容量调整及 mixed/homogeneous remix 日程。
+- [x] 8.3 实现非环形 PAMR shift、局部 offset loss、Dynamic/Zero/Mean/Shuffle/Oracle 替换与机制诊断。
+- [x] 8.4 实现统一 warm-up/训练/评测/聚合工具、GPU0--5 启动与 600 秒监控脚本，并运行聚焦测试和 smoke tests。
+- [x] 8.5 训练唯一 5-epoch warm-up，缓存 train-only prototype risk，并发布公共 checkpoint SHA256。
+- [x] 8.6 从同一 warm-up 并行运行 A0--A5，完成 Full 主结果、assignment/gradient/motion/效率诊断、success gates 与唯一候选结论；不得自动启动 multi-seed 或 outer test。
+
+## 9. Full-Pool BTMA Causal Ablation
+
+- [x] 9.1 新增统一 BTMA assignment 模块，覆盖固定随机均衡、历史 A1 固定比例、KL、topology risk、prototype margin 和 risk+margin；B0/B1 不执行模型难度打分。
+- [x] 9.2 新增独立运行器、37,038/9,180 preflight、train-only cache manifest、B5 历史 A2 复现检查与因果归因汇总。
+- [x] 9.3 新增 B0--B5 协议测试和 GPU0--5 启动/600 秒监控脚本；不自动运行 multi-seed、outer test 或下一轮。
+
+## 10. BTMA 负结果只读收尾
+
+- [x] 10.1 新增只读收尾工具：从六个 BTMA `best_checkpoint.pt` 按 `evaluate()` 口径重算 pattern=`full` 的逐样本 `anchor_logits`，导出 `validation_predictions.npz`；不重训、不改协议。
+- [x] 10.2 实现 `(domain, cav)` 内连续帧块（块长 32、重抽 2,000 次，计算前固定）的成对 temporal block bootstrap，输出各方法对在 Top-1/Top-3/Within-3/MAE/topology risk 上的点差与 95% CI。
+- [x] 10.3 实现纯 numpy 的 score correlation：epoch 5 主表（score 与同源 warm-up 单模态环形拓扑误差的每模态 Spearman）、后续 epoch 追踪表、跨 epoch 秩稳定性表。
+- [x] 10.4 新增收尾测试覆盖块划分、成对重抽确定性与相关性口径；发布收尾报告并显式声明不得据此重开 BTMA 路线。
+
+## 11. Router 可观测性因果筛选
+
+- [x] 11.1 新增冻结 Full-pool U0 的表征缓存：钩取各 encoder 末层线性变换输入与 `latent_sequence`，并以逐样本等价性测试证明缓存重算的融合 logits 与直接前向一致。
+- [x] 11.2 新增 quality 分支与四条嵌套 router 输入路线 Q0--Q3，断言 Q3 与 Q2 参数量严格相等，且置换只作用于投影前特征。
+- [x] 11.3 按既有 diagnostic sample manifest 重新实现 45 个腐蚀条件算子，并以固定种子为每个样本预抽唯一条件。
+- [x] 11.4 新增运行器与测试，在设定 N 与设定 C 下各运行 Q0--Q3 × 3 个 router seed；不训练 encoder，不启动多 seed 骨干或 outer test。
+- [x] 11.5 对处理组执行冻结权重推理期消融（quality embedding 替换为训练集均值），并按预注册门槛输出 success gates 与筛选报告。

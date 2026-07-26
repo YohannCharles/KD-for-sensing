@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "ruff",
 ]
 
 [project.scripts]
@@ -33,6 +34,20 @@ kd-sensing-preprocess = "kd_sensing.cli.preprocess:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+extend-exclude = ["All_models", "cache", "dataset", "logs", "outputs", "paper", "results"]
+
+[tool.ruff.lint]
+# Bug-catching tier only.  The local experiment surface under `tools/` still
+# uses a dense one-off style, so enabling style rules here would bury real
+# findings.  Widen this list once that surface has been formatted.
+select = ["E9", "F401", "F63", "F7", "F811", "F82"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,10 +10,8 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +38,7 @@ from kd_sensing.baselines.prototype_decision_adapter import (
     stratified_mask_folds,
     write_json,
 )
+from kd_sensing.baselines.full_pool_common import now
 from kd_sensing.config import load_config
 from kd_sensing.config.io import dump_config
 from kd_sensing.data.mmw.full_pool_protocol import (
@@ -103,13 +102,14 @@ MASK_BIAS_UNSEEN_JOBS = {
     "mask_mlp": ("a1", 6),
     "factorized_bias": ("factorized_bias", 7),
 }
+CIRCULAR_TRANSPORT_EPOCHS = 8
+CIRCULAR_TRANSPORT_JOBS = {
+    "circular_transport": ("circular_transport", 0),
+    "factorized_all_seen": ("factorized_all_seen", 4),
+}
 ERROR_PATTERN = re.compile(r"(?:Traceback|\bNaN\b|\bOOM\b|out of memory|\bError\b)", re.IGNORECASE)
 PROTOTYPE_COLLAPSE_THRESHOLD = 0.95
 GPU_LAUNCH_MAX_USED_MIB = 1024
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _running_adapter_process(
@@ -1482,6 +1482,102 @@ def run_mask_bias_ablation(output_root: Path) -> int:
     return analysis.returncode
 
 
+def run_circular_transport(output_root: Path) -> int:
+    """Run the fixed-budget local circular transport versus factorized-bias comparison."""
+    run_root = output_root / "circular_transport"
+    if run_root.exists():
+        raise FileExistsError(f"Refusing to overwrite existing circular transport run: {run_root}")
+    config = output_root / "u0_seed1/final_config.yaml"
+    checkpoint = output_root / "u0_seed1/checkpoints/last.pth"
+    schedule = output_root / "protocol/adapter_mask_schedule_seed1.json"
+    checkpoint_record = json.loads((output_root / "u0_checkpoint_sha256.json").read_text(encoding="utf-8"))
+    expected_sha256 = str(checkpoint_record["sha256"])
+    actual_sha256, checkpoint_size = checkpoint_file_digest(checkpoint)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(f"U0 checkpoint SHA256 mismatch: expected={expected_sha256}, actual={actual_sha256}")
+    _, protocol_audit = preflight(config, checkpoint, expected_sha256=expected_sha256)
+    schedule_payload = json.loads(schedule.read_text(encoding="utf-8"))
+    schedule_sha256 = str(schedule_payload.pop("schedule_sha256"))
+    if sha256_json(schedule_payload) != schedule_sha256:
+        raise ValueError("Mask schedule hash mismatch before circular transport launch.")
+    a0_metrics = output_root / "stage2/a0/metrics.json"
+    b1_metrics_path = output_root / "adba_surrogate/b1/metrics.json"
+    if not a0_metrics.is_file() or not b1_metrics_path.is_file():
+        raise FileNotFoundError("Circular transport comparison requires completed A0 and B1 artifacts.")
+    b1_metrics = json.loads(b1_metrics_path.read_text(encoding="utf-8"))
+    if (
+        b1_metrics.get("loss_profile", {}).get("name") != "adba_surrogate"
+        or int(b1_metrics.get("training", {}).get("actual_epochs", -1)) != CIRCULAR_TRANSPORT_EPOCHS
+        or float(b1_metrics.get("full_equivalence", {}).get("max_abs_logit_diff", 1.0)) > 1e-7
+    ):
+        raise ValueError("Reusable B1 does not match the fixed 8-epoch ADBA-surrogate contract.")
+
+    run_root.mkdir(parents=True)
+    prototype_audit = audit_prototype_checkpoint(checkpoint, run_root / "preflight/u0_checkpoint_health.json")
+    write_json(
+        run_root / "preflight/launch_audit.json",
+        {
+            "status": "passed",
+            "outer_test_accessed": False,
+            "protocol_status": protocol_audit.get("status"),
+            "u0_checkpoint_sha256": expected_sha256,
+            "u0_checkpoint_size_bytes": checkpoint_size,
+            "prototype_status": prototype_audit["status"],
+            "mask_schedule_sha256": schedule_sha256,
+            "loss_profile": {"name": "adba_surrogate", **ADAPTER_LOSS_PROFILES["adba_surrogate"]},
+            "epochs": CIRCULAR_TRANSPORT_EPOCHS,
+            "reused_a0": str(a0_metrics.parent.resolve()),
+            "reused_b1": str(b1_metrics_path.parent.resolve()),
+            "jobs": {key: {"experiment": experiment, "gpu": gpu} for key, (experiment, gpu) in CIRCULAR_TRANSPORT_JOBS.items()},
+        },
+    )
+    jobs = []
+    for name, (experiment, gpu) in CIRCULAR_TRANSPORT_JOBS.items():
+        run_dir = run_root / name
+        jobs.append(
+            {
+                "name": name,
+                "gpu": gpu,
+                "command": [
+                    "conda", "run", "-n", "kd_mm_beam", "--no-capture-output", "python",
+                    str(Path(__file__).resolve()), "--adapter", experiment,
+                    "--loss-profile", "adba_surrogate", "--config", str(config),
+                    "--checkpoint", str(checkpoint), "--schedule", str(schedule),
+                    "--run-dir", str(run_dir), "--epochs", str(CIRCULAR_TRANSPORT_EPOCHS),
+                    "--expected-sha256", expected_sha256,
+                ],
+                "log_path": run_root / f"runtime/gpu{gpu}_{name}.log",
+                "checkpoint_watch": str(run_dir / "checkpoints/last.pth"),
+                "expected_epochs": CIRCULAR_TRANSPORT_EPOCHS,
+                "started_epoch": time.time(),
+            }
+        )
+    results = run_jobs("circular_transport", jobs, run_root)
+    return_codes = {job["name"]: int(job["return_code"]) for job in results}
+    if any(code != 0 for code in return_codes.values()):
+        write_json(run_root / "runtime/final_status.json", {"status": "failed", "return_codes": return_codes})
+        return 1
+    analysis = subprocess.run(
+        [
+            "conda", "run", "-n", "kd_mm_beam", "--no-capture-output", "python",
+            "tools/analyze_circular_transport.py", "--root", str(output_root),
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    write_json(
+        run_root / "runtime/final_status.json",
+        {
+            "status": "completed" if analysis.returncode == 0 else "failed",
+            "return_codes": return_codes,
+            "analysis_return_code": analysis.returncode,
+            "outer_test_accessed": False,
+            "finished_at": now(),
+        },
+    )
+    return analysis.returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--orchestrate", action="store_true")
@@ -1490,6 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume-stage2", action="store_true")
     parser.add_argument("--adba-surrogate", action="store_true")
     parser.add_argument("--mask-bias-ablation", action="store_true")
+    parser.add_argument("--circular-transport", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
     parser.add_argument("--adapter", choices=tuple(EXPERIMENTS))
     parser.add_argument("--output-root", type=Path, default=DEFAULT_ROOT)
@@ -1511,13 +1608,14 @@ def main(argv: list[str] | None = None) -> int:
             args.resume_stage2,
             args.adba_surrogate,
             args.mask_bias_ablation,
+            args.circular_transport,
             args.benchmark,
             args.adapter is not None,
         )
     )
     if selected != 1:
         parser.error(
-            "choose exactly one of --orchestrate, --continue-after-benchmark, --stage2-only, --resume-stage2, --adba-surrogate, --mask-bias-ablation, --benchmark, or --adapter"
+            "choose exactly one of --orchestrate, --continue-after-benchmark, --stage2-only, --resume-stage2, --adba-surrogate, --mask-bias-ablation, --circular-transport, --benchmark, or --adapter"
         )
     if args.orchestrate:
         return orchestrate(args.output_root.resolve())
@@ -1531,6 +1629,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_adba_surrogate(args.output_root.resolve())
     if args.mask_bias_ablation:
         return run_mask_bias_ablation(args.output_root.resolve())
+    if args.circular_transport:
+        return run_circular_transport(args.output_root.resolve())
     required = (args.config, args.checkpoint, args.expected_sha256)
     if any(value is None for value in required):
         parser.error("child modes require --config, --checkpoint, and --expected-sha256")

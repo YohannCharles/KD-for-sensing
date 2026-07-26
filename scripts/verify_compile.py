@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile on-disk CLI and script entry files without importing them."""
+"""Compile on-disk package, script and local experiment files without importing them."""
 
 import argparse
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OWNER_ROOTS = (Path("scripts"), Path("src/kd_sensing/cli"))
+OWNER_ROOTS = (Path("scripts"), Path("src/kd_sensing"), Path("tools"))
 EXCLUDED_DIRECTORY_NAMES = frozenset(
     {"dataset", "outputs", "logs", "cache", "checkpoint", "checkpoints", "__pycache__"}
 )
@@ -56,7 +56,7 @@ def main() -> int:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print(f"Compiled {len(paths)} on-disk CLI/script Python files.")
+    print(f"Compiled {len(paths)} on-disk package/script/experiment Python files.")
     return 0
 
 

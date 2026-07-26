@@ -1,6 +1,5 @@
 import json
 
-import torch
 
 from kd_sensing.config.io import dump_config
 from kd_sensing.engine.data_factory import (

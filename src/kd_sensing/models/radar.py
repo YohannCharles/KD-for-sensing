@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from kd_sensing.registries import MODELS
 
 
 class RadarFeatureExtractor(nn.Module):

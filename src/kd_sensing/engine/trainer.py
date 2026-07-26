@@ -1,9 +1,8 @@
 import datetime as dt
 from pathlib import Path
 
-import torch
 
-from kd_sensing.engine.artifacts import ArtifactWriter, final_config_with_runtime
+from kd_sensing.engine.artifacts import ArtifactWriter
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.checkpointing import CheckpointManager, resolve_resume_checkpoint
 from kd_sensing.engine.data_factory import build_dataloaders, final_test_enabled

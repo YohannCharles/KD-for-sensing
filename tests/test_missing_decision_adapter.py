@@ -146,3 +146,59 @@ def test_simple_bias_variants_are_zero_initialized_and_factorized_is_composition
         factorized.factorized.weight.copy_(torch.eye(4))
     update, _ = factorized(features, masks)
     assert torch.equal(update[2], update[0] + update[1])
+
+
+def test_circular_transport_preserves_mass_wraps_and_composes_missing_modalities() -> None:
+    adapter = MissingDecisionAdapter(64, num_classes=64, rank=2, variant="circular_transport", transport_radius=3)
+    with torch.no_grad():
+        adapter.transport_kernel_logits.fill_(-80.0)
+        adapter.transport_kernel_logits[0, 4] = 80.0  # Image missing: +1 circular shift.
+        adapter.transport_kernel_logits[1, 5] = 80.0  # Radar missing: +2 circular shift.
+
+    base = torch.full((2, 64), -80.0)
+    base[0, 63] = 80.0
+    base[1, 60] = 80.0
+    masks = torch.tensor([[0, 1, 1, 1], [0, 0, 1, 1]], dtype=torch.bool)
+    transported, alpha = adapter.transport_logits(base, masks)
+    probabilities = torch.softmax(transported, dim=-1)
+    composed = adapter.composed_transport_kernel(masks)
+
+    assert adapter.parameter_count() == 4 * 7
+    assert alpha.shape == (2, 4 * 7)
+    assert torch.all(probabilities >= 0)
+    assert torch.allclose(probabilities.sum(dim=-1), torch.ones(2), atol=1e-7)
+    assert torch.allclose(composed.sum(dim=-1), torch.ones(2), atol=1e-7)
+    assert probabilities[0].argmax().item() == 0  # 63 + 1 wraps to 0.
+    assert probabilities[1].argmax().item() == 63  # 60 + 1 + 2 wraps to 63.
+
+    kernels = adapter.transport_kernel()
+    expected = torch.zeros(64)
+    expected[0] = 1.0
+    for kernel in (kernels[0], kernels[1]):
+        expected = sum(
+            kernel[index] * torch.roll(expected, shifts=shift, dims=-1)
+            for index, shift in enumerate(range(-3, 4))
+        )
+    assert torch.allclose(composed[1], expected, atol=1e-7)
+
+
+def test_circular_transport_full_path_is_exact_and_kernels_receive_gradients() -> None:
+    adapter = MissingDecisionAdapter(4, num_classes=4, rank=2, variant="circular_transport", transport_radius=1)
+    model = FrozenU0DecisionAdapter(_ToyU0(), adapter)
+    features = torch.randn(2, 4)
+    full = torch.ones(2, 4, dtype=torch.bool)
+    full_output = model(features=features, missing_mask=full)
+
+    assert full_output["adapter_called"] is False
+    assert full_output["logits"].data_ptr() == full_output["base_logits"].data_ptr()
+    assert torch.equal(full_output["logits"], full_output["base_logits"])
+
+    missing = torch.tensor([[0, 1, 1, 1], [1, 0, 1, 1]], dtype=torch.bool)
+    output = model(features=features, missing_mask=missing)
+    loss = torch.nn.functional.cross_entropy(output["logits"][:, 0, :], torch.tensor([0, 1]))
+    loss.backward()
+
+    assert torch.isfinite(output["logits"]).all()
+    assert adapter.transport_kernel_logits is not None
+    assert adapter.transport_kernel_logits.grad is not None
+    assert float(adapter.transport_kernel_logits.grad.abs().sum()) > 0.0

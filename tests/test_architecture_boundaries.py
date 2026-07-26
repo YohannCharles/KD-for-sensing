@@ -89,7 +89,7 @@ def test_openspec_current_context_is_limited_to_the_u0_mainline() -> None:
 
 def test_sources_do_not_mutate_protected_system_configuration():
     violations = []
-    for root in (SRC, ROOT / "scripts"):
+    for root in (SRC, ROOT / "scripts", ROOT / "tools"):
         for path in root.rglob("*.py"):
             if "__pycache__" in path.parts:
                 continue
@@ -98,3 +98,12 @@ def test_sources_do_not_mutate_protected_system_configuration():
                 violations.append(path.relative_to(ROOT).as_posix())
 
     assert violations == []
+
+
+def test_local_experiment_tools_do_not_extend_the_public_cli():
+    """`tools/` may orchestrate local experiments but must stay off the packaged entry points."""
+    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+    targets = {spec.split(":", 1)[0] for spec in scripts.values()}
+
+    assert all(not target.startswith("tools") for target in targets)
+    assert not (SRC / "kd_sensing/tools").exists()

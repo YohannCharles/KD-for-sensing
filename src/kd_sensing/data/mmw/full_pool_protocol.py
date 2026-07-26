@@ -21,6 +21,45 @@ FULL_POOL_PROTOCOL_ID = "mmw_full_pool_development_v1"
 EXPECTED_CANDIDATE_COUNT = 46_860
 EXPECTED_DOMAIN_COUNT = 15
 EXPECTED_HISTORICAL_EXCLUSION_COUNT = 588
+
+# Locked counts of the canonical `full_pool_contiguous_time_v1` macro split.
+# Every local experiment workflow re-asserts these before training, so they are
+# published here as the single source of truth instead of being restated per
+# tool.  Changing the protocol MUST change these together with its fingerprint.
+FULL_POOL_SPLIT_EXPECTATIONS: dict[str, int] = {
+    "candidate_window_count": EXPECTED_CANDIDATE_COUNT,
+    "boundary_crossing_excluded_count": 240,
+    "historical_removed_from_train_count": 402,
+    "historical_protected_count": EXPECTED_HISTORICAL_EXCLUSION_COUNT,
+    "train_sample_count": 37_038,
+    "validation_sample_count": 9_180,
+}
+# Derived quantities the audits report alongside the locked counts.
+FULL_POOL_RAW_TRAIN_COUNT = (
+    FULL_POOL_SPLIT_EXPECTATIONS["train_sample_count"]
+    + FULL_POOL_SPLIT_EXPECTATIONS["historical_removed_from_train_count"]
+)
+FULL_POOL_HISTORICAL_VALIDATION_RETAINED = (
+    FULL_POOL_SPLIT_EXPECTATIONS["historical_protected_count"]
+    - FULL_POOL_SPLIT_EXPECTATIONS["historical_removed_from_train_count"]
+)
+FULL_POOL_DEVELOPMENT_WINDOWS = (
+    FULL_POOL_SPLIT_EXPECTATIONS["train_sample_count"]
+    + FULL_POOL_SPLIT_EXPECTATIONS["validation_sample_count"]
+)
+# Identity families that MUST have zero train/validation intersection.
+FULL_POOL_RESOURCE_INTERSECTION_NAMES: tuple[str, ...] = (
+    "sample_id",
+    "target_sample_id",
+    "full_csv_row",
+    "all_frame_dependency",
+    "camera_resource",
+    "lidar_resource",
+    "radar_resource",
+    "ue_gps_resource",
+    "bs_gps_resource",
+    "channel_resource",
+)
 _RESOURCE_PATTERNS = {
     "camera": re.compile(r"^camera\d+$"),
     "lidar": re.compile(r"^lidar\d+$"),
@@ -551,8 +590,13 @@ def _augmentation_code_hash() -> str:
 
 
 __all__ = [
+    "FULL_POOL_DEVELOPMENT_WINDOWS",
+    "FULL_POOL_HISTORICAL_VALIDATION_RETAINED",
     "FULL_POOL_PROTOCOL_ID",
     "FULL_POOL_PROTOCOL_MODE",
+    "FULL_POOL_RAW_TRAIN_COUNT",
+    "FULL_POOL_RESOURCE_INTERSECTION_NAMES",
+    "FULL_POOL_SPLIT_EXPECTATIONS",
     "audit_full_pool_protocol",
     "build_full_pool_protocol",
     "load_full_pool_protocol",

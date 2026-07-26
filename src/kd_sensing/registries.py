@@ -1,7 +1,7 @@
 """Lightweight component registries used by config-driven workflows."""
 
 import inspect
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Optional
 
 
 class RegistryError(ValueError):

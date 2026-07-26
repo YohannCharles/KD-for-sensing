@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from kd_sensing.baselines import full_pool_common as _common
 from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.io import deep_merge, dump_config, load_config_source
 from kd_sensing.config.normalization import normalize_loaded_config
@@ -25,7 +26,6 @@ from kd_sensing.data.mmw.clean_protocol import (
     audit_clean_inner_protocol,
     load_clean_inner_protocol,
     validate_clean_inner_protocol,
-    validate_clean_config_protocol,
     write_clean_inner_protocol,
 )
 from kd_sensing.data.mmw.full_pool_protocol import (
@@ -116,17 +116,18 @@ EXPERIMENTS = {
         Experiment("global_bias", 0, "gpu0_global_bias_seed1", "global_bias"),
         Experiment("mask_lookup", 4, "gpu4_mask_lookup_seed1", "mask_lookup"),
         Experiment("factorized_bias", 7, "gpu7_factorized_bias_seed1", "factorized_bias"),
+        Experiment("factorized_all_seen", 4, "gpu4_factorized_all_seen_seed1", "factorized_bias"),
+        Experiment("circular_transport", 0, "gpu0_circular_transport_seed1", "circular_transport"),
     )
 }
 
 
-def sha256_json(payload: Any) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+sha256_json = _common.sha256_json
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    """Write a Stage A artifact with sorted keys, as every existing run did."""
+    _common.write_json(path, payload, sort_keys=True)
 
 
 def preflight(
@@ -814,6 +815,11 @@ def run_experiment(
         "u0_state_sha256_before": base_before, "u0_state_sha256_after": state_digest(base_model),
         "adapter_parameter_count": adapter.parameter_count() if adapter else 0,
         "adapter_flops": adapter.flops_per_sample() if adapter else 0,
+        "transport_kernel_audit": (
+            adapter.transport_audit()
+            if adapter is not None and getattr(adapter, "variant", None) == "circular_transport"
+            else None
+        ),
         "experiment_seed": EXPERIMENT_SEED,
         "loss_profile": {"name": loss_profile, **ADAPTER_LOSS_PROFILES[loss_profile]},
         "prototype_cache": {

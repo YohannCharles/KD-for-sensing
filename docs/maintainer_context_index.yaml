@@ -45,6 +45,19 @@ task_routes:
       - scripts/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_cli_help.py tests/test_cli_strict_overrides.py tests/test_architecture_boundaries.py -q
+  - id: experiments
+    context_path: docs/agent_context/README.md
+    authority_paths:
+      - openspec/specs/repo-boundaries/spec.md
+      - openspec/specs/clean-data-integrity/spec.md
+    owner_modules:
+      - src/kd_sensing/baselines/
+      - tools/
+      - scripts/lib/
+    notes: 本地实验面，不得扩展 public CLI 或 canonical recipe；共享工具与 Full-pool 协议常量以 src/kd_sensing/baselines/full_pool_common.py 为唯一来源。
+    focused_validation:
+      - conda run -n kd_mm_beam pytest tests/test_full_pool_bt_scl.py tests/test_full_pool_candidate12.py tests/test_full_pool_btma_ablation.py tests/test_missing_decision_adapter.py -q
+      - conda run -n kd_mm_beam python scripts/verify_compile.py
   - id: openspec
     context_path: docs/agent_context/README.md
     authority_paths:
