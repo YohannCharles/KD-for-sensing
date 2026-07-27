@@ -1,7 +1,9 @@
-"""Four fixed Candidate12-head baselines for the trajectory protocol."""
+"""Fixed Candidate12-head methods for the trajectory protocol."""
 
 from __future__ import annotations
 
+import hashlib
+from itertools import combinations
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -13,14 +15,26 @@ from kd_sensing.baselines.full_pool_candidate12 import Candidate12Model, MODALIT
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank, prototype_alignment_loss
 
 
+M4_UNIFORM_METHOD = "m4a_uniform_all_masks"
+M4_BALANCED_METHOD = "m4b_availability_balanced"
+M4_GENERIC_KL_METHOD = "m4c_availability_balanced_generic_kl"
+ABTC_METHOD = "m4_availability_balanced_topology_consistency"
 METHODS = (
     "m0_plain_linear",
     "m1_ordinary_prototype",
     "m2_topology_prototype",
     "m3_topology_prototype_random_balanced",
+    M4_UNIFORM_METHOD,
+    M4_BALANCED_METHOD,
+    M4_GENERIC_KL_METHOD,
+    ABTC_METHOD,
 )
 TOPOLOGY_METHODS = frozenset(METHODS[2:])
 RANDOM_BALANCED_METHOD = METHODS[3]
+PAIRED_MISSING_METHODS = frozenset((M4_UNIFORM_METHOD, M4_BALANCED_METHOD, M4_GENERIC_KL_METHOD, ABTC_METHOD))
+ABTC_CONSISTENCY_WEIGHT = 0.2
+ABTC_TEMPERATURE = 2.0
+ABTC_TOPOLOGY_SIGMA = 2.0
 
 
 class TrajectoryBaselineModel(Candidate12Model):
@@ -81,6 +95,14 @@ class TrajectoryBaselineModel(Candidate12Model):
             "availability": availability,
         }
 
+    def forward_paired(
+        self,
+        inputs: Mapping[str, torch.Tensor],
+        availability: torch.Tensor,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        tokens = self.encode(inputs)
+        return self.forward_tokens(tokens), self.forward_tokens(tokens, availability=availability)
+
 
 def baseline_loss(
     model: TrajectoryBaselineModel,
@@ -123,6 +145,148 @@ def availability_for_assignments(assignments: Sequence[int], device: torch.devic
     return F.one_hot(values, num_classes=4).to(dtype=torch.bool)
 
 
+def availability_balanced_assignment(
+    sample_ids: Sequence[str],
+    *,
+    epoch: int,
+    seed: int = 2026,
+) -> dict[str, tuple[int, ...]]:
+    """Assign every train sample to one of 14 masks with balanced availability levels."""
+    values = [str(value) for value in sample_ids]
+    if len(values) != len(set(values)):
+        raise ValueError("ABTC assignments require unique train sample ids.")
+    order = sorted(
+        values,
+        key=lambda value: (hashlib.sha256(f"abtc-v1:{seed}:{epoch}:{value}".encode()).digest(), value),
+    )
+    masks = {
+        count: tuple(
+            tuple(int(index in available) for index in range(len(MODALITIES)))
+            for available in combinations(range(len(MODALITIES)), count)
+        )
+        for count in (1, 2, 3)
+    }
+    quotas = [len(values) // 3 + int(index < len(values) % 3) for index in range(3)]
+    result: dict[str, tuple[int, ...]] = {}
+    start = 0
+    for available_count, quota in zip((1, 2, 3), quotas):
+        level_masks = masks[available_count]
+        for offset, sample_id in enumerate(order[start : start + quota]):
+            result[sample_id] = level_masks[offset % len(level_masks)]
+        start += quota
+    if len(result) != len(values):
+        raise AssertionError("ABTC availability assignment left samples unassigned.")
+    return result
+
+
+def uniform_mask_assignment(
+    sample_ids: Sequence[str],
+    *,
+    epoch: int,
+    seed: int = 2026,
+) -> dict[str, tuple[int, ...]]:
+    """Assign train samples uniformly across all 14 non-full masks."""
+    values = [str(value) for value in sample_ids]
+    if len(values) != len(set(values)):
+        raise ValueError("Uniform mask assignments require unique train sample ids.")
+    order = sorted(
+        values,
+        key=lambda value: (hashlib.sha256(f"m4a-v1:{seed}:{epoch}:{value}".encode()).digest(), value),
+    )
+    masks = tuple(
+        tuple(int(index in available) for index in range(len(MODALITIES)))
+        for count in (1, 2, 3)
+        for available in combinations(range(len(MODALITIES)), count)
+    )
+    return {sample_id: masks[index % len(masks)] for index, sample_id in enumerate(order)}
+
+
+def topology_smoothed_consistency_loss(
+    masked_logits: torch.Tensor,
+    full_logits: torch.Tensor,
+    topology_distance: torch.Tensor,
+    *,
+    temperature: float = ABTC_TEMPERATURE,
+    sigma: float = ABTC_TOPOLOGY_SIGMA,
+) -> torch.Tensor:
+    """Match masked and detached-full distributions after topology-aware smoothing."""
+    if masked_logits.ndim != 2 or full_logits.shape != masked_logits.shape:
+        raise ValueError("ABTC logits must have matching [B,C] shapes.")
+    if topology_distance.shape != (masked_logits.shape[-1], masked_logits.shape[-1]):
+        raise ValueError("ABTC topology distance must have shape [C,C].")
+    if min(float(temperature), float(sigma)) <= 0:
+        raise ValueError("ABTC temperature and topology sigma must be positive.")
+    distance = topology_distance.to(device=masked_logits.device, dtype=torch.float32)
+    kernel = torch.exp(-0.5 * (distance / float(sigma)).square())
+    kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(kernel.dtype).tiny)
+    scale = float(temperature)
+    teacher = torch.softmax(full_logits.detach().float() / scale, dim=-1) @ kernel
+    student = torch.softmax(masked_logits.float() / scale, dim=-1) @ kernel
+    return F.kl_div(student.clamp_min(1e-12).log(), teacher, reduction="batchmean") * scale**2
+
+
+def generic_consistency_loss(
+    masked_logits: torch.Tensor,
+    full_logits: torch.Tensor,
+    *,
+    temperature: float = ABTC_TEMPERATURE,
+) -> torch.Tensor:
+    if masked_logits.ndim != 2 or full_logits.shape != masked_logits.shape:
+        raise ValueError("Paired consistency logits must have matching [B,C] shapes.")
+    if float(temperature) <= 0:
+        raise ValueError("Paired consistency temperature must be positive.")
+    scale = float(temperature)
+    return F.kl_div(
+        F.log_softmax(masked_logits.float() / scale, dim=-1),
+        F.softmax(full_logits.detach().float() / scale, dim=-1),
+        reduction="batchmean",
+    ) * scale**2
+
+
+def paired_missing_loss(
+    model: TrajectoryBaselineModel,
+    full_output: Mapping[str, torch.Tensor],
+    masked_output: Mapping[str, torch.Tensor],
+    labels: torch.Tensor,
+    topology_distance: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if model.method not in PAIRED_MISSING_METHODS:
+        raise ValueError("Paired missing loss requires an M4-family trajectory method.")
+    full_loss, full_report = baseline_loss(model, full_output, labels)
+    masked_loss, masked_report = baseline_loss(model, masked_output, labels)
+    if model.method == M4_GENERIC_KL_METHOD:
+        consistency = generic_consistency_loss(masked_output["logits"], full_output["logits"])
+    elif model.method == ABTC_METHOD:
+        consistency = topology_smoothed_consistency_loss(
+            masked_output["logits"],
+            full_output["logits"],
+            topology_distance,
+        )
+    else:
+        consistency = masked_output["logits"].sum() * 0.0
+    total = 0.5 * (full_loss + masked_loss) + ABTC_CONSISTENCY_WEIGHT * consistency
+    return total, {
+        "ce": 0.5 * (full_report["ce"] + masked_report["ce"]),
+        "topology_alignment": 0.5
+        * (full_report["topology_alignment"] + masked_report["topology_alignment"]),
+        "topology_consistency": float(consistency.detach()),
+        "full_ce": full_report["ce"],
+        "masked_ce": masked_report["ce"],
+    }
+
+
+def abtc_loss(
+    model: TrajectoryBaselineModel,
+    full_output: Mapping[str, torch.Tensor],
+    masked_output: Mapping[str, torch.Tensor],
+    labels: torch.Tensor,
+    topology_distance: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if model.method != ABTC_METHOD:
+        raise ValueError("ABTC loss requires the M4 trajectory method.")
+    return paired_missing_loss(model, full_output, masked_output, labels, topology_distance)
+
+
 def model_contract(model: TrajectoryBaselineModel) -> dict[str, Any]:
     return {
         "method": model.method,
@@ -132,6 +296,8 @@ def model_contract(model: TrajectoryBaselineModel) -> dict[str, Any]:
         "head": "linear" if model.linear_head is not None else "prototype",
         "topology_alignment": model.method in TOPOLOGY_METHODS,
         "random_balanced_single_modality": model.method == RANDOM_BALANCED_METHOD,
+        "availability_balanced_topology_consistency": model.method == ABTC_METHOD,
+        "paired_missing_training": model.method in PAIRED_MISSING_METHODS,
         "motion_branch_present": hasattr(model, "motion"),
         "channel_input_present": False,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
@@ -139,12 +305,25 @@ def model_contract(model: TrajectoryBaselineModel) -> dict[str, Any]:
 
 
 __all__ = [
+    "ABTC_CONSISTENCY_WEIGHT",
+    "ABTC_METHOD",
+    "ABTC_TEMPERATURE",
+    "ABTC_TOPOLOGY_SIGMA",
+    "M4_BALANCED_METHOD",
+    "M4_GENERIC_KL_METHOD",
+    "M4_UNIFORM_METHOD",
     "METHODS",
+    "PAIRED_MISSING_METHODS",
     "RANDOM_BALANCED_METHOD",
     "TOPOLOGY_METHODS",
     "TrajectoryBaselineModel",
+    "abtc_loss",
+    "availability_balanced_assignment",
     "availability_for_assignments",
     "baseline_loss",
     "model_contract",
+    "paired_missing_loss",
     "random_balanced_assignment",
+    "topology_smoothed_consistency_loss",
+    "uniform_mask_assignment",
 ]

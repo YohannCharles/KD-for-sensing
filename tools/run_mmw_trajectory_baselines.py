@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, train, and summarize the four sealed trajectory baselines."""
+"""Prepare, train, and summarize the sealed trajectory methods."""
 
 from __future__ import annotations
 
@@ -23,15 +23,27 @@ import yaml
 from torch.utils.data import DataLoader
 
 from kd_sensing.baselines.full_pool_bt_scl import load_audited_topology, topology_risk
+from kd_sensing.baselines.full_pool_candidate12 import MODALITIES
 from kd_sensing.baselines.full_pool_common import atomic_csv, now, sha256_file, write_json
 from kd_sensing.baselines.mmw_trajectory import (
+    ABTC_CONSISTENCY_WEIGHT,
+    ABTC_METHOD,
+    ABTC_TEMPERATURE,
+    ABTC_TOPOLOGY_SIGMA,
+    M4_BALANCED_METHOD,
+    M4_GENERIC_KL_METHOD,
+    M4_UNIFORM_METHOD,
     METHODS,
+    PAIRED_MISSING_METHODS,
     RANDOM_BALANCED_METHOD,
     TrajectoryBaselineModel,
+    availability_balanced_assignment,
     availability_for_assignments,
     baseline_loss,
     model_contract,
+    paired_missing_loss,
     random_balanced_assignment,
+    uniform_mask_assignment,
 )
 from kd_sensing.config import load_config
 from kd_sensing.data.mmw.trajectory_protocol import (
@@ -49,6 +61,9 @@ from kd_sensing.engine.normalization_artifacts import (
     save_normalization_artifacts,
     validate_normalization_artifact_fingerprint,
 )
+from kd_sensing.eval.missing_summary import save_missing_summary, summarize_missing_patterns
+from kd_sensing.evaluation.metrics import calculate_dba_score
+from kd_sensing.utils.missing_patterns import get_default_missing_patterns
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +86,21 @@ PATTERNS = {
     "missing_gps": (1, 1, 1, 0),
 }
 METRICS = ("top1", "top3", "top5", "within1", "within3", "mae", "topology_risk", "distance_gt5", "ce_loss")
+ALL_PATTERNS = {
+    name: tuple(mask)
+    for name, mask in get_default_missing_patterns(MODALITIES).items()
+    if name != "non_gps_only"
+}
+METHOD_LABELS = {
+    METHODS[0]: "M0",
+    METHODS[1]: "M1",
+    METHODS[2]: "M2",
+    METHODS[3]: "M3",
+    M4_UNIFORM_METHOD: "M4-a",
+    M4_BALANCED_METHOD: "M4-b",
+    M4_GENERIC_KL_METHOD: "M4-c",
+    ABTC_METHOD: "M4",
+}
 
 
 def set_seed(seed: int = SEED) -> None:
@@ -284,7 +314,7 @@ def prepare(output_root: Path) -> None:
             "- Protocol: mmw_trajectory_disjoint_v1; 5 history frames, 1 future beam label, 64 classes.\n"
             "- Inputs: Image, LiDAR, Radar, GPS only; channel/path/beam power/history beam/future GPS are excluded.\n"
             "- Ordinary training exposes train and validation only; sealed test prediction is unavailable.\n"
-            "- M0--M3 share Candidate12 encoders/fusion and differ only in the declared head/loss/training mask.\n",
+            "- M0--M4 share Candidate12 encoders/fusion and differ only in the declared head/loss/training mask.\n",
             encoding="utf-8",
         )
         write_json(output_root / "prepare_status.json", {"status": "passed", "checks": checks, "outer_test_accessed": False, "at": now()})
@@ -462,6 +492,151 @@ def evaluate(
     }
 
 
+def _missing_rate_rows(method: str, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[int(row["available_count"])].append(row)
+    result = []
+    for available_count in sorted(grouped, reverse=True):
+        patterns = grouped[available_count]
+        result.append(
+            {
+                "method": method,
+                "missing_rate": 1.0 - available_count / len(MODALITIES),
+                "available_count": available_count,
+                "pattern_count": len(patterns),
+                "sample_count": int(patterns[0]["sample_count"]),
+                "top1_macro": float(np.mean([float(row["top1"]) for row in patterns])),
+                "top1_worst": min(float(row["top1"]) for row in patterns),
+                "adba_macro": float(np.mean([float(row["adba"]) for row in patterns])),
+                "adba_worst": min(float(row["adba"]) for row in patterns),
+            }
+        )
+    return result
+
+
+def evaluate_all_masks(output_root: Path, method: str) -> None:
+    """Evaluate one selected checkpoint on every non-empty availability mask."""
+    run_dir = output_root / method
+    checkpoint = run_dir / "best_checkpoint.pt"
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Missing trajectory checkpoint: {checkpoint}")
+    protocol = load_trajectory_protocol(output_root / "protocol/split_manifest.json")
+    loaders, _, _ = _loaders(output_root, protocol, create_normalization=False)
+    fixed_validation = _fixed_loader(loaders["validation"], workers=8)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    started = time.monotonic()
+    try:
+        saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        if saved.get("method") != method:
+            raise ValueError(f"Checkpoint method mismatch: expected {method}, got {saved.get('method')}")
+        split_sha = sha256_file(output_root / "protocol/split_manifest.json")
+        if saved.get("split_manifest_sha256") != split_sha:
+            raise ValueError("Checkpoint and current trajectory split hashes differ.")
+        if saved.get("protocol_fingerprint") != protocol["protocol_fingerprint"]:
+            raise ValueError("Checkpoint and current trajectory protocol fingerprints differ.")
+        model = TrajectoryBaselineModel(method, **saved.get("model_config", {})).to(device)
+        model.load_state_dict(saved["state_dict"], strict=True)
+        model.eval()
+        buckets = {name: defaultdict(float) for name in ALL_PATTERNS}
+        total_batches = len(fixed_validation)
+        with torch.no_grad():
+            for batch_index, batch in enumerate(fixed_validation, 1):
+                labels = _labels(batch, device)
+                with _autocast(device):
+                    tokens = model.encode(_inputs(batch, device))
+                count = labels.numel()
+                for name, mask in ALL_PATTERNS.items():
+                    with _autocast(device):
+                        logits = model.forward_tokens(
+                            tokens,
+                            availability=torch.tensor(mask, device=device, dtype=torch.bool).expand(count, -1),
+                        )["logits"]
+                    buckets[name]["sample_count"] += count
+                    buckets[name]["top1_sum"] += float(logits.argmax(-1).eq(labels).sum().item())
+                    buckets[name]["adba_sum"] += float(
+                        calculate_dba_score(logits.float(), labels, 5, distance_mode="circular")[0]
+                    ) * count
+                if batch_index % 10 == 0 or batch_index == total_batches:
+                    elapsed = time.monotonic() - started
+                    write_json(
+                        run_dir / "all_mask_runtime_status.json",
+                        {
+                            "status": "running",
+                            "method": method,
+                            "completed_batches": batch_index,
+                            "total_batches": total_batches,
+                            "elapsed_seconds": elapsed,
+                            "estimated_remaining_seconds": elapsed * (total_batches / batch_index - 1),
+                            "outer_test_accessed": False,
+                        },
+                    )
+        rows = []
+        for name, mask in ALL_PATTERNS.items():
+            count = int(buckets[name]["sample_count"])
+            available = [modality for modality, value in zip(MODALITIES, mask) if value]
+            rows.append(
+                {
+                    "method": method,
+                    "pattern": name,
+                    "mask": ",".join(str(value) for value in mask),
+                    "available_modalities": "+".join(available),
+                    "available_count": len(available),
+                    "missing_rate": 1.0 - len(available) / len(MODALITIES),
+                    "sample_count": count,
+                    "top1": buckets[name]["top1_sum"] / max(count, 1),
+                    "adba": buckets[name]["adba_sum"] / max(count, 1),
+                }
+            )
+        rate_rows = _missing_rate_rows(method, rows)
+        atomic_csv(run_dir / "all_mask_metrics.csv", rows, list(rows[0]))
+        atomic_csv(run_dir / "missing_rate_metrics.csv", rate_rows, list(rate_rows[0]))
+        summary = summarize_missing_patterns(rows, modality_count=len(MODALITIES))
+        save_missing_summary(summary, run_dir / "all_mask_summary")
+        write_json(
+            run_dir / "all_mask_metrics.json",
+            {
+                "method": method,
+                "checkpoint_sha256": sha256_file(checkpoint),
+                "split_manifest_sha256": split_sha,
+                "protocol_fingerprint": protocol["protocol_fingerprint"],
+                "metric_profile": "64_beam_circular_progressive_top3_dba_delta5_v1",
+                "patterns": rows,
+                "missing_rates": rate_rows,
+                "summary": summary,
+                "evaluation_seconds": time.monotonic() - started,
+                "outer_test_accessed": False,
+            },
+        )
+        write_json(
+            run_dir / "all_mask_runtime_status.json",
+            {
+                "status": "passed",
+                "method": method,
+                "pattern_count": len(rows),
+                "sample_count": int(rows[0]["sample_count"]),
+                "elapsed_seconds": time.monotonic() - started,
+                "outer_test_accessed": False,
+            },
+        )
+    except Exception as exc:
+        write_json(
+            run_dir / "all_mask_runtime_status.json",
+            {
+                "status": "failed",
+                "method": method,
+                "error": repr(exc),
+                "traceback": traceback.format_exc(),
+                "outer_test_accessed": False,
+            },
+        )
+        raise
+    finally:
+        shutdown_dataloader_workers(fixed_validation)
+        for loader in loaders.values():
+            shutdown_dataloader_workers(loader)
+
+
 def _write_group_csv(path: Path, method: str, group: str, values: Mapping[str, Mapping[str, Any]]) -> None:
     rows = [{"method": method, group: key, **metrics} for key, metrics in values.items()]
     if rows:
@@ -484,12 +659,14 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     set_seed()
     model = TrajectoryBaselineModel(method).to(device)
+    topology_distance = topology.distance.to(device=device, dtype=torch.float32)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     epochs, max_batches = (1, 2) if smoke else (EPOCHS, None)
     steps_per_epoch = min(len(loaders["train"]), max_batches or len(loaders["train"]))
     optimizer, scheduler = _optimizer(model, epochs, steps_per_epoch)
-    assignments = random_balanced_assignment(_stable_train_ids(loaders["train"].dataset)) if method == RANDOM_BALANCED_METHOD else {}
+    train_ids = _stable_train_ids(loaders["train"].dataset)
+    assignments = random_balanced_assignment(train_ids) if method == RANDOM_BALANCED_METHOD else {}
     split_sha = sha256_file(output_root / "protocol/split_manifest.json")
     resolved = {
         "method": method,
@@ -511,6 +688,29 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
         "normalization_fingerprint": normalization["metadata"]["normalization_fingerprint"],
         "model": model_contract(model),
         "random_balanced_ratio": "1:1 joint/single-modality optimizer steps" if assignments else None,
+        "paired_missing": (
+            {
+                "views": "1:1 full/masked per optimizer step",
+                "mask_sampling": (
+                    "uniform over 14 masks"
+                    if method == M4_UNIFORM_METHOD
+                    else "balanced over 1/2/3, combinations balanced within level"
+                ),
+                "consistency": (
+                    "generic_kl"
+                    if method == M4_GENERIC_KL_METHOD
+                    else "topology_smoothed_kl" if method == ABTC_METHOD else "none"
+                ),
+                "consistency_weight": (
+                    ABTC_CONSISTENCY_WEIGHT if method in {M4_GENERIC_KL_METHOD, ABTC_METHOD} else 0.0
+                ),
+                "temperature": ABTC_TEMPERATURE,
+                "topology_sigma": ABTC_TOPOLOGY_SIGMA if method == ABTC_METHOD else None,
+                "full_teacher_detached": True,
+            }
+            if method in PAIRED_MISSING_METHODS
+            else None
+        ),
         "outer_test_accessed": False,
     }
     (run_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved, sort_keys=True), encoding="utf-8")
@@ -525,6 +725,12 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
             totals: dict[str, float] = defaultdict(float)
             samples = 0
             epoch_started = time.monotonic()
+            if method == M4_UNIFORM_METHOD:
+                paired_assignments = uniform_mask_assignment(train_ids, epoch=epoch, seed=SEED)
+            elif method in PAIRED_MISSING_METHODS:
+                paired_assignments = availability_balanced_assignment(train_ids, epoch=epoch, seed=SEED)
+            else:
+                paired_assignments = {}
             for step, batch in enumerate(loaders["train"]):
                 if max_batches is not None and step >= max_batches:
                     break
@@ -535,8 +741,24 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
                 if single_phase:
                     availability = availability_for_assignments([assignments[value] for value in _batch_ids(batch)], device)
                 with _autocast(device):
-                    output = model(_inputs(batch, device), availability=availability)
-                    loss, report = baseline_loss(model, output, labels)
+                    inputs = _inputs(batch, device)
+                    if paired_assignments:
+                        availability = torch.as_tensor(
+                            [paired_assignments[value] for value in _batch_ids(batch)],
+                            dtype=torch.bool,
+                            device=device,
+                        )
+                        full_output, masked_output = model.forward_paired(inputs, availability)
+                        loss, report = paired_missing_loss(
+                            model,
+                            full_output,
+                            masked_output,
+                            labels,
+                            topology_distance,
+                        )
+                    else:
+                        output = model(inputs, availability=availability)
+                        loss, report = baseline_loss(model, output, labels)
                 if not bool(torch.isfinite(loss)):
                     raise FloatingPointError(f"{method} produced non-finite loss at epoch {epoch}, step {step}.")
                 loss.backward()
@@ -547,6 +769,8 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
                 samples += count
                 totals["loss"] += float(loss.detach()) * count
                 totals["joint_samples" if not single_phase else "single_samples"] += count
+                if paired_assignments:
+                    totals["masked_samples"] += count
                 for name, value in report.items():
                     totals[name] += float(value) * count
                 complete = (epoch - 1) * steps_per_epoch + step + 1
@@ -582,9 +806,11 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
                 "train_samples": samples,
                 "joint_samples": int(totals["joint_samples"]),
                 "single_modality_samples": int(totals["single_samples"]),
+                "masked_view_samples": int(totals["masked_samples"]),
                 "train_loss": totals["loss"] / max(samples, 1),
                 "train_ce": totals["ce"] / max(samples, 1),
                 "train_topology_alignment": totals["topology_alignment"] / max(samples, 1),
+                "train_topology_consistency": totals["topology_consistency"] / max(samples, 1),
                 "validation_loss": validation["ce_loss"],
                 **{f"validation_{name}": validation[name] for name in ("top1", "top3", "within3", "mae", "topology_risk", "distance_gt5")},
                 "lr": optimizer.param_groups[-1]["lr"],
@@ -652,6 +878,7 @@ def train(output_root: Path, method: str, *, smoke: bool) -> None:
             "total_wall_seconds": time.monotonic() - started,
             "samples_per_second": float(epochs * int(protocol["train_window_count"]) / max(time.monotonic() - started, 1e-8)),
             "checkpoint_size_mib": checkpoint.stat().st_size / 1024**2,
+            "training_views_per_sample": 2 if method in PAIRED_MISSING_METHODS else 1,
         }
         write_json(run_dir / "efficiency.json", efficiency)
         (run_dir / "checkpoint_sha256.txt").write_text(metrics["checkpoint_sha256"] + "\n", encoding="utf-8")
@@ -712,6 +939,69 @@ def verify_smokes(output_root: Path) -> None:
     write_json(output_root / "smoke_tests/status.json", {"status": "passed", "checks": checks, "outer_test_accessed": False})
 
 
+def aggregate_missing_rates(output_root: Path) -> None:
+    pattern_rows: list[dict[str, Any]] = []
+    rate_rows: list[dict[str, Any]] = []
+    available = []
+    for method in METHODS:
+        pattern_path = output_root / method / "all_mask_metrics.csv"
+        rate_path = output_root / method / "missing_rate_metrics.csv"
+        if not pattern_path.is_file() or not rate_path.is_file():
+            continue
+        available.append(method)
+        with pattern_path.open(newline="", encoding="utf-8") as handle:
+            pattern_rows.extend(csv.DictReader(handle))
+        with rate_path.open(newline="", encoding="utf-8") as handle:
+            rate_rows.extend(csv.DictReader(handle))
+    if not rate_rows:
+        raise FileNotFoundError("No all-mask trajectory evaluations are available.")
+    atomic_csv(output_root / "all_mask_metrics.csv", pattern_rows, list(pattern_rows[0]))
+    atomic_csv(output_root / "missing_rate_metrics.csv", rate_rows, list(rate_rows[0]))
+    names = METHOD_LABELS
+    lines = [
+        "# MMW Modality-Missing Validation Analysis",
+        "",
+        "All values use the selected validation checkpoint. Test predictions were not accessed.",
+        "ADBA uses circular beam distance, progressive Top-3 credit, and delta=5.",
+        "",
+        "| Method | Missing rate | Available | Masks | Top-1 macro | Top-1 worst | ADBA macro | ADBA worst |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    indexed: dict[tuple[str, float], Mapping[str, Any]] = {}
+    for row in rate_rows:
+        missing_rate = float(row["missing_rate"])
+        indexed[(str(row["method"]), missing_rate)] = row
+        lines.append(
+            f"| {names[str(row['method'])]} | {100 * missing_rate:.0f}% | {row['available_count']} | {row['pattern_count']} | "
+            f"{100 * float(row['top1_macro']):.2f} | {100 * float(row['top1_worst']):.2f} | "
+            f"{100 * float(row['adba_macro']):.2f} | {100 * float(row['adba_worst']):.2f} |"
+        )
+    for title, left, right in (("M3 minus M2", METHODS[3], METHODS[2]), ("M4 minus M3", ABTC_METHOD, METHODS[3])):
+        if left not in available or right not in available:
+            continue
+        lines.extend(("", f"## {title}", "", "| Missing rate | Top-1 macro delta | ADBA macro delta |", "| --- | ---: | ---: |"))
+        for missing_rate in (0.0, 0.25, 0.5, 0.75):
+            left_row = indexed[(left, missing_rate)]
+            right_row = indexed[(right, missing_rate)]
+            lines.append(
+                f"| {100 * missing_rate:.0f}% | "
+                f"{100 * (float(left_row['top1_macro']) - float(right_row['top1_macro'])):+.2f} pp | "
+                f"{100 * (float(left_row['adba_macro']) - float(right_row['adba_macro'])):+.2f} pp |"
+            )
+    (output_root / "missing_rate_analysis.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_json(
+        output_root / "missing_rate_status.json",
+        {
+            "status": "passed" if len(available) == len(METHODS) else "partial",
+            "methods": available,
+            "pattern_count_per_method": len(ALL_PATTERNS),
+            "metric_profile": "64_beam_circular_progressive_top3_dba_delta5_v1",
+            "outer_test_accessed": False,
+            "at": now(),
+        },
+    )
+
+
 def aggregate(output_root: Path) -> None:
     available = [method for method in METHODS if (output_root / method / "metrics.json").is_file()]
     if not available:
@@ -755,7 +1045,16 @@ def aggregate(output_root: Path) -> None:
         atomic_csv(output_root / "efficiency.csv", efficiency, list(efficiency[0]))
 
     comparisons = []
-    for name, left, right in (("M1-M0", METHODS[1], METHODS[0]), ("M2-M1", METHODS[2], METHODS[1]), ("M3-M2", METHODS[3], METHODS[2])):
+    for name, left, right in (
+        ("M1-M0", METHODS[1], METHODS[0]),
+        ("M2-M1", METHODS[2], METHODS[1]),
+        ("M3-M2", METHODS[3], METHODS[2]),
+        ("M4a-M3", M4_UNIFORM_METHOD, METHODS[3]),
+        ("M4b-M4a", M4_BALANCED_METHOD, M4_UNIFORM_METHOD),
+        ("M4c-M4b", M4_GENERIC_KL_METHOD, M4_BALANCED_METHOD),
+        ("M4-M4c", ABTC_METHOD, M4_GENERIC_KL_METHOD),
+        ("M4-M3", ABTC_METHOD, METHODS[3]),
+    ):
         if left not in payloads or right not in payloads:
             continue
         left_metrics, right_metrics = payloads[left]["patterns"]["full"], payloads[right]["patterns"]["full"]
@@ -825,6 +1124,10 @@ def _write_analysis(
         METHODS[1]: ("Ordinary Prototype", "Joint"),
         METHODS[2]: ("Topology Prototype", "Joint"),
         METHODS[3]: ("Topology Prototype", "Random Balanced"),
+        M4_UNIFORM_METHOD: ("Topology Prototype", "Paired Uniform-14"),
+        M4_BALANCED_METHOD: ("Topology Prototype", "Paired Availability-Balanced"),
+        M4_GENERIC_KL_METHOD: ("Topology Prototype", "Paired Balanced + KL"),
+        ABTC_METHOD: ("Topology Prototype", "ABTC"),
     }
     indexed = {str(row["method"]): row for row in rows}
     for method in METHODS:
@@ -845,9 +1148,10 @@ def _write_analysis(
             f"18. M2 improves M1 Top1: **{float(m2m1.get('delta_top1', 0)) > 0}**.",
             f"19. First innovation passes the preregistered trajectory criteria: **{first_holds}**.",
             f"20. M3 improves M2 Top1: **{float(comparison.get('M3-M2', {}).get('delta_top1', 0)) > 0}**.",
-            "21. Hardest trajectory/weather/sector can be read from the corresponding sorted per-group CSV files.",
-            f"22. Search a second innovation on this protocol: **{'yes' if first_holds else 'no'}**, based only on validation evidence.",
-            "23. This workflow did not access test predictions, run multi-seed, or start a subsequent method search.",
+            f"21. M4 improves M3 Top1: **{float(comparison.get('M4-M3', {}).get('delta_top1', 0)) > 0}**.",
+            "22. Hardest trajectory/weather/sector can be read from the corresponding sorted per-group CSV files.",
+            f"23. The second innovation is evaluated on this protocol: **{'yes' if ABTC_METHOD in indexed else 'pending'}**.",
+            "24. This workflow did not access test predictions or run multi-seed.",
         )
     )
     (output_root / "trajectory_split_analysis.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -859,8 +1163,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--method", choices=METHODS)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--evaluate-all-masks", action="store_true")
     parser.add_argument("--verify-smokes", action="store_true")
     parser.add_argument("--aggregate", action="store_true")
+    parser.add_argument("--aggregate-missing-rates", action="store_true")
     parser.add_argument("--allow-test-evaluation", action="store_true", help="Explicit sealed-test gate; unavailable in this run.")
     return parser
 
@@ -869,17 +1175,24 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.allow_test_evaluation:
         raise ValueError("This change is validation-only; sealed test evaluation is not implemented or executed.")
-    if not any((args.prepare, args.method, args.verify_smokes, args.aggregate)):
-        raise ValueError("Select --prepare, --method, --verify-smokes, or --aggregate.")
+    if args.evaluate_all_masks and not args.method:
+        raise ValueError("--evaluate-all-masks requires --method.")
+    if not any((args.prepare, args.method, args.verify_smokes, args.aggregate, args.aggregate_missing_rates)):
+        raise ValueError("Select --prepare, --method, --verify-smokes, --aggregate, or --aggregate-missing-rates.")
     output_root = Path(args.output_root).resolve()
     if args.prepare:
         prepare(output_root)
     if args.method:
-        train(output_root, args.method, smoke=args.smoke)
+        if args.evaluate_all_masks:
+            evaluate_all_masks(output_root, args.method)
+        else:
+            train(output_root, args.method, smoke=args.smoke)
     if args.verify_smokes:
         verify_smokes(output_root)
     if args.aggregate:
         aggregate(output_root)
+    if args.aggregate_missing_rates:
+        aggregate_missing_rates(output_root)
 
 
 if __name__ == "__main__":

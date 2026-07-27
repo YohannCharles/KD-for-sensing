@@ -70,19 +70,31 @@
 - **WHEN** 未显式授权的配置或 loader 请求 test CSV
 - **THEN** 系统 MUST 在构建 test Dataset 前失败
 
-### Requirement: M0--M3 必须公平共享协议与训练预算
+### Requirement: M0--M4 必须公平共享协议与训练预算
 
-M0 线性 head、M1 普通 prototype、M2 topology prototype、M3 topology prototype 加 random-balanced 单模态训练 MUST 使用相同 train/validation group、sample ids、normalization、encoder、temporal processing、fusion、batch size、optimizer、epochs、seed 和 validation-loss checkpoint selection。所有 normalization MUST 仅从新 train split 拟合。
+M0 线性 head、M1 普通 prototype、M2 topology prototype、M3 topology prototype 加 random-balanced 单模态训练，以及 M4 availability-balanced topology consistency MUST 使用相同 train/validation group、sample ids、normalization、encoder、temporal processing、fusion、batch size、optimizer、epochs、seed、optimizer steps 和 validation-loss checkpoint selection。所有 normalization MUST 仅从新 train split 拟合。
 
-#### Scenario: 四个基线进入训练
+#### Scenario: 五个方法进入训练
 
-- **WHEN** M0--M3 的 preflight 完成
-- **THEN** 四个 resolved config MUST 记录同一 split manifest SHA256
+- **WHEN** M0--M4 的 preflight 完成
+- **THEN** 五个 resolved config MUST 记录同一 split manifest SHA256
 - **AND** 任何 normalization identity MUST 等于 train split identity
+
+#### Scenario: M4 构造 availability-balanced paired views
+
+- **WHEN** M4 处理一个 train batch
+- **THEN** encoder MUST 只计算一次并产生 full 与 masked 两个 fusion view
+- **AND** masked view 的 1/2/3 可用模态等级及等级内组合 MUST 仅由 train sample identity、epoch 和固定 seed 确定性均衡
+- **AND** topology consistency MUST 使用 detached full teacher 与审计 beam topology distance
+
+#### Scenario: M4 执行因果消融
+
+- **WHEN** 比较 M4-a、M4-b、M4-c 与 M4
+- **THEN** 四者 MUST 仅依次改变 mask 均衡与 consistency 类型
+- **AND** 四者 MUST 保持 paired supervision、单卡 batch size、optimizer steps、seed、split 与 checkpoint selection 相同
 
 #### Scenario: 最小训练 smoke
 
 - **WHEN** 每个方法执行两个 train steps 并保存 checkpoint 与 metrics
 - **THEN** loss MUST 为有限值
 - **AND** checkpoint MUST 可加载且 metrics MUST 可写入
-

@@ -10,7 +10,7 @@
 - 对 train/validation/test 两两执行 sample、target、CSV row、依赖帧、四模态资源、channel 审计身份、trajectory 和场景执行的零交集审计；失败时禁止训练。
 - 生成可复核 manifest、hash、分布统计、异常记录、历史暴露与 claim eligibility；所有内容写入本地 `outputs/`，不进入源码。
 - 默认训练只暴露 train/validation；test 评测必须显式授权，本 change 不执行 test 推理。
-- 复用 Candidate12 的 encoder/fusion，提供 M0 线性、M1 普通 prototype、M2 topology prototype、M3 topology prototype + random-balanced 四个固定基线及 GPU 0--3 启动、监控和 validation 汇总。
+- 复用 Candidate12 的 encoder/fusion，提供 M0 线性、M1 普通 prototype、M2 topology prototype、M3 topology prototype + random-balanced，以及 M4 availability-balanced topology consistency 五个固定方法；M4 另保留 uniform-mask、availability-balanced-only、generic-KL 三个因果消融，并提供本地启动、监控和 validation 汇总。
 - 保持现有 5 帧历史、1 帧预测、64 beam、四模态输入、预处理、优化目标以外的模型和数据定义不变；channel/path/beam power、历史 beam index、未来 GPS 均不作为模型输入。
 
 ## Capabilities
@@ -23,7 +23,7 @@
 
 - `clean-data-integrity`: 将 MMW 正式研发数据域从仅允许 clean-inner 扩展为可精确绑定且通过审计的 trajectory-disjoint train/validation，并继续禁止 validation/test 参与拟合状态。
 - `repo-boundaries`: 允许一个项目内研究工具和脚本实现新协议，同时继续禁止新增 public CLI、提交本地数据与运行产物。
-- `u0-mainline`: 允许限定的 M0--M3 轨迹协议基线复用当前 Candidate12 公共架构，但不扩大 canonical recipe 或恢复退役模型路线。
+- `u0-mainline`: 允许限定的 M0--M4 轨迹协议方法复用当前 Candidate12 公共架构，但不扩大 canonical recipe 或恢复退役模型路线。
 
 ## Impact
 

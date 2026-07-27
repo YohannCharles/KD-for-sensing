@@ -11,7 +11,7 @@
 - 从完整候选窗口确定性重建不会跨 split 共享资源的 trajectory groups。
 - 生成固定 seed 的 group-level 80/10/10 manifest、两两资源零交集审计、历史暴露和完整统计。
 - 默认只让普通训练加载 train/validation，并让 test 保持 manifest 层封存。
-- 在同一协议和训练预算上运行 M0--M3，并只汇总 validation 结果。
+- 在同一协议和训练预算上运行 M0--M4，并只汇总 validation 结果。
 - 让协议生成、loader 绑定、模型公平性和两步 smoke 都有 focused tests。
 
 **Non-Goals:**
@@ -54,16 +54,28 @@
 
 扫描用户指定输出根中可读的 manifest 和 split CSV，提取稳定 sample/target identity及其历史 role。无法从 aggregate-only 文件恢复逐样本身份时记录 unavailable，不猜测。任一新 test sample 出现在历史 train 或方法选择 validation 时，`claim_eligible=false`；当前 Full-pool 已覆盖绝大多数候选窗口，预期为 false。
 
-### 6. 四基线仅在 head/loss/training mask 上不同
+### 6. M0--M3 仅在 head/loss/training mask 上不同
 
 复用 Candidate12 encoder 与 fusion，增加可选 linear head，保留一个 64 prototype bank。M0 用 linear CE；M1 用 prototype CE 但 topology loss 权重为零；M2 使用当前 topology prototype loss；M3 与 M2 相同并按 seed 2026 对四个单模态做随机均衡训练。四者使用同一 split hash、normalization、batch size、epoch、optimizer 和 validation-loss checkpoint selection。
+
+### 7. 缺失率分析复用最佳 checkpoint 和正式指标定义
+
+训练完成后只加载各方法按 validation loss 选出的最佳 checkpoint，在同一 validation split 上穷举四模态的 15 个非空 availability mask；不得重新训练、重新选 checkpoint 或访问 test。按可用模态数将结果映射为 0%、25%、50%、75% 缺失率，分别报告逐 mask 以及 Top-1/ADBA 的 macro 与 worst。ADBA 必须复用 `kd_sensing.evaluation.metrics.calculate_dba_score` 的 circular、Top-3、delta=5 定义。
+
+### 8. M4 使用 availability-balanced topology consistency
+
+保留 M3 作为 full/固定单模态随机均衡消融，新增 M4 ABTC。每个 M4 batch 只运行一次四模态 encoder，并从同一 tokens 产生 full anchor 与一个 masked view；两者各占监督损失的一半。masked view 的可用模态数在 1/2/3 之间使用 train sample identity 与 epoch 确定性均衡，等级内所有组合的数量差不超过一，validation 不参与 mask 分配。
+
+一致性项先用审计 topology distance 构造固定 Gaussian row-stochastic kernel，再分别平滑 detached full 概率和 masked 概率，计算 temperature-scaled KL。该项只约束 beam topology 邻域分布，不新增模型参数；M4 与 M2/M3 保持相同 encoder、fusion、prototype head、optimizer steps、checkpoint selection 和 split identity，并单独报告双视图训练开销。
+
+M4 的因果消融固定为四个并行作业：M4-a 对 14 个非空缺失 mask 直接均匀采样且无 consistency；M4-b 只加入 availability-level balance；M4-c 在 M4-b 上使用相同权重的普通 temperature KL；M4 使用 topology-smoothed KL。四者都采用相同 full/masked paired supervision、seed、训练预算和单卡 batch 统计，分别绑定 GPU 0--3，避免多卡 BatchNorm 改变公平口径。
 
 ## Risks / Trade-offs
 
 - [当前数据只有 15 个完整场景执行 group，test 仅 1 组，天气/domain 覆盖不能全面平衡] -> 保持完整 group，明确报告约束缺口，不拆组也不换 seed。
 - [共享资源图可能因过宽 identity 合并无关天气或场景] -> 所有资源 identity 使用 condition/domain 命名空间，场景重叠边只在同一 scenario execution 内生效。
 - [历史 manifest 格式不统一，逐样本暴露可能无法完全恢复] -> 报告扫描文件、可恢复条目和 unavailable 源；claim eligibility 采用保守 false。
-- [四卡 20 epoch 运行时间较长] -> prepare 和 2-step smoke 先失败关闭；正式任务独立 PID/exit code，一个失败不终止其他任务。
+- [正式 20 epoch 运行时间较长] -> prepare 和 2-step smoke 先失败关闭；正式任务独立 PID/exit code，一个失败不终止其他任务。
 - [现有两个 unrelated active change 已违反 current spec 的单 change 约束] -> 本 change 不改写或归档它们，并在最终状态明确记录该既有治理冲突。
 
 ## Migration Plan
@@ -71,10 +83,9 @@
 1. 先合入协议 owner、delta specs 和 focused tests，不改 canonical YAML。
 2. 在本地生成 `outputs/mmw_trajectory_split/protocol/`，严格校验 46,860 candidates、资源零交集和 test sealed。
 3. 用协议 train split 重新拟合 normalization，完成两步 smoke 与 checkpoint round-trip。
-4. GPU 0--3 独立启动 M0--M3，只读取 train/validation，持续写状态。
+4. GPU 0--3 独立启动 M0--M3 或 M4 四个因果消融；所有方法只读取 train/validation 并持续写状态。
 5. 汇总 validation 和协议统计；若需回滚，只停止使用本地新 manifest，源码不迁移或删除任何既有产物。
 
 ## Open Questions
 
 - 当前 15-group 数据不足以同时让 validation/test 覆盖全部天气与 domain；本 change 记录这一事实。更细粒度但仍资源互斥的 trajectory 只有在上游提供真实 run/episode 元数据或独立 RSU 时间段时才能成立。
-
