@@ -257,7 +257,14 @@ class MMWDataset(Dataset):
         row = self._row(idx)
         metadata = {
             key: text
-            for key in ("condition", "town", "sensor_scenario", "sample_id", "target_sample_id")
+            for key in (
+                "condition",
+                "town",
+                "sensor_scenario",
+                "sample_id",
+                "target_sample_id",
+                "trajectory_group_id",
+            )
             if (text := _row_text(row, key)) is not None
         }
         source_sample_id = str(

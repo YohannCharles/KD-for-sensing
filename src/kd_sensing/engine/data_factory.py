@@ -69,6 +69,8 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     domains = dataset_cfg.get("domains") if isinstance(dataset_cfg, dict) else None
     if isinstance(domains, list) and domains:
+        if cfg.get("data_protocol", {}).get("mode") == "trajectory_disjoint_development":
+            return any(isinstance(domain, dict) and bool(domain.get("val_csv_name")) for domain in domains)
         return all(isinstance(domain, dict) and bool(domain.get("val_csv_name")) for domain in domains)
     return bool(dataset_cfg.get("val_csv_name"))
 
@@ -319,6 +321,11 @@ def _build_pooled_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwar
         if domain_id in seen:
             raise ValueError(f"Duplicate pooled domain id: {domain_id}.")
         seen.add(domain_id)
+    if cfg.get("data_protocol", {}).get("mode") == "trajectory_disjoint_development":
+        csv_key = {"train": "train_csv_name", "validation": "val_csv_name", "test": "test_csv_name"}[split]
+        domains = [domain for domain in domains if bool(domain.get(csv_key))]
+        if not domains:
+            raise ValueError(f"Trajectory protocol has no authorized {split} domains.")
     import_default_components()
 
     def build_domain(domain: dict[str, Any]) -> tuple[Any, dict[str, Any]]:

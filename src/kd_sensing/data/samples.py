@@ -48,7 +48,15 @@ def create_samples(
     row_columns = [
         column
         for column in frame.columns
-        if column in {"condition", "town", "sensor_scenario", "sample_id", "target_sample_id"}
+        if column
+        in {
+            "condition",
+            "town",
+            "sensor_scenario",
+            "sample_id",
+            "target_sample_id",
+            "trajectory_group_id",
+        }
         or str(column).startswith("future_beam")
     ]
     _validate_columns(

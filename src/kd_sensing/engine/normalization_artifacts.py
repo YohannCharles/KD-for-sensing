@@ -104,7 +104,11 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
         if recorded != expected:
             raise ValueError(f"GPS normalization artifact feature mode {recorded!r} does not match evaluation config {expected!r}.")
     protocol = cfg.get("data_protocol")
-    if isinstance(protocol, dict) and protocol.get("mode") in {"clean_inner_development", "full_pool_development"}:
+    if isinstance(protocol, dict) and protocol.get("mode") in {
+        "clean_inner_development",
+        "full_pool_development",
+        "trajectory_disjoint_development",
+    }:
         report = json.loads(Path(str(protocol.get("audit_report", ""))).read_text(encoding="utf-8"))
         recorded = artifacts["metadata"]
         expected_source_split = str(protocol.get("train_role", "inner_train"))
