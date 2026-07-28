@@ -22,6 +22,15 @@ Clean MMW U0 在 Image、LiDAR 等强模态缺失时仍可能出现决策边界�
 - 增加独立的 Full-Pool Candidate12 快速筛选：在禁止 current U0 sample-specific router 的前提下，复用其四模态 encoder 配置、`BeamPrototypeBank`、BPA 权重与审计 topology，以唯一 5-epoch warm-up 比较 KL Data Remixing、共享 prototype-risk assignment、同模态 batch 重组、非环形角度顺序上的 prototype-anchored motion refinement 及组合路线；六路只研究 Full 四模态主结果，不新增 public CLI 或 canonical recipe。
 - 在 BTMA B0--B5 判定不进入 multi-seed 后，增加一次只读负结果收尾：从已保存的六个 BTMA checkpoint 重算逐样本 validation 预测，按 `(domain, cav)` 内连续帧块做成对 temporal block bootstrap，并用既有 warm-up train cache 与 assignment CSV 计算 assignment score 与单模态拓扑误差的相关性及跨 epoch 秩稳定性。该收尾不重训、不调参、不启动 multi-seed 或 outer test，其结果不得用于重开 BTMA 路线。
 - 增加冻结 Full-pool U0 上的 Router 可观测性因果筛选：一次性缓存与 mask 无关的 `latent_sequence` 与各 encoder 末层线性变换的输入特征，然后在完全相同的冻结表征上只重训 router，比较仅现有标量、加 prototype-space 状态、加投影前 quality 分支及等参数量置换负对照四条嵌套路线；同时在自然天气与注入分级腐蚀两个退化设定下运行三个 router seed，并对处理组执行冻结权重的推理期消融。该筛选只回答 routing 输入问题，不训练 encoder，不修改 U0 canonical recipe 或 public CLI。
+- 增加 Prototype-Conditioned Low-Overhead Pilot Transition 本地实验：只使用最后输入帧的 path-level channel 在模型外直接生成恒模空间探测模式上的稀疏带噪 pilot，训练期学习 prototype 到固定候选 pattern 的查找表，并以局部/全局双路径 prototype transition 和可靠性门控修正冻结的 sensing prototype 分布。
+- 增加 C0--C6、SNR、pilot budget、Fix/Harm、CSI-off 严格回退、导频资源与延迟诊断。模型不得读取完整 CSI、`a`、`tau`、AoD/AoA、目标帧 channel 或 32-pattern oracle 输入；正式 lookup 只能由 train split 学习并离线导出。
+- 在首轮 M=4、Kp=8 短程诊断未提升 Top-1 后，增加单 seed dense-to-sparse curriculum：从全部 32 个固定候选 pattern、16 个 pilot 频点开始，按 `32x16 -> 16x16 -> 8x8 -> 4x8` 逐阶段删减 observation，并记录每阶段预算/性能；dense 阶段只作为可学习性诊断，不得声称低开销结果。
+- 在 100/100、8-epoch matched-update 四路均未改变 C0 决策后，按用户授权增加 2,000/1,000、40-epoch scale-up：使用 15-domain 确定性均衡子集、相同 batch/初始化和四路预算，保存逐 epoch 优化、route/reliability、梯度及轻量 checkpoint 证据，以区分样本/轮次不足与 transition/gate 失效。
+- 将 sparse CSI 的目标从 Full 条件纠错改为严重模态缺失兜底：训练期提高仅余 1--2 个感知模态样本的权重，增加不依赖 sensing feature 的 CSI-only prototype 预测及直接监督，并把感知模态可用比例送入 reliability gate；以 Single Macro/Worst、All-14 Macro 和 Full 不伤害共同判定。
+- 在 D32x16 仅出现弱兜底信号而 4x16/4x8 无收益后，补齐 D16x16、S8x16、S16x8、S8x8 四个独立 40-epoch 中间预算；不改模型、损失或样本，以定位 512 RE 到 32 RE 之间的可学习性断点并区分空间与频率稀疏。
+- 在继续优化 gate/route/selector 前增加 CSI 信息恢复诊断：以固定的 4 个 QPSK pattern、8 个均匀频点和相同 2,000/1,000 development 子集，比较当前帧 CSI 对当前/未来 beam、五帧历史 CSI 对未来 beam、冻结 U0 以及 U0+CSI simple concat；D1 从既有 `beam5` 功率 artifact 取 argmax，只有历史或单帧 concat 稳定优于对应冻结 U0 时才允许进入 forced transition。
+- 为恢复诊断和后续分阶段训练补齐逐 epoch 收敛、严重缺失指标、梯度、分布漂移、学习率、完整可恢复 checkpoint 与 patience=10 的统一开发期 early stopping；所有本地产物写入独立 `outputs/sparse_pilot_recovery/`，不得访问 outer test。
+- 修正首轮 recovery 误绑定旧 `mmw_full_pool_development_v1` 的协议错误：旧 2,000/1,000 结果只保留为无效历史证据；正式三轮闭环必须绑定最新 `mmw_trajectory_disjoint_v1`、37,510 train/6,365 validation 与已发布 M4 checkpoint。Round 1 用固定 32x16 QPSK pilot 建立信息上界，Round 2 逐步删减到 16x16/8x16/16x8/8x8/4x16/4x8，并用等 RE 形状对照选择最小可行预算；Round 3 在严重缺失（仅余 1--2 个感知模态）时确定性切换到所选 CSI-only I3 分布，在三模态与 Full 上严格保留冻结 M4 分布；三轮均封存 test。
 
 ## Capabilities
 
@@ -34,7 +43,10 @@ Clean MMW U0 在 Image、LiDAR 等强模态缺失时仍可能出现决策边界�
 - `u0-mainline`: 定义冻结 U0 上仅对缺失条件生效的实验性决策 Adapter 合约，以及 Full 前向严格旁路。
 - `clean-data-integrity`: 定义该实验只可访问经过审计的 inner_train 与 inner_validation，且所有可拟合 Adapter 状态仅来自 inner_train。
 - `repo-boundaries`: 明确实验运行产物、checkpoint、逐样本预测与统计报告保持在本地产物边界，实验脚本不扩展公共 CLI。
+- `u0-mainline`: 定义固定恒模 probe codebook、稀疏 pilot encoder、prototype-conditioned offline lookup、双路径 transition 与 CSI-off 等价合约。
+- `clean-data-integrity`: 定义 pilot 只能绑定最后输入帧 channel，selector/cache 可拟合状态只来自 train，validation/test 不得参与 lookup 或 codebook 生成。
+- `repo-boundaries`: 定义 sparse-pilot workflow 仍为本地实验工具，生成 codebook、cache、lookup、诊断和 ablation 均留在 `outputs/`。
 
 ## Impact
 
-影响 `src/kd_sensing/models/` 中 U0 的只读诊断接口和新增 Adapter 模块，新增受协议约束的实验训练/评估模块、Full-pool 数据协议构造器、脚本、配置及针对冻结、掩码、等价性和统计隔离的测试。不会修改 U0 canonical recipe、编码器、融合、prototype、分类器或公共 CLI。
+影响 `src/kd_sensing/models/` 中 U0 的只读诊断接口和新增 Adapter/稀疏 pilot 模块，新增 `src/kd_sensing/channel/`、受协议约束的实验训练/评估模块、Full-pool 数据协议构造器、脚本、配置及针对冻结、掩码、等价性、时间泄漏和统计隔离的测试。不会新增 public CLI；关闭 sparse-pilot 开关时必须保持现有四模态 U0 数值路径。

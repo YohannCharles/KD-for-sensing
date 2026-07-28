@@ -130,3 +130,52 @@ Router 可观测性筛选 MUST 绑定与冻结 U0 相同的 Full-pool protocol f
 - **WHEN** 处理组执行冻结权重推理期消融
 - **THEN** 替换所用的均值嵌入 MUST 只由 train 计算
 - **AND** 消融 MUST NOT 更新任何参数，MUST NOT 依据 validation 结果选择替换目标
+### Requirement: sparse pilot 输入严格绑定最后历史帧
+MMW sparse-pilot workflow MUST 使用 sequence row 的最后输入帧 channel，默认 `pilot_time_mode=last_input`。pilot frame MUST 不晚于最后 sensing frame，且 MUST 早于 `future_beam_label1` 对应目标帧；`future_csi*`、目标帧 channel 和未来 channel MUST NOT 成为模型或 selector 输入。
+
+#### Scenario: 解析 channel_ref
+- **WHEN** dataset 为一个历史窗口导出 pilot channel reference
+- **THEN** 它 MUST 同时导出 history、target 与 pilot frame identity 并验证 `pilot_frame <= last_input_frame < target_frame`
+- **AND** 任一 identity 缺失、错位或指向 `future_csi*` MUST 在读取 NPZ 前失败
+
+### Requirement: codebook、lookup 与统计保持 train-only
+可学习 prototype lookup、selector usage、normalization、Stage A/B 参数与任何用于推理的统计 MUST 只由 audited train split 拟合。validation/test MAY 使用固定 codebook 和固定 lookup 生成带噪 pilot，但 MUST NOT 更新它们或基于完整 channel 重新选择 pattern。
+
+#### Scenario: validation/test sparse-pilot evaluation
+- **WHEN** 运行固定 SNR 与 dropout 评估
+- **THEN** 随机性 MUST 由 split/sample/SNR 绑定的确定性 seed 控制
+- **AND** evaluation MUST 不更新 optimizer、lookup、cache metadata 或 train-only statistics
+
+### Requirement: dense-to-sparse 课程保持同一 train-only 状态
+Dense-to-sparse 四阶段 MUST 只使用 audited Full-pool train 更新 selector、encoder、transition 与 optimizer。各阶段 validation MUST 只读；预算课程、母频率网格、阶段 epoch 和最终 lookup 宽度 MUST 在读取 validation 指标前固定。
+
+#### Scenario: 阶段结束评估
+- **WHEN** D32x16、D16x16、S8x8 或 T4x8 完成
+- **THEN** validation MAY 生成该阶段指标但 MUST NOT 反向传播、更新 lookup 或决定是否跳过后续预注册阶段
+- **AND** outer test MUST 保持未访问
+
+#### Scenario: scale-up 子集构建
+- **WHEN** sparse-pilot scale-up 从 Full-pool train 与 inner validation 各选择 2,000/1,000 个样本
+- **THEN** 两个角色 MUST 分别在 15 个 domain 间确定性均衡，并在每个 domain 内等距选择无重复索引
+- **AND** 四个 budget arm MUST 使用完全相同的 train/validation 索引与 train-only codebook
+- **AND** inner validation、future channel 与 outer test MUST 不参与 selector、模型、optimizer、抽样或 checkpoint 更新
+
+### Requirement: recovery diagnostic 只读取历史 channel 与既有当前标签
+CSI recovery diagnostic MAY 在显式开关下读取 `csi1..csiT` 与 `beamT`，但 MUST 逐帧绑定 `history_frame_ids_json`，且所有历史帧 MUST 早于首个 target frame。Full-pool `beam_label` 已是未来标签别名，不得作为 D1 当前标签；`future_csi*` 与 outer test MUST 保持未访问。
+
+#### Scenario: 导出五帧历史 sparse pilot 输入
+- **WHEN** recovery runner 请求 `channel_history_refs`
+- **THEN** dataset MUST 返回恰好 `seq_len` 个不透明历史引用，并逐个验证文件 frame id 等于对应 history frame id
+- **AND** current label MUST 直接由 `beamT` 功率向量 argmax 产生，且不得读取 Full-pool `beam_label` 作为当前标签
+- **AND** train/validation MUST 复用同一 2,000/1,000 domain-balanced 无重复物理样本索引，所有模型参数和可拟合状态仅由 train 更新
+
+### Requirement: trajectory recovery 纠错必须绑定最新轨迹互斥协议
+
+正式 recovery 三轮 MUST 精确绑定 `mmw_trajectory_disjoint_v1` 的 protocol fingerprint、split manifest、37,510 train、6,365 validation 与 train-only normalization。旧 Full-pool 2,000/1,000 recovery 结果 MUST 标记为协议错误且不得参与门槛；sealed test MUST 不构建 loader、不生成 pilot、不执行预测。
+
+#### Scenario: 构建 trajectory recovery cache
+
+- **WHEN** runner 准备最大 32x16 历史 pilot cache 与冻结 M4 表征
+- **THEN** 它 MUST 在读取 channel 前验证 M4 checkpoint 的 protocol fingerprint 和 split manifest SHA256
+- **AND** validation 的 Full Top-1 MUST 与已发布 M4 evidence 在数值容差内一致
+- **AND** 后续稀疏预算 MUST 只从同一母 cache 删除 pattern 或读取嵌套频点，不得重新拟合 codebook

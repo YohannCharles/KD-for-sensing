@@ -205,3 +205,101 @@ R2--R5 MUST 绑定经 15-domain 回放验证的 `ula_dft_phase_cycle_v1` manifes
 - **AND** 判据 MUST 使用三个 router seed 且区间不重叠，骨干单 seed MUST 在报告中写明
 - **AND** 任一门槛不满足 MUST fail closed，MUST NOT 调参、追加 seed 或访问 outer test
 - **AND** 处理组 MUST 报告冻结权重推理期消融的结果
+### Requirement: 稀疏 pilot 只能驱动 prototype-space transition
+系统 MUST 支持 development-only 的 Prototype-Conditioned Low-Overhead Pilot Transition。它 MUST 保留 U0 四模态 sensing forward、64 个一 beam 一 prototype 的 bank、15 个非空 sensing mask 与 audited cyclic topology；CSI 分支 MUST 只读取实际选择的 `M x Kp` 复 pilot observation，不得读取完整 CSI、path 参数、目标标签或未选择的候选 observation。
+
+#### Scenario: CSI 可用的两阶段前向
+- **WHEN** sensing prototype id 选择离线 lookup 中的 M 个 pattern
+- **THEN** SparsePilotEncoder MUST 只接收这些 pattern 的 observation、id、frequency、valid mask 与 SNR
+- **AND** final prediction MUST 是 `p0` 与局部/全局 prototype transition 的可靠性门控混合，不得是自由 beam-logit residual
+
+#### Scenario: CSI 缺失或全部 pilot dropout
+- **WHEN** `csi_available=false` 或没有有效 pilot token
+- **THEN** `alpha` MUST 严格为 0 且 `p_final` MUST 与 sensing `p0` 逐元素相同
+
+### Requirement: probe codebook 满足固定硬件约束
+主 probe codebook MUST 使用确定性、split-independent 的恒模 Tx/Rx pattern pair；每个 Tx/Rx pattern 的范数 MUST 为 1，每个元素幅值 MUST 分别为 `1/sqrt(Nt)` 与 `1/sqrt(Nr)`。正式 validation/test MUST 只加载 train-time 已发布且 hash 匹配的 codebook 和 prototype lookup。
+
+#### Scenario: 正式 lookup 推理
+- **WHEN** 模型在 validation/test 或部署模式选择 pilot
+- **THEN** 它 MUST 执行 prototype 到 pattern id 的 O(1) JSON lookup
+- **AND** 不得运行 Gumbel、online search、oracle all-candidate selection 或基于测试 channel 重建 codebook
+
+### Requirement: dense-to-sparse 训练只删除嵌套 pilot token
+系统 MUST 支持 development-only 的 `32x16 -> 16x16 -> 8x8 -> 4x8` 连续预算课程。四阶段 MUST 共享冻结 U0、CSI encoder、PrototypeTransition、selector 参数和 optimizer 状态；Kp=8 MUST 是同一 16 点频率母网格的确定性子集，后续阶段不得更换 observation 定义。
+
+#### Scenario: 从 dense 阶段转入目标预算
+- **WHEN** 一个 curriculum 阶段完成并进入下一阶段
+- **THEN** 新阶段交给 encoder 的 pattern 数和频点数 MUST 不增加
+- **AND** D32x16 MUST 报告为 32 sounding/512 RE 的诊断上界，T4x8 MUST 报告为 4 sounding/32 RE 的目标结果
+- **AND** validation 指标 MUST NOT 改变既定阶段、epoch、频点子集或 selector 训练状态
+
+#### Scenario: matched-update 预算归因
+- **WHEN** 系统比较 pilot 数量与 curriculum 效应
+- **THEN** D32x16-only、4x16-only、T4x8-only 与 curriculum MUST 各训练总计 8 epoch 并共享初始化和训练 profile
+- **AND** 4x16 MUST 只改变频率预算，T4x8 MUST 同时使用目标空间和频率预算
+- **AND** 四路 MUST 分别绑定 GPU0--3，失败不得触发抢占、自动调参或隐式重跑
+
+#### Scenario: 增加样本与更新量后的收敛归因
+- **WHEN** 用户授权检验短程训练是否不足
+- **THEN** 四路 MUST 各使用 2,000 个 domain-balanced train、1,000 个 domain-balanced inner validation、40 epoch 与 batch 8
+- **AND** 单阶段 arm MUST 获得 40 epoch，curriculum MUST 按四阶段各 10 epoch 且继承同一 optimizer
+- **AND** 系统 MUST 逐 epoch 记录分项 loss、训练决策变化、route/reliability 分布和模块梯度范数
+- **AND** validation MUST 分块只读且不得决定 epoch、checkpoint 或超参数
+
+#### Scenario: 严重模态缺失下由 sparse CSI 兜底
+- **WHEN** 用户要求 sparse CSI 在只剩 1--2 个感知模态时保持 beam prediction 性能
+- **THEN** train mask MUST 按可用模态数使用固定 `50%/35%/10%/5%` 权重，并在同一 cardinality 内均衡各 mask
+- **AND** 模型 MUST 产生不读取 sensing feature 的 CSI-only prototype distribution，并对其施加直接 train-only 分类/拓扑监督
+- **AND** reliability gate MUST 显式读取 sensing availability fraction，且 CSI unavailable 或全部 pilot dropout 时仍严格输出 `p_final=p0`
+- **AND** 主判据 MUST 是 Single Macro、Single Worst 与 All-14 Macro 的 CSI-on 相对 CSI-off Top-1 增益，并同时要求 Full Top-1 不退化
+
+#### Scenario: 逐级稀疏定位兜底预算断点
+- **WHEN** D32x16 有弱严重缺失增益而 4x16/4x8 没有增益
+- **THEN** 系统 MUST 以独立 40-epoch arm 补齐 D16x16、S8x16、S16x8 与 S8x8
+- **AND** 四路 MUST 保持模型、loss、2,000/1,000 样本索引、missing-mask schedule、seed 与 batch 8 不变
+- **AND** S8x16 与 S16x8 MUST 同为 128 RE，以区分空间 sounding 与频率 token 稀疏的影响
+- **AND** 结果 MUST 与既有 D32x16、4x16 和 4x8 一起按 512/256/128/64/32 RE 报告，不得用 validation 选择或重训预算
+
+### Requirement: CSI 信息诊断必须隔离复杂决策模块
+恢复诊断 MUST 使用跨 split/seed 相同的固定 4-pattern QPSK codebook 和 8 个均匀频点。CSI-only 任务 MUST 仅包含 `SparsePilotEncoder`、可选两层时序 GRU 和 64 类 MLP；concat 任务 MUST 仅追加冻结 U0 `z_sensing`，不得启用 selector、local/global route、reliability gate 或 preserve loss。
+
+#### Scenario: 比较当前与历史 CSI 信息
+- **WHEN** 系统运行 I1--I5 信息诊断
+- **THEN** I1 MUST 预测当前 `beam_t`，I2 MUST 由 `CSI_t` 预测 `beam_{t+1}`，I3 MUST 由 `CSI_{t-4:t}` 预测 `beam_{t+1}`
+- **AND** I0/I4/I5 MUST 在同一物理 validation 样本和相同 single masks 上比较冻结 U0、单帧 concat 与历史 concat
+- **AND** I1 的 `beam_t` MUST 直接来自既有 `beam5` 功率 artifact 的 argmax；Full-pool `beam_label` 是未来标签别名，MUST NOT 用作当前标签
+
+#### Scenario: 决定是否进入 forced transition
+- **WHEN** 三 seed 信息诊断完成
+- **THEN** 若 I1 很弱，workflow MUST 停止并优先审计 simulator/标签/频率/码本
+- **AND** 若 I4/I5 均未方向一致地超过 I0 Single Macro，workflow MUST NOT 启动 Stage A1/A2、route 或 selector
+- **AND** 若 I5 优于 I4，后续 forced transition MUST 使用五帧历史 CSI；否则使用单帧 CSI
+
+### Requirement: trajectory recovery 按三轮单因素闭环推进
+
+Trajectory recovery MUST 先以 32x16 固定 observation 运行 I1--I5；若 I3 明显高于 I4/I5 的 Single Worst，MUST 从 dense I3 checkpoint 初始化并逐步比较 16x16、8x16、16x8、8x8、4x16、4x8，其中两个 128 RE 与两个 64 RE 配对 MUST 分别报告。稀疏任务 MUST 重置 optimizer/scheduler。最后 MUST 在选定预算上评估确定性 availability fallback：可用感知模态数不超过 2 时使用 CSI-only 分布，可用 3 个模态或 Full 时使用冻结 M4。每一轮 MUST 在下一轮启动前生成分析；Round 3 MUST 同时报告 Full、Single Macro/Worst 与 All-14 Macro/Worst，且不得引入可学习 gate、route 或 selector。
+
+#### Scenario: 选择最小可行 pilot budget
+
+- **WHEN** Round 2 完成多个嵌套预算
+- **THEN** workflow MUST 以 CSI-only I3 Top-1（集成后四个 single-mask 的共同 Macro/Worst）为第一目标，并在距最佳值不超过 0.5 个百分点的候选中选择最小 RE
+- **AND** Full Top-1 MUST 作为灾难性退化 guard 单独报告，但 MUST NOT 参与严重缺失主排序
+- **AND** 若没有预算满足，MUST 明确报告失败并只把最佳预算当作诊断上界
+- **AND** 同一 validation 上的三轮自适应结果 MUST 标记为 development exploratory evidence
+
+#### Scenario: 严重缺失使用确定性 CSI 旁路
+
+- **WHEN** Round 3 集成所选 sparse I3 checkpoint
+- **THEN** 可用感知模态数不超过 2 的样本 MUST 使用 CSI-only 分布
+- **AND** 可用 3 个感知模态或 Full 的样本 MUST 原样使用冻结 M4 分布
+- **AND** Full 概率最大绝对差和 argmax mismatch MUST 均为零
+
+### Requirement: 恢复训练必须保留完整收敛与恢复状态
+恢复诊断及后续 A1/A2 MUST 逐 epoch 保存训练损失分项、validation Top-k/Within-3/MAE、Single/All-14、Fix/Harm、适用的 alpha/route 分布、模块梯度、KL/entropy 与学习率。最大 epoch MUST 为 60，统一 early-stopping patience MUST 为 10。
+
+#### Scenario: 保存恢复 checkpoint
+- **WHEN** 任一学习任务完成一个 epoch
+- **THEN** last checkpoint MUST 包含 model、optimizer、scheduler、epoch、resolved config 与 Python/NumPy/Torch/CUDA RNG state
+- **AND** workflow MUST 由 Single Worst 驱动 early stopping 并发布 best Single Worst，同时分别维护 best Single Macro、best Fix Rate 和 best validation loss checkpoint；不适用的选择指标 MUST 在 metadata 中明确标记
+- **AND** All-14 与 Full MAY 只在最终 best Single Worst checkpoint 上补算，不得取代严重缺失主指标

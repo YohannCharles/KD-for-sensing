@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset, get_worker_info
 
 from kd_sensing.data.layouts import mmw_condition_layout
+from kd_sensing.data.mmw.pilot_alignment import resolve_input_channel_refs, resolve_last_input_channel_ref
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_coordinate_cache, load_gps_feature_sequence
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, load_rgb_imagenet_frames
@@ -63,6 +64,9 @@ class MMWDataset(Dataset):
         lidar_jitter_std: float = 0.0,
         include_router_utility_targets: bool = False,
         include_router_corruption_metadata: bool = False,
+        include_channel_ref: bool = False,
+        include_channel_history_refs: bool = False,
+        pilot_time_mode: str = "last_input",
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         if not str(condition or "").strip() or not str(scene or "").strip():
@@ -109,6 +113,11 @@ class MMWDataset(Dataset):
         self.gps_scaler = gps_scaler
         self.include_router_utility_targets = bool(include_router_utility_targets)
         self.include_router_corruption_metadata = bool(include_router_corruption_metadata)
+        self.include_channel_ref = bool(include_channel_ref)
+        self.include_channel_history_refs = bool(include_channel_history_refs)
+        self.pilot_time_mode = str(pilot_time_mode)
+        if (self.include_channel_ref or self.include_channel_history_refs) and self.pilot_time_mode != "last_input":
+            raise ValueError("MMW sparse pilot currently requires pilot_time_mode='last_input'.")
         self._beam_power_cache: dict[str, torch.Tensor] = {}
         self.lidar_bev_size = tuple(int(value) for value in lidar_bev_size)
         self.lidar_roi = tuple(float(value) for value in lidar_roi)
@@ -175,6 +184,7 @@ class MMWDataset(Dataset):
             seq_len=self.seq_len,
             gps_source_seq_len=self.seq_len,
             num_pred=self.num_pred,
+            include_channel_ref=self.include_channel_ref or self.include_channel_history_refs,
         )
         self.schema_identity = {
             "dataset_family": "MMW",
@@ -219,6 +229,11 @@ class MMWDataset(Dataset):
             sample["lidar"] = torch.tensor(lidar, dtype=torch.float32)
         if self.include_router_utility_targets:
             sample["future_beam_power"] = self._future_beam_power(idx)
+        if getattr(self, "include_channel_history_refs", False):
+            current_power = self._beam_power(idx, f"beam{self.seq_len}")
+            sample["current_beam_power"] = current_power
+            sample["current_beam"] = current_power.argmax().to(dtype=torch.long)
+            sample["prepared_beam_label"] = torch.tensor(self._current_beam_label(idx), dtype=torch.long)
         if self.include_router_utility_targets or self.include_router_corruption_metadata:
             if self.gps_scaler is None or self.gps_scaler.mean_ is None or self.gps_scaler.scale_ is None:
                 raise ValueError("Router GPS metadata requires the train-fit GPS scaler.")
@@ -227,9 +242,12 @@ class MMWDataset(Dataset):
         return self._with_metadata(idx, sample)
 
     def _future_beam_power(self, idx: int) -> torch.Tensor:
-        relative = _row_text(self._row(idx), "future_beam1")
+        return self._beam_power(idx, "future_beam1")
+
+    def _beam_power(self, idx: int, key: str) -> torch.Tensor:
+        relative = _row_text(self._row(idx), key)
         if relative is None:
-            raise ValueError(f"MMW prepared row {idx} is missing future_beam1.")
+            raise ValueError(f"MMW prepared row {idx} is missing {key}.")
         path = str(joined_resource(self.data_root, relative).resolve())
         cached = self._beam_power_cache.get(path)
         if cached is None:
@@ -242,6 +260,12 @@ class MMWDataset(Dataset):
             cached = values
             self._beam_power_cache[path] = cached
         return cached.clone()
+
+    def _current_beam_label(self, idx: int) -> int:
+        label = _row_label(self._row(idx), "beam_label")
+        if label is None:
+            raise ValueError(f"MMW prepared row {idx} is missing beam_label.")
+        return label
 
     def _target_beam_label(self, idx: int, horizon: int) -> int:
         label = _row_label(self._row(idx), f"future_beam_label{horizon + 1}")
@@ -276,6 +300,34 @@ class MMWDataset(Dataset):
             metadata["future_beam_path"] = str(joined_resource(self.data_root, future_beam_path).resolve())
         metadata["source_sample_id"] = source_sample_id
         metadata["stable_sample_id"] = f"mmw:{self.condition}:{self.scene_slug}:{self.split}:{source_sample_id}"
+        if getattr(self, "include_channel_history_refs", False):
+            reference = resolve_input_channel_refs(
+                row,
+                self.samples.channel_paths[idx] if self.samples.channel_paths is not None else [],
+                data_root=self.data_root,
+                seq_len=self.seq_len,
+                num_pred=self.num_pred,
+            )
+            sample["channel_history_refs"] = reference["channel_history_refs"]
+            sample["channel_ref"] = reference["channel_history_refs"][-1]
+            sample["csi_available"] = True
+            metadata.update(
+                pilot_frame_id=reference["history_frame_ids"][-1],
+                last_input_frame_id=reference["last_input_frame_id"],
+                target_frame_id=reference["target_frame_id"],
+                history_frame_ids=reference["history_frame_ids"],
+            )
+        elif self.include_channel_ref:
+            reference = resolve_last_input_channel_ref(
+                row,
+                self.samples.channel_paths[idx] if self.samples.channel_paths is not None else [],
+                data_root=self.data_root,
+                seq_len=self.seq_len,
+                num_pred=self.num_pred,
+            )
+            sample["channel_ref"] = reference["channel_ref"]
+            sample["csi_available"] = True
+            metadata.update({key: reference[key] for key in ("pilot_frame_id", "last_input_frame_id", "target_frame_id")})
         sample["metadata"] = metadata
         sample["sample_id"] = source_sample_id
         sample["domain_metadata"] = {

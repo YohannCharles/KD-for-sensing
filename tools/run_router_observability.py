@@ -27,7 +27,6 @@ from kd_sensing.baselines import router_observability as ro
 from kd_sensing.baselines.full_pool_bt_scl import sha256_file, write_json
 from kd_sensing.baselines.full_pool_common import atomic_csv
 from kd_sensing.baselines.prototype_decision_adapter import (
-    _amp,
     _batch_ids,
     _inputs,
     _sequential,

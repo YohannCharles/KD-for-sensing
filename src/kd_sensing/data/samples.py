@@ -21,6 +21,7 @@ class SequenceSamples:
     gps_paths: list[list[str]] | None = None
     bs_gps_paths: list[list[str]] | None = None
     lidar_paths: list[list[str]] | None = None
+    channel_paths: list[list[str]] | None = None
     metadata: dict | None = None
     rows: list[dict[str, Any]] | None = None
 
@@ -34,6 +35,7 @@ def create_samples(
     seq_len: int | None = None,
     gps_source_seq_len: int | None = None,
     num_pred: int | None = None,
+    include_channel_ref: bool = False,
     portion_strategy: str = "even",
     portion_seed: int = 42,
 ) -> SequenceSamples:
@@ -43,7 +45,7 @@ def create_samples(
     modalities = tuple(enabled_modalities or ("image", "radar", "gps", "lidar"))
     columns = {
         name: _numbered_columns(frame.columns, name)
-        for name in ("camera", "radar", "gps", "bs_gps", "lidar", "future_beam_label")
+        for name in ("camera", "radar", "gps", "bs_gps", "lidar", "csi", "future_beam_label")
     }
     row_columns = [
         column
@@ -56,7 +58,13 @@ def create_samples(
             "sample_id",
             "target_sample_id",
             "trajectory_group_id",
+            "history_frame_ids_json",
+            "future_frame_ids_json",
+            "end_frame",
+            "future_start_frame",
+            "beam_label",
         }
+        or (str(column).startswith("beam") and str(column)[4:].isdigit())
         or str(column).startswith("future_beam")
     ]
     _validate_columns(
@@ -66,6 +74,7 @@ def create_samples(
         seq_len=int(seq_len or 1),
         gps_seq_len=int(gps_source_seq_len or seq_len or 1),
         num_pred=int(num_pred or 1),
+        include_channel_ref=bool(include_channel_ref),
     )
     _validate_rows(
         csv_path,
@@ -73,6 +82,7 @@ def create_samples(
         modalities=modalities,
         columns=columns,
         data_root=data_root,
+        include_channel_ref=bool(include_channel_ref),
     )
     selected, metadata = _select_portion(frame, portion=portion, strategy=portion_strategy, seed=portion_seed)
     return SequenceSamples(
@@ -81,6 +91,7 @@ def create_samples(
         gps_paths=selected[columns["gps"]].values.tolist() if "gps" in modalities else None,
         bs_gps_paths=selected[columns["bs_gps"]].values.tolist() if "gps" in modalities else None,
         lidar_paths=selected[columns["lidar"]].values.tolist() if "lidar" in modalities else None,
+        channel_paths=selected[columns["csi"]].values.tolist() if include_channel_ref else None,
         metadata=metadata,
         rows=selected[row_columns].to_dict(orient="records"),
     )
@@ -108,12 +119,14 @@ def _validate_columns(
     seq_len: int,
     gps_seq_len: int,
     num_pred: int,
+    include_channel_ref: bool = False,
 ) -> None:
     required = {"future_beam_label": num_pred}
     required.update({"camera": seq_len} if "image" in modalities else {})
     required.update({"radar": seq_len} if "radar" in modalities else {})
     required.update({"gps": gps_seq_len, "bs_gps": gps_seq_len} if "gps" in modalities else {})
     required.update({"lidar": seq_len} if "lidar" in modalities else {})
+    required.update({"csi": seq_len} if include_channel_ref else {})
     for name, minimum in required.items():
         if len(columns[name]) < minimum:
             raise ValueError(
@@ -129,6 +142,7 @@ def _validate_rows(
     modalities: tuple[str, ...],
     columns: dict[str, list[str]],
     data_root: str | Path | None,
+    include_channel_ref: bool = False,
 ) -> None:
     resource_prefixes = []
     if "image" in modalities:
@@ -139,6 +153,8 @@ def _validate_rows(
         resource_prefixes.extend(("gps", "bs_gps"))
     if "lidar" in modalities:
         resource_prefixes.append("lidar")
+    if include_channel_ref:
+        resource_prefixes.append("csi")
     resource_columns = [column for prefix in resource_prefixes for column in columns[prefix]]
     label_columns = columns["future_beam_label"]
     validation_tasks: dict[str, tuple[int, str, str]] = {}

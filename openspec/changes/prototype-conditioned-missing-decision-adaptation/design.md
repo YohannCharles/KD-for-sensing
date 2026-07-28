@@ -200,6 +200,40 @@ seed 或访问 outer test。因为骨干已缓存，三个 router seed 近乎免
 贡献。这是本项目对新候选的通用准入测试 —— 推理期不存在的机制只能作为训练技巧，不能作为创新点。本轮只回答 routing
 输入问题，不回答端到端联合训练问题。
 
+### Dense-to-sparse curriculum 只逐步删除嵌套 observation
+
+首轮 M=4、Kp=8 的 100/100 短程诊断未提高 Top-1，不能区分“CSI 没有增量信息”和“起始 pilot budget 太小而无法学会 transition”。后续单 seed 诊断因此复用同一冻结 U0、同一 32-pattern 恒模 codebook 与同一 train-only selector，固定四个连续阶段：`D32x16 -> D16x16 -> S8x8 -> T4x8`，每阶段 2 epoch。模型、optimizer 和 scheduler 状态连续保留，不为每个预算重新初始化。
+
+16 个频点是唯一母网格；Kp=8 必须取其确定性嵌套子集。空间 pattern 同样按 selector 当前 train-only logits 的 Top-M 前缀删减。每个阶段只允许从上一阶段删除 observation，不得添加新 pattern、替换频点、读取 validation 选择预算或让模型看到未选 observation。D32x16 共 32 次 sounding、512 pilot RE，只是诊断上界，不得作为低开销主结果；正式比较和 15-mask/SNR 仍以最终 T4x8 的 4 次 sounding、32 pilot RE 为准。
+
+每阶段结束立即以固定 10 dB、dropout=0 的只读 validation 记录 Top-k、Within-3、MAE、Fix/Harm、alpha、延迟和实际资源。若 D32x16 仍不能提高 Top-1，则证据更支持 transition/监督不足而非单纯 pilot 数量不足；若 dense 有收益但 T4x8 消失，则下一轮只研究压缩保持，不得直接启动完整长训练或 outer test。
+
+首个 curriculum smoke 的 dense 阶段只训练 2 epoch，而目标阶段累计训练 8 epoch，不能把两者直接解释为纯预算效应。用户明确授权 GPU0--3 并行后，追加四路 matched-update 诊断：GPU0 为 D32x16-only，GPU1 为 4x16-only，GPU2 为 T4x8-only，GPU3 为原 curriculum；每路总计 8 epoch、相同 seed、初始化、100/100 样本、SNR/dropout、损失和 batch size。4x16 用于区分空间 sounding 数与频率密度。四路输出根独立，任何 GPU OOM/失败只记录，不抢占或终止既有进程，也不改变 batch 后自动重跑。
+
+### CSI 信息恢复先于 transition/gate 继续开发
+
+现有 missing-fallback 结果不能区分“4x8 pilot 本身没有标签信息”和“transition/gate 训练顺序错误”。恢复阶段先固定同一组 4 个恒模 QPSK pattern 与 8 个均匀频点，完全禁用 selector、route、gate 和 preserve，分别训练 `CSI_t -> beam_t`、`CSI_t -> beam_{t+1}` 与共享帧编码器加两层 GRU 的 `CSI_{t-4:t} -> beam_{t+1}`。审计发现 Full-pool CSV 的 `beam_label` 已被重写为 `future_beam_label1` 的别名，2,000 个 train 中有 94 条不等于 `argmax(beam5)`，因此它不能作为当前标签。D1 必须直接读取既有 `beam5` 功率 artifact 并取 argmax；这复用 `mmw_channel_to_dft_power_v1` 的已生成结果，不重新发明 beam convention。
+
+为回答增量信息问题，在同一物理样本与四个 single sensing mask 上重算冻结 U0 `p0/z_sensing`，比较 `p0 -> beam_{t+1}`、`[z_sensing, CSI_t] -> beam_{t+1}` 与 `[z_sensing, CSI_{t-4:t}] -> beam_{t+1}`。concat 只用简单 MLP，不加可靠性 gate、route、preserve 或 prototype selector。主门槛是三 seed 的 Single Macro：若最佳 CSI concat 不能方向一致地优于冻结 U0，则停止 A1/A2/route/selector；若 D1 已弱，则优先排查 simulator、标签与时间对齐。
+
+Dataset 继续保留最后输入帧 `channel_ref`，仅在显式 recovery diagnostic 开关下额外导出五个只读 `channel_history_refs`。解析器必须逐帧验证 `csi1..csi5` 与 `history_frame_ids_json` 一一匹配、严格递增且最后历史帧早于 target；`future_csi*` 永不进入返回值。模型只消费 simulator 生成的 `[5,4,8]` sparse observation，不消费 path tensor。
+
+### Recovery 协议纠错与三轮闭环
+
+首轮 I0--I5 实现错误复用了 7 月 24 日的 `mmw_full_pool_development_v1` 与其 U0 checkpoint，而 7 月 27 日已发布的正式普通模型研发协议是 `mmw_trajectory_disjoint_v1`。旧 U0 在自身 9,180 条 chronological validation 上 Full Top-1 仅 24.75%，recovery 的 1,000 条子集得到 25.9% 与之吻合，因此低值不是指标实现错误，但它不回答最新轨迹互斥协议上的问题。旧 `outputs/sparse_pilot_recovery/` 结果不得进入新门槛或 Stage A1 判定。
+
+纠错运行复用 trajectory protocol 的 12/2/1 完整资源耦合轨迹组、37,510 train、6,365 validation、train-only GPS normalization 与已发布 M4 checkpoint；checkpoint 的 protocol fingerprint、split manifest SHA256 与 validation Full Top-1 必须在生成任何 CSI cache 前复核。test group 只存在于 manifest 审计，不得构建 loader 或执行预测。为避免反复生成 channel observation，一次构建固定 32 个 QPSK pattern、16 个均匀频点的最大母 cache，所有后续预算只能读取其 pattern 前缀和确定性嵌套频点子集。
+
+三轮固定使用现有 `SparsePilotEncoder` 的 token projection、pattern embedding 与 masked learned pooling，并将 self-attention 层数设为 0，使 32x16 母 observation 的时间/显存随 token 数线性增长；该编码器设置在所有预算间不得变化。Round 1 固定最大 32x16 observation，在完整 train/validation 上运行 I1--I5，回答 CSI 当前/未来可预测性与 M4+CSI 上界。若 I3 明显高于 I4/I5 的 Single Worst，说明严重缺失感知特征会拖累强 CSI，Round 2 必须以五帧 CSI-only I3 为主路线。Round 2 比较 16x16、8x16、16x8、8x8、4x16、4x8；其中 8x16/16x8 同为 128 RE，8x8/4x16 同为 64 RE，用于区分 pattern 与频率稀疏。每个任务从 32x16 best checkpoint 初始化并重置 optimizer/scheduler，使流程确实是 dense-to-sparse，而不是重新随机训练。预算选择以 I3 Top-1（也是严重缺失 fallback 的 Macro/Worst）为第一目标，并在距最佳值不超过 0.5 个百分点的候选中选择最小 RE。
+
+Round 3 不再训练可能重新学习感知 shortcut 的 residual/gate，而把所选 I3 checkpoint 接成确定性 availability fallback：可用感知模态数不超过 2 时输出 CSI-only 分布；可用 3 个模态或 Full 时原样输出冻结 M4 分布。该规则不含可学习 gate、route 或 selector，Full 逐样本严格等价，最终只读补算 Single、All-14 与 Full。
+
+Round 1 完成并分析后才启动 Round 2，Round 2 完成并分析后才启动 Round 3。学习轮次最多 60 epoch、patience 10，逐 epoch 以严重缺失主指标选择 checkpoint 和 early stopping，并记录 validation loss、Top-k、Within-3、MAE、Fix/Harm、KL、梯度与学习率；All-14 与 Full 只在最终选定 checkpoint 或固定 fallback 上补算。GPU0--3 可并行但不得终止无关进程；长任务默认每 600 秒轮询一次，用户明确要求快速推进时可缩短轮询。三轮均为 development 探索，反复使用同一 validation 的自适应选择不得包装为独立确认性证据。
+
+每个学习任务最大 60 epoch、patience 10，validation 仅用于统一的严重缺失 Single Worst early stopping/checkpoint selection，不参与训练或可拟合统计。逐 epoch 日志采用一套超集 schema；对当前任务不适用的 gate/route/alpha 字段明确为空。checkpoint 保存 trainable model、optimizer、scheduler、epoch、resolved config 和 Python/NumPy/Torch/CUDA RNG state，并分别保留 best Single Worst、best Single Macro、best Fix Rate、best validation loss 与 last；发布结果必须加载 best Single Worst。
+
+三轮 development 闭环的最终结果与上述判据一致。Round 1 的 32x16 I3 达到 95.60%，显著高于带严重缺失 sensing concat 的 I4/I5 Worst，故后两轮采用 CSI-only。Round 2 的 seed-1 Top-1 依次为 16x16 96.15%、8x16 93.95%、16x8 95.54%、8x8 91.77%、4x16 80.46%、4x8 76.43%；16x8 比 16x16 低 0.61 个百分点，未进入 0.5 个百分点近优区间，因此选择 16x16（256 RE）。Round 3 三个固定噪声 seed 的 Single Macro/Worst 均值为 96.24%，All-14 Macro 均值为 89.09%、Worst 为 25.61%；冻结 M4 对照分别为 45.21%/10.21% 与 59.44%/10.21%。Full Top-1 保持 86.3315%，三个 seed 的逐样本概率最大绝对差均为 0、argmax mismatch 均为 0，且 outer test 始终封存。
+
 ## Risks / Trade-offs
 
 - [所给 checkpoint 缺失或哈希不匹配] → 只列出带哈希候选，无法唯一确认立即退出，绝不回退到其他权重。
@@ -224,3 +258,50 @@ seed 或访问 outer test。因为骨干已缓存，三个 router seed 近乎免
 - [用探针分数代替任务指标下结论] → 预注册主指标只有 Top-1 与 all-14，severity Spearman 仅作为机制诊断报告。
 - [注入腐蚀被误当作部署协议结果] → 设定 C 与设定 N 分别独立报告，设定 C 结论明确标注为机制验证而非部署证据。
 - [冻结骨干结论被外推为端到端结论] → 报告限定该筛选只回答 routing 输入问题，骨干仍为单 seed 且 encoder 未参与训练。
+- [dense pilot 被误写为低开销方案] → D32x16 独立标记 diagnostic upper bound，并同时报告 32 sounding 与 512 RE；主结果仍固定 T4x8。
+- [预算阶段更换频点造成不可归因差异] → 所有 Kp 预算必须来自同一个 16 点母网格的嵌套索引，后续阶段只删除 token。
+- [curriculum 各阶段累计更新量不同] → 追加总计均为 8 epoch 的 D32x16-only、4x16-only、T4x8-only 与 curriculum 四路 matched-update 诊断，结论只在这四路内部比较。
+- [短程样本和更新量不足] → 追加 2,000 train/1,000 validation、40 epoch、batch 8 的四路 scale-up；pooled 15-domain 使用确定性均衡、域内等距、无重复索引，四路共享同一索引，不再截取 dataset 前 N 条。
+- [只看最终 Top-1 无法判断收敛] → 每 epoch 保存分项 loss、train Top-1/Fix/Harm、route target 比例、`r_global`/`alpha` 分布和 selector/encoder/transition 梯度范数；validation 分块只读，保存轻量 last checkpoint，不保存冻结 U0 副本。
+- [均匀 15-mask 训练仍被较完整条件主导且 gate 塌缩] → 固定 1/2/3/4 个可用模态的训练权重为 50%/35%/10%/5%，直接监督 CSI-only distribution，并把 availability fraction 送入 gate；主报告先给 Single/Worst 而非 Full。
+- [强制 CSI 兜底破坏 Full] → gate target 与 preserve loss 保留，必须同时报告 Full Fix/Harm；CSI off 或全 dropout 继续逐元素等于 U0。
+- [当前 beam 标签被未来标签替代] → 已确认 Full-pool `beam_label` 等于 `future_beam_label1`，D1 禁止读取该别名，必须直接使用同 row 的 `argmax(beam5)`；首次 94/2,000 不一致的 fail-closed 结果保留在审计中。
+- [历史 CSI 引入未来泄漏] → 五个引用必须与 `history_frame_ids_json` 一一匹配且全部早于 `future_frame_ids_json[0]`；解析失败时在读取 NPZ 前 fail closed。
+- [validation 被用于反复调参] → I0--I5 固定三 seed、60 epoch 上限与 patience 10；本轮只根据预注册 D1/D5 门槛决定是否进入 A1，不据曲线修改模型或导频。
+## Prototype-Conditioned Low-Overhead Pilot Transition
+
+### 审计事实与时间协议
+
+本地 MMW prepared sequence row 同时保留历史 `csi1..csiT`、未来 `future_csi1..`、`history_frame_ids_json` 和 `future_frame_ids_json`。当前 U0 使用 `seq_len=5`、`num_pred=1`，输入为 t-4..t 的四模态，标签为 t+1 的 `future_beam_label1`。新 workflow 固定 `pilot_time_mode=last_input`，只能把 `csiT` 解析为不透明 `channel_ref`；任何指向 `future_csi*`、目标帧或晚于最后输入帧的引用都必须在读取 NPZ 前失败。
+
+本地 47,100 个 `*_paths.npz` 已全量审计：`a` 均为 `[1,1,16,1,64,L,1]`，`tau` 为 `[1,1,1,L]`，`L` 范围 1--9，故实际 `Nr=16`、`Nt=64`。文件未记录子载波数或间隔。现有 prepared beam label 由历史 ULA-DFT path-tensor 投影产生，不使用 `tau` 或频率轴，因此不能为 sparse pilot 推断 frequency indexing。`num_subcarriers=1024` 与 `subcarrier_spacing_hz=120000` 只能作为显式、记录进 resolved config 的实验参数；`frequency_index_mode=auto` 在没有绑定证据时 fail closed，不能静默猜测。
+
+### 固定 probe codebook 与 path-domain simulator
+
+候选 codebook 是 `(F,W)`，shape 分别为 `[R,Nt]` 与 `[R,Nr]`。主方案从确定性 QPSK phase pool 贪心选择低相干 pair；另保留 fixed DFT 与 MultiCE-style interleaved baseline。所有元素分别满足 `|F[r,n]|=1/sqrt(Nt)`、`|W[r,m]|=1/sqrt(Nr)`，metadata 记录 seed、方法、Nt/Nr、coherence 与内容 SHA256。codebook 与 split 无关，validation/test 只能加载已存在且哈希匹配的 train-time codebook。
+
+Simulator 从 path matrix 直接计算
+
+`g[r,k] = sum_l w_r^H A_l f_r exp(-j 2 pi nu_k tau_l)`，
+
+不构造完整频域 CSI。AWGN 只加到所选 observation，方差为 selected `g` 平均功率除以线性 SNR；训练随机 SNR/dropout，validation/test 使用固定 SNR 网格与确定性 seed。cache 只保存 `[R,Kp] complex64` noiseless candidate `g`，key 必须覆盖 channel identity、codebook hash、频点、间隔、index mode、Nt/Nr 和 simulator version。
+
+### 两阶段 prediction 与 offline lookup
+
+U0 sensing forward 保持现有四模态和 15 个非空 mask，输出 `z_sensing`、prototype logits/probability 与 hard prototype id。训练期 selector 持有 `[P,R]` logits，可用 straight-through Gumbel Top-K 从离线 candidate observations 生成 M 个 selected observations；只有 `[B,M,Kp]`、pattern id、frequency positions、mask 与 SNR 进入 SparsePilotEncoder。正式推理先读取导出的 JSON lookup，执行 O(1) prototype row lookup，不运行 Gumbel、搜索或读取 32 candidates。
+
+SparsePilotEncoder 对复观测作 per-sample RMS normalization，token 同时包含 real、imag、log magnitude、validity、pattern embedding 与 normalized frequency，并把 log-RMS、SNR 和有效比例保留在 quality feature。PrototypeTransition 在现有 audited cyclic topology 上构造半径 3 的 local distribution，同时对全部 prototype 构造 global distribution；route gate 混合二者，reliability gate 再与 sensing `p0` 作 convex mixture。CSI unavailable 或全部 pilot invalid 时必须逐元素返回 `p_final=p0` 且 `alpha=0`。
+
+### 训练、诊断与停止门槛
+
+Stage A 冻结 sensing/prototype 主干，仅训练 selector、pilot encoder 与 transition；Stage B 只有 Stage A 有正增益后才可选择性解冻 fusion 后部、prototype projection 与 final transition，既有 encoder 默认冻结。总损失复用现有 CE、BPA、topology 与 arbitrary-subset 项，并增加 final CE/topology、route BCE、低质量 preserve KL 与轻量 selector usage，所有权重来自 resolved config。
+
+执行顺序固定为 audit、simulator tests、100-sample temporal leakage、small cache、single-batch forward/backward、100--500 sample smoke、C0/C2/C3/C4/C5/C6 single-seed diagnostics、汇总。只有 `Proto+Pilot > Proto only` 且 learned lookup 稳定超过 fixed/random 后才可启动长实验；否则停在 development diagnosis，不产生正式 claim。
+
+用户在 matched-update 负结果后明确授权一次 scale-up 诊断。该诊断固定为 2,000 个 train、1,000 个 inner validation、40 epoch、batch 8，分别运行 D32x16-only、4x16-only、T4x8-only 与四阶段 curriculum；curriculum 每阶段 10 epoch并共享 optimizer。四路使用同一 15-domain 均衡无重复索引、seed、U0/codebook 和 loss，validation 不参与停止或选择。该授权只覆盖单 seed development diagnosis，不自动授权 outer test、multi-seed、Stage B 或结果驱动调参。
+
+Scale-up 证明仅增加样本和 epoch 不能让 C5 改变 Full 或 15-mask 决策后，后续目标固定为 missing-modality fallback。训练 mask 按可用模态数分配为 `1:50%、2:35%、3:10%、4:5%`，同一 cardinality 内各 mask 确定性均衡，赋值顺序由固定 seed 打乱并写入审计哈希；每个 epoch 复用该预注册赋值。PrototypeTransition 增加只读取 SparsePilotEncoder feature 的 CSI-only prototype distribution，并用直接 CE/topology 辅助损失防止 `alpha=0` 导致分支失去梯度；reliability gate 显式读取 sensing availability fraction，并以 sensing argmax 是否错误作为 train-only gate target。CSI unavailable/全 dropout 仍严格返回 `p0`。
+
+该阶段继续使用 2,000/1,000、40 epoch、batch 8 与 GPU0--3 四个 pilot budget arm，不用 validation 选 epoch 或调参。主指标顺序改为 Single Macro Top-1、Single Worst Top-1、All-14 Macro Top-1，均比较同一 mask 的 CSI-on 与 CSI-off；Full Top-1/Fix/Harm 是不伤害约束。只有严重缺失指标出现正净增益且 Full 不退化，才可提出扩大 train pool 或 multi-seed，当前运行不得自动扩展。
+
+首轮 missing-fallback 四路中，D32x16 的直接 CSI-only 分支出现可学习性并带来弱 Single/All-14 净增益，4x16、4x8 和最终 T4x8 curriculum 则没有严重缺失收益。为避免从 512 RE 直接跳到 64/32 RE，后续固定补齐四个独立 arm：D16x16=256 RE、S8x16=128 RE、S16x8=128 RE、S8x8=64 RE。四路继续使用相同的 2,000/1,000 索引、missing-mask schedule、初始化、loss、batch 8 和 40 epoch；validation 不选择预算或 checkpoint。128 RE 的两路用于区分空间 pattern 数和频点数，而不是额外调参。

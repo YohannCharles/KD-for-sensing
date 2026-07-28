@@ -89,3 +89,64 @@
 - [x] 11.3 按既有 diagnostic sample manifest 重新实现 45 个腐蚀条件算子，并以固定种子为每个样本预抽唯一条件。
 - [x] 11.4 新增运行器与测试，在设定 N 与设定 C 下各运行 Q0--Q3 × 3 个 router seed；不训练 encoder，不启动多 seed 骨干或 outer test。
 - [x] 11.5 对处理组执行冻结权重推理期消融（quality embedding 替换为训练集均值），并按预注册门槛输出 success gates 与筛选报告。
+## 12. Prototype-Conditioned Sparse Pilot Transition
+
+- [x] 12.1 完成训练入口、dataset/collate/forward/evaluator、四模态时间对齐、prototype/topology、47,100 个 channel shape 与历史 label 生成审计，输出 `docs/prototype_pilot_transition_audit.md`。
+- [x] 12.2 实现固定恒模 probe codebook、path-domain sparse pilot simulator、AWGN/dropout、frequency fail-closed 与 hash-aware noiseless cache，并添加 shape、Nt/Nr、数值一致性、SNR、复现和失效测试。
+- [x] 12.3 扩展 MMW row contract 只导出最后输入帧 `channel_ref` 和 frame metadata，完成至少 100 样本的 target/future channel 泄漏诊断；不得把 path tensor放入 batch 或 model。
+- [x] 12.4 实现 prototype selector/offline lookup 导出、SparsePilotEncoder、局部/全局 PrototypeTransition、reliability fallback 与只把 selected M patterns 交给 encoder 的单元测试。
+- [x] 12.5 实现受 Full-pool clean protocol 约束的本地 Stage A workflow、配置开关、C0--C6/SNR/budget/Fix-Harm/latency 指标和独立结果汇总；关闭开关时保持四模态基线。
+- [x] 12.6 生成小规模 cache，运行 single-batch forward/backward 与 100--500 sample smoke，保存 resolved config、lookup、diagnostics 和 summary 到 `outputs/sparse_pilot_transition/`。
+- [x] 12.7 运行 C0/C2/C3/C4/C5/C6 单 seed 短程诊断；只有 Proto+Pilot 与 learned lookup 门槛通过后才提出长实验建议，不自动启动正式长训练或 outer test。
+- [x] 12.8 运行 OpenSpec strict、focused channel/model/data/config tests、`make verify-quick`、CLI config 与 compile 验证，并记录剩余实验风险。
+
+## 13. Dense-to-Sparse Pilot Curriculum
+
+- [x] 13.1 预注册 `32x16 -> 16x16 -> 8x8 -> 4x8` 四阶段、嵌套频点、每阶段 2 epoch、独立产物根和停止解释，并通过 OpenSpec strict。
+- [x] 13.2 让 selector、训练与评估路径支持运行时 M/Kp 子预算，保证 encoder 只读取所选嵌套 observation，并添加预算单调、资源计数和禁用路径测试。
+- [x] 13.3 构建 16 频点 train-only cache，运行 100/100 单 seed curriculum smoke，输出逐阶段 budget summary、最终 C0--C6/SNR/15-mask/dropout、lookup 与报告；不得访问 outer test。
+- [x] 13.4 运行 focused/full tests、OpenSpec、CLI/config、architecture 与 compile 验证，根据 dense 上界和 T4x8 结果判断问题来自 pilot budget 还是 transition，不自动启动正式长训练。
+
+## 14. Matched-Update Pilot Budget Controls
+
+- [x] 14.1 预注册 GPU0 D32x16-only、GPU1 4x16-only、GPU2 T4x8-only、GPU3 curriculum 四路 8-epoch 对照及失败不抢占规则，并通过 OpenSpec strict。
+- [x] 14.2 为本地 runner 增加受限 budget-arm/method 选择和共享 codebook 读取，保证 resolved config 记录实际 arm 且原产物不被覆盖，并添加解析测试。
+- [x] 14.3 在 GPU0--3 UUID 隔离并行运行四路 100/100 matched-update 诊断，保存各自返回码与只读汇总；不得终止既有进程、访问 outer test 或自动重跑失败任务。
+- [x] 14.4 汇总四路 Top-k、Fix/Harm、route/alpha 与资源，运行 focused/full/architecture/config/compile/OpenSpec 验证并给出预算与 transition 的归因结论。
+
+## 15. Scale-Up Sample and Epoch Diagnosis
+
+- [x] 15.1 预注册 2,000/1,000、40 epoch、batch 8、15-domain 均衡无重复子集、四路 GPU0--3 与失败不重跑边界，并通过 OpenSpec strict。
+- [x] 15.2 为本地 runner 增加可审计 scale-up epoch、均衡子集、分块 evaluation、逐 epoch loss/route/alpha/梯度历史和 trainable-only checkpoint，添加聚焦测试且保持默认 smoke 行为。
+- [x] 15.3 在 GPU0--3 并行运行四路 scale-up，保存独立 config、history、checkpoint、返回码和最终指标；不得访问 outer test 或终止既有进程。
+- [x] 15.4 汇总学习曲线和最终 Top-k/Fix-Harm/route/alpha，运行 full/focused/architecture/config/compile/OpenSpec 验证，并判断样本/轮次假设是否成立。
+
+## 16. Sparse CSI Missing-Modality Fallback
+
+- [x] 16.1 预注册严重缺失训练权重、CSI-only 直接监督、availability-aware gate、Single/Worst/All-14 主指标与 Full 不伤害约束，并通过 OpenSpec strict。
+- [x] 16.2 实现可审计 mask schedule、CSI-only prototype fallback、gate target/loss、severe-validation history 和聚焦测试，保持 CSI-off 精确回退。
+- [x] 16.3 在 GPU0--3 以 2,000/1,000、40 epoch 并行运行四个 pilot budget arm，保存独立产物且不访问 outer test。
+- [x] 16.4 汇总严重缺失 CSI-on/off 增益与 Full 约束，完成 full/focused/architecture/config/compile/OpenSpec 验证并给出兜底能力结论。
+
+## 17. Missing-Fallback Progressive Pilot Budgets
+
+- [x] 17.1 预注册 D16x16、S8x16、S16x8、S8x8 四个独立 40-epoch 中间预算、共享 missing-fallback profile 与失败不重跑边界，并通过 OpenSpec strict。
+- [x] 17.2 扩展受限 budget-arm 解析与聚焦测试，保持原四路和默认配置不变。
+- [x] 17.3 在 GPU0--3 并行运行四个中间预算，保存独立产物且不访问 outer test。
+- [x] 17.4 联合既有 512/64/32 RE 结果定位可学习性断点，完成全量验证并给出目标 sparse CSI 兜底结论。
+
+## 18. Sparse-Pilot CSI 信息恢复诊断
+
+- [x] 18.1 审计现有时间对齐、标签、p0/q_local/alpha/preserve、梯度与 2,000/1,000 抽样/类别/U0 错误分布，输出 `outputs/sparse_pilot_recovery/audit.md`；不得访问 outer test。
+- [x] 18.2 为显式 recovery diagnostic 增加逐帧校验的五帧历史 channel 引用、从既有 `beam5` 功率 artifact 生成当前标签及聚焦测试，保持默认 dataset contract 不变。
+- [x] 18.3 实现固定 4x8 QPSK 的 I0--I5 本地信息诊断、单帧/两层 GRU 历史编码、完整 epoch 日志、early stopping 和可恢复 checkpoint，并添加聚焦测试。
+- [x] 18.4 在 GPU0--3 对 seed 1/2/3 运行 2,000/1,000 development 信息诊断；该运行后确认误绑定旧 Full-pool protocol，结果只保留为无效历史证据，不得进入 Stage A1。
+- [ ] 18.5 运行 OpenSpec strict、focused data/model/metric tests、architecture/config/compile 与全量 pytest，记录修改文件、命令、进程和剩余风险。
+
+## 19. Trajectory Recovery 协议纠错与三轮改进
+
+- [x] 19.1 将 recovery 精确迁移到 `mmw_trajectory_disjoint_v1` 与最新 M4 checkpoint，复核 37,510/6,365、split/checkpoint hash、Full Top-1 和 test 封存。
+- [x] 19.2 实现一次性 32x16 母 cache、嵌套预算读取、15-mask 冻结 M4 表征、完整数据训练日志与聚焦测试，不覆盖旧产物。
+- [x] 19.3 Round 1 在 GPU0--3 完成 32x16 I1--I3 信息上界并筛查 I4/I5；I3 达 95.60%，而 I4/I5 三 seed 已观测 Worst 至多 75.37%，据预注册信息判据停止 concat 并转向 CSI-only fallback。
+- [x] 19.4 Round 2 从 dense I3 checkpoint 并行微调 16x16、8x16、16x8、8x8、4x16、4x8；seed-1 Top-1 分别为 96.15%、93.95%、95.54%、91.77%、80.46%、76.43%，16x8 未进入距最佳 0.5 个百分点的近优区间，故选择 16x16（256 RE）。
+- [x] 19.5 Round 3 在 16x16 上运行三个固定 availability fallback seed：Single Macro/Worst 均值 96.24%，All-14 Macro 89.09%、Worst 25.61%，Full Top-1 86.3315% 且逐样本概率差 0、argmax mismatch 0；focused 38、full 381、architecture/config/compile/lint/OpenSpec 验证均通过，test 未访问且未自动启动 Stage A1。

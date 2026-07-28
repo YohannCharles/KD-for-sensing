@@ -92,3 +92,59 @@ Router 可观测性筛选的表征缓存、腐蚀条件抽取、Q0--Q3 各 seed 
 #### Scenario: 无 Router 筛选本地产物
 - **WHEN** canonical recipe、public CLI help 或架构边界测试在没有 `outputs/router_observability/` 的环境运行
 - **THEN** current U0、保留 baseline 与 DeepSense6G 工作流 MUST 不依赖该筛选产物
+### Requirement: sparse-pilot 产物保持本地且不扩展公共入口
+Probe codebook、noiseless candidate cache、prototype lookup、resolved config、diagnostics、ablation/SNR/budget summary、checkpoint 与日志 MUST 写入 `outputs/sparse_pilot_transition/` 或 `outputs/cache/`。相关 runner/build/eval 工具 MUST 仅为本地实验入口，不得新增 public CLI、canonical MMW recipe、系统启动项或源码对本地产物的导入依赖。
+
+#### Scenario: 无 sparse-pilot 本地产物
+- **WHEN** canonical recipe、CLI help、model construction 或架构边界测试在没有 `outputs/sparse_pilot_transition/` 的环境运行
+- **THEN** 当前 U0、AMBER-Full、RMBP-MM 与 DeepSense6G MUST 继续可解析和运行
+
+### Requirement: dense-to-sparse 结果不覆盖首轮 sparse-pilot 诊断
+Dense-to-sparse 的 codebook、cache manifest、lookup、budget curriculum、SNR/mask 汇总与报告 MUST 写入独立的 `outputs/sparse_pilot_transition_dense_to_sparse/` 和对应 `outputs/cache/` 根，不得覆盖首轮 M4/K8 负结果，也不得新增 public CLI 或 canonical recipe。
+
+#### Scenario: 运行 dense-to-sparse 诊断
+- **WHEN** 本地 runner 使用 dense-to-sparse config
+- **THEN** resolved config 与每阶段实际 M/Kp/sounding/RE MUST 写入新产物根
+- **AND** 原 `outputs/sparse_pilot_transition/` MUST 保持不变
+
+### Requirement: sparse-pilot scale-up 保持独立可恢复证据
+Scale-up 四路的 resolved config、均衡索引摘要、逐 epoch history、轻量 trainable-only checkpoint、返回码和汇总 MUST 写入独立的 `outputs/sparse_pilot_scale_up_2k_40e/`。checkpoint MUST NOT 复制冻结 U0 参数；runner 不得扩展 public CLI 或 canonical recipe。
+
+#### Scenario: scale-up 单路失败
+- **WHEN** 任一 GPU0--3 arm 失败或既有 GPU 负载变化
+- **THEN** 其他 arm MAY 继续并各自记录返回码
+- **AND** workflow MUST NOT 终止既有进程、自动降低 batch、改超参数、覆盖目标目录或隐式重跑
+
+### Requirement: missing-fallback 结果与 Full scale-up 隔离
+严重缺失兜底四路的 mask schedule audit、逐 epoch severe-validation history、trainable-only checkpoint、15-mask CSI on/off summary 与报告 MUST 写入独立的 `outputs/sparse_pilot_missing_fallback_2k_40e/`，不得覆盖既有 Full scale-up 证据或扩展公共 CLI。
+
+#### Scenario: 兜底实验完成
+- **WHEN** GPU0--3 四路 missing-fallback 训练完成
+- **THEN** 每路 MUST 保存相同 train/validation 子集哈希、训练 mask cardinality 计数、返回码和 outer-test 未访问标志
+- **AND** 汇总 MUST 先报告 Single Macro/Worst 与 All-14 Macro 的 CSI-on/off 差值，再报告 Full 不伤害结果
+
+### Requirement: missing-fallback 中间预算独立保存
+D16x16、S8x16、S16x8 与 S8x8 的 config、history、checkpoint、15-mask summary、返回码和汇总 MUST 写入 `outputs/sparse_pilot_missing_fallback_midbudgets_2k_40e/`，不得覆盖首轮 missing-fallback 四路。
+
+#### Scenario: 中间预算单路失败
+- **WHEN** 任一 GPU0--3 中间预算 arm 失败
+- **THEN** 其他 arm MAY 继续并独立记录返回码
+- **AND** workflow MUST NOT 自动调整 M、Kp、batch、epoch、loss 或重新启动失败任务
+
+### Requirement: sparse-pilot recovery 使用独立本地产物根
+CSI 信息诊断、resolved configs、逐 epoch 日志、完整恢复 checkpoint、采样统计和阶段报告 MUST 写入 `outputs/sparse_pilot_recovery/`。相关工具 MUST 保持本地实验入口，不得新增 public CLI、canonical recipe、系统启动项或源码对该目录的依赖。
+
+#### Scenario: 并行运行 I1--I5
+- **WHEN** GPU0--3 并行执行三 seed 信息诊断
+- **THEN** 每个 seed/task MUST 写入独立日志、checkpoint、结果与返回码，汇总器只读这些完成产物
+- **AND** 单任务失败不得终止无关进程、自动改超参数、访问 outer test 或直接启动 Stage A1
+
+### Requirement: trajectory recovery 三轮不得覆盖旧协议证据
+
+纠错后的最大母 cache、冻结 M4 表征、三轮 config/log/checkpoint/result/analysis MUST 写入 `outputs/sparse_pilot_recovery/trajectory_v1/` 与对应 `outputs/cache/` 子根。旧 Full-pool recovery 产物 MUST 保持不变；每个并行任务 MUST 独立记录返回码，长任务状态轮询间隔 MUST 为 600 秒。
+
+#### Scenario: 三轮顺序执行
+
+- **WHEN** Round 1 或 Round 2 尚未完成分析
+- **THEN** workflow MUST 不启动下一轮
+- **AND** 任一 GPU 满载时 MAY 等待空闲，但 MUST 不终止、迁移或抢占无关进程
