@@ -81,6 +81,8 @@
 
 四项 normalization mean/std 与 Stage 3 的 `mean_train_risk_m` MUST 只遍历 train dataset 拟合并作为 buffer 冻结；validation、historical development test 与 outer test MUST 不更新它们。`R_star_m` MUST 使用 detached deterministic unimodal probability 与当前 topology 的 normalized circular distance，Dmax MUST 来自 topology，且 unavailable 模态 MUST 排除。
 
+风险分量 empirical std 低于预注册 `0.01` normalization std floor 时 MUST 保存并使用 `0.01`，不得以 `1e-6` 机器精度 epsilon 缩放可训练风险分量。
+
 Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_margin` 激活的 pair ranking、小权重 Gaussian KL 和保持 beam 语义的 topology preserve CE；MUST NOT 使用 fused beam CE 推动风险值。
 
 #### Scenario: 拟合 risk normalization
@@ -92,6 +94,11 @@ Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_
 - **WHEN** 对 `R_star` 求 loss 并 backward
 - **THEN** `R_star` 使用的 probability MUST detach
 - **AND** 风险 target 路径 MUST 不向 expert/prototype 或 unimodal logits 反传梯度
+
+#### Scenario: 初始 U_var 退化为常数
+- **WHEN** Stage 2 preparation 在初始恒定 logvar 上拟合得到 `U_var std=0`
+- **THEN** checkpoint 与 preparation report 中保存的 `U_var std` MUST 至少为 `0.01`
+- **AND** 随后一个 Stage 2 优化步 MUST 保持梯度有限且可用模态 raw risk 不得全部变成精确零
 
 ### Requirement: Stage 2 gate 必须在 Stage 3 前失败关闭
 
@@ -146,6 +153,11 @@ Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_
 - **WHEN** evaluator 加载 A2 control checkpoint
 - **THEN** A2 与 A4 的 Stage 1 expert fingerprint MUST 完全相同
 - **AND** 不匹配时比较 MUST 失败而不是继续汇总
+
+#### Scenario: 汇总已训练 A0--A3 control
+- **WHEN** evaluator 将 A0--A3 validation-best checkpoint 与 A4 汇总为同一矩阵
+- **THEN** control MUST 在同一次 A4 forward 缓存的 unimodal logits 与风险分量上应用各自已训练的 temperature、tau 或 Router 参数
+- **AND** evaluator MUST NOT 为 control 重跑 encoder，并 MUST 记录每个 control checkpoint 的路径、SHA256、role、fusion mode 与 expert fingerprint
 
 ### Requirement: 评估必须输出性能、校准和机制诊断
 

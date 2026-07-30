@@ -63,6 +63,8 @@ Stage 2 使用一个共享 `ProbabilityEmbeddingHead`：零初始化 `DeltaMu` �
 
 通用 trainer 在 initialization checkpoint 加载后、optimizer 创建前，仅当模型实现 `prepare_training_stage(...)` 时调用该方法。PCPF-T 用 train dataset 的顺序只读 loader：Stage 2 拟合并冻结四项风险的 mean/std；Stage 3 以 deterministic detached unimodal probability 和真实未来 label 计算每模态 `mean_train_risk`。该 pass 不读取 validation/test，保存 JSON 与 model buffers，并恢复原 loader RNG 状态。
 
+Stage 2 初始 logvar 恒为 -4，因此 `U_var` 在 preparation 时退化为常数。`risk.normalization_epsilon` 是风险分量的标准差下限而非机器精度 epsilon，正式配置固定为 `0.01`；拟合标准差低于该值时保存并使用下限，避免随后训练 probability head 时把微小 `U_var` 变化放大到 Softplus 饱和区。
+
 smoke 可显式限制 preparation batches；正式配置必须为全 train pass。U0 和保留 baseline 没有该方法，所以不会多走 forward、修改 RNG 或改变 optimizer。
 
 替代方案是在每个 Stage 2 batch 在线更新统计；这会让 normalization 与风险头共同漂移且 validation 时点难以复现，拒绝采用。
@@ -96,7 +98,7 @@ Stage 2 loss 使用 detached `R_star=sum p_mu(k)*normalized_topology_distance(k,
 
 Uniform、Static Prior、PCPF-T 和 `no-*` 直接通过解析 fusion mode/分量开关替换。Direct Router 是仅在 A2 control config 中创建的旧式标量特征 MLP，metadata 明确 `control_only=true`；A4 主模型没有该 module。CUAF 无法由任务简称唯一定位逐项公式，因此实现只命名为 `cuaf_local_adaptation`，使用 normalized entropy、margin risk 与 JS conflict 的固定解析组合，不宣称论文复现。
 
-动态替换评估缓存同一次 forward 的 unimodal logits；需要已训练 A2 权重时额外加载与 A4 具有相同 Stage 1 expert fingerprint 的 control checkpoint，否则拒绝比较。
+动态替换评估缓存同一次 A4 forward 的 unimodal logits 与风险分量，再应用 A0--A3 各自 validation-best checkpoint 中已训练的 temperature、tau 或 Router 参数；不得为 control 重跑 encoder。所有 control checkpoint 必须与 A4 具有相同 Stage 1 expert fingerprint，且路径、SHA256、fusion mode 和 checkpoint role 写入 matrix provenance，否则拒绝比较。
 
 ### 10. 本地配置和评估面，不扩大 canonical surface
 
@@ -105,6 +107,7 @@ tracked template 位于 `tools/configs/pcpf/`，通过现有 `_base_`、config l
 ## Risks / Trade-offs
 
 - [Stage 2 risk 可能与 `R_star` 无相关性或常数化] -> 预注册 gate 失败即停止，不自动启动 Stage 3，也不修改阈值。
+- [Stage 2 初始 `U_var` 方差为零] -> 使用预注册的 `0.01` normalization std floor，并以 preparation 后单优化步的有限梯度和非零风险回归测试防止塌缩。
 - [Transformer 对全缺失模态仍能由 CLS 产生非零值] -> forward 后按 availability 显式清零并测试 probability/risk/weight。
 - [FP16/BF16 下 exp/log/JS/KL 下溢] -> 风险、校准和融合统一在 FP32 中执行，输出结束再 cast。
 - [train-only preparation pass 增加启动耗时] -> 正式运行完整遍历以保证统计契约；仅 smoke 允许限 batch，并在 metadata 标记不具 claim 资格。

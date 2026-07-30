@@ -24,19 +24,21 @@ def collect_pcpf_observations(
     device: str | torch.device,
     patterns: Mapping[str, Sequence[int]],
     max_batches: int | None = None,
-    direct_router_model: Any | None = None,
+    control_models: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect validation diagnostics without reading an outer-test loader."""
     device = torch.device(device)
     modalities = tuple(str(value) for value in getattr(model, "modalities", ()))
     if len(modalities) != 4:
         raise ValueError("PCPF diagnostics require four canonical modalities.")
-    if direct_router_model is not None:
-        if getattr(direct_router_model, "direct_router", None) is None:
-            raise ValueError("The replacement control model does not contain a direct Router.")
-        if model._expert_fingerprint() != direct_router_model._expert_fingerprint():
-            raise ValueError("Direct Router and PCPF checkpoints do not share the Stage 1 expert fingerprint.")
-        direct_router_model.to(device).eval()
+    controls = dict(control_models or {})
+    allowed_controls = {"uniform", "static_prior", "direct_router_control", "cuaf_local_adaptation"}
+    for mode, control in controls.items():
+        if mode not in allowed_controls or getattr(control, "fusion_mode", None) != mode:
+            raise ValueError(f"Invalid PCPF replacement control {mode!r}.")
+        if model._expert_fingerprint() != control._expert_fingerprint():
+            raise ValueError(f"{mode} and PCPF checkpoints do not share the Stage 1 expert fingerprint.")
+        control.to(device).eval()
 
     tensor_chunks: dict[str, list[torch.Tensor]] = {
         key: []
@@ -52,14 +54,9 @@ def collect_pcpf_observations(
         )
     }
     replacement_probability: dict[str, list[torch.Tensor]] = {
-        "uniform": [],
-        "static_prior": [],
-        "pcpf_analytic": [],
+        name: [] for name in ("uniform", "static_prior", "pcpf_analytic", *sorted(controls))
     }
     replacement_weights: dict[str, list[torch.Tensor]] = {key: [] for key in replacement_probability}
-    if direct_router_model is not None:
-        replacement_probability["direct_router_control"] = []
-        replacement_weights["direct_router_control"] = []
     strings = {key: [] for key in ("weather", "domain", "pattern", "mask_group")}
     model.to(device).eval()
     model_cfg = cfg["model"]["primary"]
@@ -111,25 +108,22 @@ def collect_pcpf_observations(
                     static_capability=capability,
                     tau=1.0,
                 )
-                analytic = analytic_fusion_weights(
-                    risk=raw_risk,
-                    available=available,
-                    static_capability=capability,
-                    tau=tau,
-                )
                 weights_by_name = {
                     "uniform": uniform,
                     "static_prior": static,
-                    "pcpf_analytic": analytic,
+                    "pcpf_analytic": _tensor(diagnostics, "fusion_weights").float(),
                 }
-                if direct_router_model is not None:
-                    weights_by_name["direct_router_control"] = _direct_router_weights(
-                        direct_router_model,
+                calibrated_by_name = {name: calibrated for name in weights_by_name}
+                for name, control in controls.items():
+                    control_weights, control_calibrated = _control_fusion_from_cached_evidence(
+                        control,
                         diagnostics,
                         available,
                     )
+                    weights_by_name[name] = control_weights
+                    calibrated_by_name[name] = control_calibrated
                 for name, weights in weights_by_name.items():
-                    probability = (weights.unsqueeze(-1) * calibrated).sum(dim=1)
+                    probability = (weights.unsqueeze(-1) * calibrated_by_name[name]).sum(dim=1)
                     probability = probability / probability.sum(dim=-1, keepdim=True).clamp_min(1e-12)
                     replacement_probability[name].append(probability.cpu())
                     replacement_weights[name].append(weights.cpu())
@@ -165,6 +159,11 @@ def collect_pcpf_observations(
         "modality_temperatures": model.temperatures.detach().float().cpu(),
         "static_capability": model._static_capability().detach().float().cpu(),
         "fusion_tau": float(model.tau.detach().float().cpu().item()),
+        "trained_controls": sorted(controls),
+        "replacement_parameters": {
+            name: _fusion_parameter_summary(controls.get(name, model), source="control_checkpoint" if name in controls else "main_checkpoint")
+            for name in replacement_probability
+        },
         "expert_fingerprint": model._expert_fingerprint(),
         "training_stage": str(model.training_stage),
         "bounded_evaluation": max_batches is not None,
@@ -267,9 +266,17 @@ def summarize_pcpf_matrix(
     records: Mapping[str, Any],
     *,
     train_confidence_p90: torch.Tensor,
+    provenance: Mapping[str, Any],
 ) -> dict[str, Any]:
+    required_provenance = {"checkpoint", "data_protocol", "normalization"}
+    missing_provenance = sorted(required_provenance.difference(provenance))
+    if missing_provenance:
+        raise ValueError(f"PCPF matrix provenance is missing: {', '.join(missing_provenance)}.")
+    if any(not isinstance(provenance[key], Mapping) for key in required_provenance):
+        raise ValueError("PCPF matrix checkpoint, data_protocol, and normalization provenance must be mappings.")
     count = int(torch.as_tensor(records["labels"]).numel())
     all_rows = torch.ones(count, dtype=torch.bool)
+    pattern_reports = _group_matrix(records, "pattern", train_confidence_p90)
     return {
         "schema_version": 1,
         "report_type": "pcpf_15_mask_diagnostics",
@@ -279,16 +286,23 @@ def summarize_pcpf_matrix(
         "bounded_evaluation": bool(records["bounded_evaluation"]),
         "claim_ineligible": True,
         "outer_test_accessed": False,
+        "provenance": dict(provenance),
         "sample_pattern_count": count,
         "modality_temperatures": {name: float(records["modality_temperatures"][index]) for index, name in enumerate(records["modalities"])},
         "static_capability": {name: float(records["static_capability"][index]) for index, name in enumerate(records["modalities"])},
         "fusion_tau": float(records["fusion_tau"]),
+        "trained_controls": list(records.get("trained_controls", ())),
+        "replacement_parameters": dict(records.get("replacement_parameters", {})),
         "overall": _matrix_group(records, all_rows, train_confidence_p90),
-        "patterns": _group_matrix(records, "pattern", train_confidence_p90),
+        "patterns": pattern_reports,
+        "pattern_aggregates": _pattern_aggregates(pattern_reports),
         "weather": _group_matrix(records, "weather", train_confidence_p90),
         "domains": _group_matrix(records, "domain", train_confidence_p90),
         "pattern_weather": _joint_group_matrix(records, "pattern", "weather", train_confidence_p90),
         "direct_router_status": ("evaluated" if "direct_router_control" in records["replacement_probability"] else "not_supplied"),
+        "cuaf_local_adaptation_status": (
+            "evaluated" if "cuaf_local_adaptation" in records["replacement_probability"] else "not_supplied"
+        ),
     }
 
 
@@ -480,6 +494,28 @@ def _joint_group_matrix(
     }
 
 
+def _pattern_aggregates(patterns: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    single = [name for name in patterns if canonical_missing_pattern_name(name).endswith("_only")]
+    all14 = [name for name in patterns if canonical_missing_pattern_name(name) != "full"]
+    if len(single) != 4 or len(all14) != 14:
+        raise ValueError("PCPF matrix aggregation requires four Single masks and exactly 14 non-Full masks.")
+    higher_is_better = {"top1", "top3", "top5", "within_3"}
+    metric_names = (*sorted(higher_is_better), "circular_mae", "nll", "brier", "ece")
+    result: dict[str, Any] = {}
+    for group_name, pattern_names in (("single", single), ("all14", all14)):
+        methods = patterns[pattern_names[0]]["replacement_metrics"]
+        result[group_name] = {}
+        for method in methods:
+            result[group_name][method] = {}
+            for metric in metric_names:
+                values = [float(patterns[name]["replacement_metrics"][method][metric]) for name in pattern_names]
+                result[group_name][method][metric] = {
+                    "macro": sum(values) / len(values),
+                    "worst": min(values) if metric in higher_is_better else max(values),
+                }
+    return result
+
+
 def _correlations(left: torch.Tensor, right: torch.Tensor) -> dict[str, float | int | None]:
     finite = torch.isfinite(left) & torch.isfinite(right)
     left, right = left[finite].float(), right[finite].float()
@@ -592,24 +628,31 @@ def _pair_order_agreement(risk: torch.Tensor, weights: torch.Tensor, available: 
     return _mean_or_none(torch.cat(values)) if values else None
 
 
-def _direct_router_weights(model: Any, diagnostics: Mapping[str, Any], available: torch.Tensor) -> torch.Tensor:
-    probabilities = _tensor(diagnostics, "unimodal_probabilities").float()
-    logits = _tensor(diagnostics, "unimodal_logits").float()
-    components = _tensor(diagnostics, "risk_components").float()
-    entropy = -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1, keepdim=True)
-    top2 = probabilities.topk(2, dim=-1).values
-    features = torch.cat(
-        [
-            components[..., 1:2],
-            entropy,
-            top2[..., :1] - top2[..., 1:2],
-            top2[..., :1],
-            logits.norm(dim=-1, keepdim=True),
-        ],
-        dim=-1,
+def _control_fusion_from_cached_evidence(
+    model: Any,
+    diagnostics: Mapping[str, Any],
+    available: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    weights, calibrated, _, effective_mode = model._fuse(
+        _tensor(diagnostics, "unimodal_logits").float(),
+        _tensor(diagnostics, "unimodal_probabilities").float(),
+        _tensor(diagnostics, "raw_risk").float(),
+        _tensor(diagnostics, "risk_components").float(),
+        available,
     )
-    scores = model.direct_router(features).squeeze(-1).float().masked_fill(~available, -torch.inf)
-    return torch.softmax(scores, dim=-1) * available.float()
+    if effective_mode != model.fusion_mode:
+        raise ValueError(f"Control fusion mode changed from {model.fusion_mode!r} to {effective_mode!r}.")
+    return weights, calibrated
+
+
+def _fusion_parameter_summary(model: Any, *, source: str) -> dict[str, Any]:
+    return {
+        "source": source,
+        "fusion_mode": str(model.fusion_mode),
+        "temperatures": model.temperatures.detach().float().cpu().tolist(),
+        "tau": float(model.tau.detach().float().cpu().item()),
+        "static_capability": model._static_capability().detach().float().cpu().tolist(),
+    }
 
 
 def _mask_group(name: str, pattern: Sequence[int]) -> str:

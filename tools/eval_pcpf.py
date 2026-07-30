@@ -31,6 +31,9 @@ from kd_sensing.utils.missing_patterns import resolve_missing_patterns
 from kd_sensing.utils.seed import set_seed
 
 
+CONTROL_FUSION_MODES = {"uniform", "static_prior", "direct_router_control", "cuaf_local_adaptation"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Evaluate PCPF-T Stage 2 risk and 15-mask diagnostics.")
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -43,8 +46,14 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--max-batches", type=int)
         sub.add_argument("--max-train-batches", type=int)
     matrix = subparsers.choices["matrix"]
-    matrix.add_argument("--router-config")
-    matrix.add_argument("--router-checkpoint")
+    matrix.add_argument(
+        "--control",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("CONFIG", "CHECKPOINT"),
+        help="Repeat for trained A0-A3 controls; fusion_mode identifies each control.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -69,14 +78,17 @@ def main(argv: list[str] | None = None) -> int:
                 max_batches=args.max_batches,
                 max_train_batches=args.max_train_batches,
             )
-        router_model = _load_router(args, device)
+        control_models, control_provenance = _load_controls(args.control, device, reference_cfg=cfg)
         return _run_matrix(
             model,
-            router_model,
+            control_models,
+            control_provenance,
             dataloaders,
             cfg,
             device=device,
             patterns=patterns,
+            checkpoint_path=Path(args.checkpoint).resolve(),
+            checkpoint_digest=checkpoint_digest,
             output=Path(args.output),
             max_batches=args.max_batches,
             max_train_batches=args.max_train_batches,
@@ -147,12 +159,15 @@ def _run_gate(
 
 def _run_matrix(
     model: Any,
-    router_model: Any | None,
+    control_models: dict[str, Any],
+    control_provenance: dict[str, Any],
     dataloaders: dict[str, Any],
     cfg: dict[str, Any],
     *,
     device: torch.device,
     patterns: dict[str, list[int]],
+    checkpoint_path: Path,
+    checkpoint_digest: str,
     output: Path,
     max_batches: int | None,
     max_train_batches: int | None,
@@ -178,9 +193,56 @@ def _run_matrix(
         device=device,
         patterns=patterns,
         max_batches=max_batches,
-        direct_router_model=router_model,
+        control_models=control_models,
     )
-    report = summarize_pcpf_matrix(records, train_confidence_p90=confidence_p90)
+    protocol = cfg.get("data_protocol")
+    if not isinstance(protocol, dict):
+        raise ValueError("PCPF matrix evaluation requires data_protocol provenance.")
+    model_metadata = model.checkpoint_metadata()
+    normalization_keys = (
+        "risk_stats_fitted",
+        "static_capability_fitted",
+        "risk_component_mean",
+        "risk_component_std",
+        "risk_component_count",
+        "mean_train_risk",
+        "mean_train_risk_count",
+        "train_confidence_p90",
+        "train_confidence_count",
+    )
+    normalization = {key: model_metadata[key] for key in normalization_keys}
+    normalization.update(
+        {
+            "source_split": "inner_train",
+            "normalization_epsilon": float(model.risk_normalization_epsilon),
+        }
+    )
+    preparation = cfg.get("runtime", {}).get("pcpf_stage_preparation")
+    if isinstance(preparation, dict):
+        normalization["preparation"] = {
+            key: preparation.get(key)
+            for key in ("source_split", "sample_count", "batch_count", "bounded_smoke_pass", "outer_test_accessed")
+        }
+    provenance: dict[str, Any] = {
+        "checkpoint": {
+            "path": str(checkpoint_path),
+            "sha256": checkpoint_digest,
+            "role": "validation_best",
+            "training_stage": str(model.training_stage),
+        },
+        "data_protocol": dict(protocol),
+        "normalization": normalization,
+    }
+    gate_binding = cfg.get("training", {}).get("pcpf_stage2_gate")
+    if isinstance(gate_binding, dict):
+        provenance["stage2_gate"] = dict(gate_binding)
+    if control_provenance:
+        provenance["controls"] = control_provenance
+    report = summarize_pcpf_matrix(
+        records,
+        train_confidence_p90=confidence_p90,
+        provenance=provenance,
+    )
     report["train_confidence_source"] = confidence_source
     report["train_confidence_p90"] = {name: float(confidence_p90[index]) for index, name in enumerate(records["modalities"])}
     write_pcpf_report(report, output)
@@ -191,6 +253,7 @@ def _run_matrix(
                 "pattern_count": len(report["patterns"]),
                 "domain_count": len(report["domains"]),
                 "direct_router_status": report["direct_router_status"],
+                "trained_controls": report["trained_controls"],
                 "bounded_evaluation": report["bounded_evaluation"],
                 "outer_test_accessed": False,
             },
@@ -200,18 +263,83 @@ def _run_matrix(
     return 0
 
 
-def _load_router(args: argparse.Namespace, device: torch.device) -> Any | None:
-    if bool(args.router_config) != bool(args.router_checkpoint):
-        raise ValueError("--router-config and --router-checkpoint must be supplied together.")
-    if not args.router_config:
-        return None
-    cfg = load_config(args.router_config)
-    _require_pcpf(cfg)
-    if cfg["model"]["primary"].get("fusion_mode") != "direct_router_control":
-        raise ValueError("The replacement config must select fusion_mode=direct_router_control.")
-    model = build_model(cfg["model"]["primary"]).to(device)
-    _load_evaluation_checkpoint(model, args.router_checkpoint, expected_stage=model.training_stage, device=device)
-    return model.eval()
+def _load_controls(
+    entries: list[list[str]],
+    device: torch.device,
+    *,
+    reference_cfg: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    models: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+    for raw_config, raw_checkpoint in entries:
+        config_path = Path(raw_config).resolve()
+        checkpoint_path = Path(raw_checkpoint).resolve()
+        cfg = load_config(config_path)
+        _require_pcpf(cfg)
+        mode = str(cfg["model"]["primary"].get("fusion_mode", ""))
+        if mode not in CONTROL_FUSION_MODES:
+            raise ValueError(f"Unsupported PCPF control fusion mode {mode!r}.")
+        if mode in models:
+            raise ValueError(f"Duplicate PCPF control fusion mode {mode!r}.")
+        comparability = _require_control_comparability(reference_cfg, cfg, mode=mode)
+        model = build_model(cfg["model"]["primary"]).to(device)
+        if model.training_stage != "stage3_fusion":
+            raise ValueError("PCPF replacement controls must use training_stage=stage3_fusion.")
+        digest = _load_evaluation_checkpoint(model, checkpoint_path, expected_stage=model.training_stage, device=device)
+        models[mode] = model.eval()
+        provenance[mode] = {
+            "config": str(config_path),
+            "path": str(checkpoint_path),
+            "sha256": digest,
+            "role": "validation_best",
+            "training_stage": model.training_stage,
+            "fusion_mode": mode,
+            "expert_fingerprint": model._expert_fingerprint(),
+            "comparability_contract": comparability,
+        }
+    return models, provenance
+
+
+def _require_control_comparability(
+    reference_cfg: dict[str, Any],
+    control_cfg: dict[str, Any],
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    expected = _comparability_contract(reference_cfg)
+    actual = _comparability_contract(control_cfg)
+    if actual != expected:
+        mismatches = sorted(key for key in expected if actual.get(key) != expected[key])
+        raise ValueError(f"PCPF control {mode!r} comparability mismatch: {', '.join(mismatches)}.")
+    return actual
+
+
+def _comparability_contract(cfg: dict[str, Any]) -> dict[str, Any]:
+    training = cfg.get("training", {})
+    initialization = training.get("initialization_checkpoint", {})
+    protocol = cfg.get("data_protocol", {})
+    dataloader = cfg.get("data", {}).get("dataloader", {})
+    return {
+        "seed": cfg.get("experiment", {}).get("seed"),
+        "protocol": {
+            key: protocol.get(key)
+            for key in ("protocol_id", "protocol_fingerprint", "train_role", "validation_role")
+        },
+        "temporal_missing": cfg.get("temporal_missing"),
+        "batch_size": {
+            "train": dataloader.get("train_batch_size"),
+            "validation": dataloader.get("validation_batch_size"),
+        },
+        "training_budget": {
+            key: training.get(key)
+            for key in ("epochs", "max_epochs", "lr", "weight_decay", "checkpoint_selection")
+        },
+        "source_checkpoint": {
+            key: initialization.get(key)
+            for key in ("sha256", "role", "expected_source_training_stage")
+        },
+        "scheduler": cfg.get("scheduler"),
+    }
 
 
 def _load_evaluation_checkpoint(

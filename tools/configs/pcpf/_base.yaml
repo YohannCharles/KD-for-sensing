@@ -36,7 +36,7 @@ model:
       enabled_components: [var, proto, temp, conflict]
       coefficient_init: [1.0, 1.0, 1.0, 0.25]
       bias_init: 0.0
-      normalization_epsilon: 0.000001
+      normalization_epsilon: 0.01
     fusion:
       temperature_min: 0.05
       temperature_init: 1.0
@@ -105,6 +105,7 @@ loss:
       upper_lower_gap_min: 0.0
       minimum_risk_std: 0.0001
 training:
+  checkpoint_selection: best_validation_loss
   final_test:
     enabled: false
   grad_clip: 5.0

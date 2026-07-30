@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from kd_sensing.config import load_config
+from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
 from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion
 from kd_sensing.models.u_mask_beam_jepa import UMaskBeamJEPA
 from kd_sensing.registries import ENCODERS
@@ -86,8 +87,44 @@ def test_train_only_stage_preparation_fits_normalization_and_confidence(tmp_path
     assert report["outer_test_accessed"] is False
     assert bool(model.risk_stats_fitted.item())
     assert model.risk_component_count.gt(0).all()
+    assert model.risk_component_std[0].item() == pytest.approx(0.01)
     assert model.train_confidence_count.gt(0).all()
     assert model.train_confidence_p90.gt(0).all()
+
+    batch = next(iter(DataLoader(_WorkflowDataset(), batch_size=4, shuffle=False)))
+    labels = prepare_task_labels(batch, num_pred=1, device=torch.device("cpu"))
+    optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=5e-4)
+    step = run_model_step(
+        model,
+        "fusion",
+        batch,
+        seq_length=5,
+        num_pred=1,
+        device=torch.device("cpu"),
+    )
+    loss = model.compute_validation_loss(step.model_output, labels, cfg)
+    optimizer.zero_grad()
+    loss.backward()
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.requires_grad and parameter.grad is not None]
+
+    assert gradients
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
+    assert torch.isfinite(torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0))
+    optimizer.step()
+
+    model.eval()
+    updated = run_model_step(
+        model,
+        "fusion",
+        batch,
+        seq_length=5,
+        num_pred=1,
+        device=torch.device("cpu"),
+    ).model_output.diagnostics
+    available_risk = updated["raw_risk"][updated["available_modalities"]]
+    assert torch.isfinite(available_risk).all()
+    assert available_risk.gt(0).all()
+    assert available_risk.std().item() > 1e-4
 
 
 def test_stage3_gate_binds_sha_unbounded_report_and_expert_fingerprint(tmp_path) -> None:
@@ -140,6 +177,8 @@ def test_pcpf_config_keeps_image_profile_at_dataset_boundary() -> None:
     cfg = load_config("tools/configs/pcpf/stage1.yaml")
 
     assert cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert cfg["model"]["primary"]["risk"]["normalization_epsilon"] == pytest.approx(0.01)
+    assert cfg["training"]["checkpoint_selection"] == "best_validation_loss"
     assert "image_profile" not in cfg["model"]["primary"]
 
 

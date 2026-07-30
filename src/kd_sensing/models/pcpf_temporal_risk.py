@@ -329,7 +329,7 @@ class PCPFTemporalRiskFusion(nn.Module):
         self.risk_coefficient_raw = nn.Parameter(_inverse_softplus(coefficient_init))
         self.risk_bias = nn.Parameter(torch.tensor(float(risk_cfg.get("bias_init", 0.0))))
         self.risk_normalization_epsilon = _positive(
-            risk_cfg.get("normalization_epsilon", 1e-6),
+            risk_cfg.get("normalization_epsilon", 0.01),
             "risk.normalization_epsilon",
         )
         self.register_buffer("risk_component_mean", torch.zeros(4, dtype=torch.float32))

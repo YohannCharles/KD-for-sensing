@@ -46,3 +46,10 @@
 - [x] 7.2 从当前工作树移除已停止且孤立的 probabilistic prototype owner
 - [x] 7.3 保留并验证 U0、AMBER-Full、RMBP-MM、DeepSense6G、MMW、trajectory baseline、CSI/TSPC 与全部 cache 边界
 - [x] 7.4 更新 current specs、README、agent navigation、maintainer context 和 architecture boundary，使 PCPF-T 成为唯一 active research mainline
+
+## 8. Stage 2 数值塌缩修复
+
+- [x] 8.1 将风险 normalization std floor 固定为 `0.01`，同步正式配置与模型默认值
+- [x] 8.2 增加退化 `U_var` preparation 后单优化步回归测试，并完成 focused/OpenSpec 验证
+- [x] 8.3 补齐 15-mask matrix 的 checkpoint、clean protocol、gate 与 normalization provenance，并增加聚焦回归测试
+- [x] 8.4 让 A0--A3 control 在同一次 A4 forward 上应用各自 validation-best 参数，记录 control provenance 并完成 seed1 公平矩阵
