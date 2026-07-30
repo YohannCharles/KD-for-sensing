@@ -64,6 +64,7 @@ cache/
 *.onnx
 
 # Large generated data and archives
+/*.pdf
 *.zip
 *.tar
 *.tar.gz

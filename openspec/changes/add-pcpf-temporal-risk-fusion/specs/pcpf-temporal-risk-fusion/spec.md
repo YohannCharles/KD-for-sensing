@@ -1,13 +1,13 @@
 ## ADDED Requirements
 
-### Requirement: PCPF-T 必须保持四模态输入与研究隔离
+### Requirement: PCPF-T 默认四模态且可显式追加历史 sparse CSI
 
-系统 MUST 以 `image、radar、gps、lidar` canonical order 接受五帧历史并预测一个 64 类未来 beam。模型、loss 和风险 target MUST NOT 读取 channel、CSI、path、beam power、历史 beam index、天气、场景、domain、corruption type 或 severity；风险估计前 MUST NOT 执行跨模态 attention 或 feature concat。全部当前开发结果 MUST 标记 `claim_ineligible=true`，outer test MUST 保持未访问。
+系统 MUST 默认以 `image、radar、gps、lidar` canonical order 接受五帧历史并预测一个 64 类未来 beam。只有配置显式声明 `use_sparse_csi=true` 时，系统 MAY 在末尾追加同一五帧历史窗口的固定 2x2 sparse CSI 作为第五模态。模型、loss 和风险 target MUST NOT 读取当前/未来 CSI、未来 channel、path、beam power、历史 beam index、天气、场景、domain、corruption type 或 severity；风险估计前 MUST NOT 执行跨模态 attention 或 feature concat。全部当前开发结果 MUST 标记 `claim_ineligible=true`，outer test MUST 保持未访问。
 
 #### Scenario: 构建 PCPF-T batch
 - **WHEN** runner 从合法 MMW train/validation batch 构建模型输入
-- **THEN** 输入 MUST 只包含四模态历史 tensor、`modality_temporal_mask` 与未来 beam label
-- **AND** 模型 forward MUST 不接受 CSI/channel/天气/场景作为动态风险输入
+- **THEN** 默认输入 MUST 只包含四模态历史 tensor、`modality_temporal_mask` 与未来 beam label
+- **AND** 未显式启用 sparse CSI 时模型 MUST 不创建 CSI 参数或改变四模态 state dict/forward
 
 #### Scenario: 请求 outer test
 - **WHEN** PCPF-T 配置未获得新的显式 outer-test 授权
@@ -16,21 +16,21 @@
 
 ### Requirement: 共享 Temporal Transformer 必须正确屏蔽缺失帧
 
-系统 MUST 将 encoder 输出校验为 `[B,5,64]`，stack 为 `[B,5,4,64]`，对每模态应用独立 input LayerNorm/可选 adapter，再以 `[B*4,5,64]` 送入唯一共享的两层、四头、`dim_feedforward=128`、`norm_first=true`、非 causal Transformer。系统 MUST 使用 learned time embedding `[5,64]`、modality embedding `[4,64]` 和共享 T-CLS；`src_key_padding_mask` MUST 让 T-CLS 可见并屏蔽全部缺失 frame。
+系统 MUST 将每个 encoder 输出校验为 `[B,5,64]`，stack 为 `[B,5,M,64]`，其中默认 `M=4`、sparse CSI opt-in 时 `M=5`。系统 MUST 对每模态应用独立 input LayerNorm/可选 adapter，再以 `[B*M,5,64]` 送入唯一共享的两层、四头、`dim_feedforward=128`、`norm_first=true`、非 causal Transformer。系统 MUST 使用 learned time embedding `[5,64]`、modality embedding `[M,64]` 和共享 T-CLS；`src_key_padding_mask` MUST 让 T-CLS 可见并屏蔽全部缺失 frame。
 
 #### Scenario: 部分帧缺失
 - **WHEN** `modality_temporal_mask` 为 `[B,5,4]` 且某些 frame cell 为 false
 - **THEN** false cell MUST 不作为 attention key/value 参与 temporal encoding
-- **AND** 输出 MUST 包含 `temporal_token_features=[B,5,4,64]`、`temporal_cls_features=[B,4,64]` 与 `temporal_attention_valid_fraction=[B,4]`
+- **AND** 输出 MUST 包含 `temporal_token_features=[B,5,M,64]`、`temporal_cls_features=[B,M,64]` 与 `temporal_attention_valid_fraction=[B,M]`
 
 #### Scenario: 整个模态缺失
 - **WHEN** 一个样本的某模态五帧全部为 false
 - **THEN** 该模态 CLS/frame feature MUST 在 Transformer 后显式置零
 - **AND** `available_modalities`、probability、risk 与 weight MUST 对该模态置为 false/零
 
-### Requirement: 四个专家必须共享唯一 Beam Prototype Bank
+### Requirement: 所有专家必须共享唯一 Beam Prototype Bank
 
-系统 MUST 只实例化一个 `BeamPrototypeBank`，其 64 个 `[64]` prototype 同时为全部可用模态产生 cosine/temperature logits。Stage 1 MUST 输出 `unimodal_logits=[B,4,64]` 和 probability，并复用现有 topology soft target、availability-aware fused/modality prototype alignment。新增 unimodal loss MUST 对每样本可用模态的 hard CE 与 soft topology CE 求和后按可用模态数归一化。
+系统 MUST 只实例化一个 `BeamPrototypeBank`，其 64 个 `[64]` prototype 同时为全部可用模态产生 cosine/temperature logits。Stage 1 MUST 输出 `unimodal_logits=[B,M,64]` 和 probability，并复用现有 topology soft target、availability-aware fused/modality prototype alignment。新增 unimodal loss MUST 对每样本可用模态的 hard CE 与 soft topology CE 求和后按可用模态数归一化。
 
 #### Scenario: 同一样本有两个模态可用
 - **WHEN** Stage 1 计算该样本的 unimodal loss
@@ -43,7 +43,7 @@
 
 ### Requirement: Stage 1 必须只训练 temporal experts 与 prototype
 
-`stage1_expert` MUST 训练四个 encoder、encoder projection/adapter、共享 Temporal Transformer、Beam Prototype Bank 和当前 deterministic prediction component。默认融合 MUST 为所有可用模态 uniform probability average；可选 static learnable prior control MUST 只训练四个全局 prior logits。probability/risk head、dynamic analytic fusion、direct Router control 和 U0 Router oracle loss MUST 冻结或不存在。
+`stage1_expert` MUST 训练全部已启用 encoder、encoder projection/adapter、共享 Temporal Transformer、Beam Prototype Bank 和当前 deterministic prediction component。默认融合 MUST 为所有可用模态 uniform probability average；可选 static learnable prior control MUST 只训练 `M` 个全局 prior logits。probability/risk head、dynamic analytic fusion、direct Router control 和 U0 Router oracle loss MUST 冻结或不存在。
 
 #### Scenario: 默认 Stage 1 backward
 - **WHEN** 对 Stage 1 loss 执行一次 backward
@@ -125,21 +125,16 @@ Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_
 
 #### Scenario: Stage 3A backward
 - **WHEN** analytic fusion NLL 执行 backward
-- **THEN** 默认只有四个 temperature 与 tau 获得梯度，可选 eta 仅在显式启用时获得梯度
+- **THEN** 默认只有 `M` 个 temperature 与 tau 获得梯度，可选 eta 仅在显式启用时获得梯度
 - **AND** expert、prototype、probability/risk head MUST 保持冻结
 
-### Requirement: 四个训练 stage 必须记录精确冻结与 checkpoint 角色
+### Requirement: 三个训练 stage 必须记录精确冻结与 checkpoint 角色
 
-系统 MUST 只接受 `stage1_expert`、`stage2_risk`、`stage3_fusion`、`stage3b_optional_finetune`，启动时 MUST 输出完整 trainable parameter names/count 并断言不存在额外可训练参数。checkpoint payload/metadata MUST 记录 stage、fusion mode、claim eligibility 和 fitted-state identity；Stage 2/3/3B MUST 分别拒绝非 Stage 1/2/3A validation-best 初始化。现有 U0 checkpoint 缺少新 metadata 时 MUST 继续按原路径加载。
+系统 MUST 只接受 `stage1_expert`、`stage2_risk`、`stage3_fusion`，启动时 MUST 输出完整 trainable parameter names/count 并断言不存在额外可训练参数。checkpoint payload/metadata MUST 记录 stage、fusion mode、claim eligibility 和 fitted-state identity；Stage 2/3 MUST 分别拒绝非 Stage 1/2 validation-best 初始化。
 
 #### Scenario: stage 来源不匹配
 - **WHEN** Stage 3 配置指向 metadata.stage=`stage1_expert` 的 checkpoint
 - **THEN** initialization MUST 在 optimizer 或训练 step 前失败
-
-#### Scenario: 加载旧 U0 checkpoint
-- **WHEN** U0 配置没有声明 PCPF source-stage 要求
-- **THEN** checkpoint loader MUST 不要求 PCPF metadata
-- **AND** U0 state dict 与 forward MUST 继续严格加载
 
 ### Requirement: 对照和消融必须共享同一专家证据
 
@@ -161,16 +156,16 @@ Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_
 
 ### Requirement: 评估必须输出性能、校准和机制诊断
 
-系统 MUST 复用 Full Top-1/3/5、Single Macro/Worst、All-14 Macro/Worst、Within-3、circular MAE、四个 Missing、四个 Single、sunny/rainy/foggy 和 15-domain macro/worst。每个 mask/weather MUST 额外输出 weight mean/std/percentile、相对 static prior 偏差、missing weight max、effective modality count、risk-weight Spearman、真实风险排序一致率、NLL/Brier/ECE/reliability data 与 temperature。confident-but-wrong MUST 使用每模态 train-only 90% confidence threshold。
+系统 MUST 复用 Full Top-1/3/5、Single Macro/Worst、全部非 Full mask Macro/Worst、Within-3、circular MAE、每模态 Missing/Single、sunny/rainy/foggy 和 15-domain macro/worst。默认四模态 MUST 评估 15 个非空 mask，sparse CSI opt-in MUST 评估五模态全部 31 个非空 mask。每个 mask/weather MUST 额外输出 weight mean/std/percentile、相对 static prior 偏差、missing weight max、effective modality count、risk-weight Spearman、真实风险排序一致率、NLL/Brier/ECE/reliability data 与 temperature。confident-but-wrong MUST 使用每模态 train-only 90% confidence threshold。
 
-#### Scenario: 运行 validation 15-mask evaluator
+#### Scenario: 运行 validation mask evaluator
 - **WHEN** evaluator 使用一个 validation-best checkpoint 和同一 validation split
-- **THEN** 所有 15 个非空 mask MUST 使用同一模型参数与单模态 evidence
+- **THEN** 默认所有 15 个或 opt-in 所有 31 个非空 mask MUST 使用同一模型参数与单模态 evidence
 - **AND** 输出 MUST 包含 claim eligibility、checkpoint、split、weather/domain 和 normalization provenance
 
 ### Requirement: 配置、数值和 smoke 必须失败关闭
 
-PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature、`d_model % num_heads != 0`、非五帧 seq、非法 stage、缺少 stage checkpoint/gate 的训练请求。risk/softmax/exp/log/KL MUST 在 FP32 执行，即使主模型为 BF16。实现 MUST 提供 static/focused tests、synthetic forward/backward、真实 MMW 单 batch Stage 1、Stage 1 假 checkpoint的 Stage 2 和 Stage 3 smoke，并报告 shape、loss 分量、关键梯度、missing weight、row-sum、NaN/Inf 与 GPU peak memory。
+PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature、`d_model % num_heads != 0`、非五帧 seq、非法 stage、缺少后续 stage checkpoint/gate 的训练请求。trajectory sparse-CSI Stage 1 MAY 显式 fresh start；若提供初始化 checkpoint，则其训练协议与 normalization MUST 与当前 protocol fingerprint/validation 隔离契约一致。risk/softmax/exp/log/KL MUST 在 FP32 执行，即使主模型为 BF16。实现 MUST 提供 static/focused tests、synthetic forward/backward、真实 MMW 单 batch Stage 1、Stage 1 假 checkpoint的 Stage 2 和 Stage 3 smoke，并报告 shape、loss 分量、关键梯度、missing weight、row-sum、NaN/Inf 与 GPU peak memory。
 
 #### Scenario: BF16 风险 forward
 - **WHEN**主 expert tensor 为 BF16
@@ -180,3 +175,44 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 #### Scenario: 非法配置字段
 - **WHEN** PCPF loss/model config 包含未声明字段
 - **THEN** parser MUST 在模型训练前列出未知字段并失败
+
+### Requirement: 历史 sparse CSI 必须固定、复数且可审计
+
+启用 sparse CSI 时，系统 MUST 对每个历史 frame 使用固定 pattern index `[0,1]` 与 frequency index `[0,15]`，得到 `[5,2,2]` complex tensor；mother grid MUST 为 `[5,32,16]`，每帧抽样率 MUST 为 `4/(32*16)=0.78125%`。正式路线 MUST 绑定 `mmw_trajectory_disjoint_v1` 的 37,510/6,365 train/validation，selection descriptor、selection SHA256、probe codebook logical/file SHA256、physical frequency offset、历史 frame id、channel path identity、protocol fingerprint 与 cache identity MUST 写入 resolved config 或 sidecar metadata。训练前 cache scan MUST 只遍历 train/validation 并记录 `outer_test_accessed=false`。生成路径 MUST 不加入 AWGN、pilot dropout、随机 corruption 或任何 current/future CSI。真实 SNR 不可得时 MUST 记录 `snr_available=false`，不得随机生成或用常数冒充。
+
+#### Scenario: 编码历史 sparse CSI
+- **WHEN** batch 提供 `[B,5,2,2]` complex pilot 与 `[B,5,2]` pattern id/frequency position
+- **THEN** CSI encoder MUST 保留 real/imag 信息并输出 `[B,5,64]` temporal feature
+- **AND** 缺少 SNR MUST 不改变该 feature、logit、risk target 或 fusion weight 的定义
+
+#### Scenario: channel 引用或时间顺序不一致
+- **WHEN** 任一 channel 文件 stem 不匹配对应历史 frame id，或最后历史 frame 不早于 target
+- **THEN** dataset MUST 在返回样本前失败并报告 sample identity
+
+### Requirement: 五模态扩展必须保持缺失语义并 fresh start
+
+未启用 sparse CSI 时，模型 MUST 不创建 CSI encoder/projection 或第五模态参数。五模态 Stage 1 MUST fresh start，不得从四模态 checkpoint 扩展；Stage 2/3 MUST 只接受同一五模态 trajectory protocol 下前一阶段的 validation-best checkpoint。
+
+#### Scenario: sparse CSI 完全缺失
+- **WHEN** 某样本五帧 CSI mask 全为 false
+- **THEN** CSI input、temporal feature、probability、risk 与 weight MUST 全部为零
+- **AND** 四个 sensing 专家的 evidence MUST 与对应四模态输入的结果保持一致到浮点容差
+
+#### Scenario: 训练 31-subset schedule
+- **WHEN** 一个 epoch 对五模态样本应用 temporal missing
+- **THEN** 全部 31 个非空 bitmask MUST 由 global sample position 与 epoch seed 确定性轮转
+- **AND** 各 mask 样本数差 MUST 不超过一，epoch report MUST 写出逐 mask 计数
+
+### Requirement: R0--R7 与 D0--D3 必须使用相同专家和配对样本
+
+系统 MUST 报告 R0 同一 `mmw_trajectory_disjoint_v1` 上重新训练的四模态 PCPF-T 参考、R1 五模态联合训练 checkpoint 强制 CSI 缺失、R2 五模态 uniform、R3 五模态 train-only static prior、R4 五模态 direct Router control、R5 五模态 `cuaf_local_adaptation`、R6 五模态当前 analytic PCPF 和 R7 同一联合 checkpoint 的 CSI-only。R0--R7 MUST 使用同一 6,365 条 trajectory validation identity、seed 与样本顺序；R1--R7 还 MUST 共享 mask、Stage 1 expert checkpoint、Stage 2 probability/risk checkpoint、unimodal logits 和 temperature calibration 基础。旧 clean-inner 四模态 seed1 结果 MAY 作为带 split 标签的背景展示，但 MUST NOT 作为 paired R0 或初始化 checkpoint。每个 run MUST 保存样本级 identity/group、label/prediction、每专家 logit/probability/真实 circular error/risk/risk component/static weight/dynamic weight、availability 与 CSI quality字段。
+
+#### Scenario: 运行机制诊断
+- **WHEN** evaluator 完成五模态 31-mask validation
+- **THEN** D0 MUST 使用原始逐样本 dynamic risk，D1 MUST 在相同 domain 与 mask 内确定性打乱 sample risk，D2 MUST 用相同 domain 与 mask 的平均 risk 替换 sample risk，D3 MUST 使用 static prior
+- **AND** 四者 MUST 在相同 cached unimodal probability、availability 与样本顺序上重新融合并报告 paired 指标；risk/error、component、confident-wrong、weight transfer 与分布统计 MUST 作为独立机制诊断输出，不得冒充 D0--D3
+
+#### Scenario: 计算不确定性区间
+- **WHEN** evaluator 汇总主结果与 paired 差值
+- **THEN** bootstrap MUST 以审计通过的独立 group key 重采样，并记录 seed、次数和 group 数
+- **AND** 不得把同一 trajectory/window 的帧视为独立样本

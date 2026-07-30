@@ -11,9 +11,8 @@ from kd_sensing.engine.modality_resolution import resolve_enabled_modalities
 from kd_sensing.engine.objectives.metadata import (
     objective_available_metrics,
     objective_runtime_metadata,
-    resolve_prediction_objective,
 )
-from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
+from kd_sensing.engine.prediction_objectives import compute_prediction_loss
 from kd_sensing.engine.runtime import (
     autocast_context,
     prepare_task_labels,
@@ -63,7 +62,6 @@ def run_evaluation_pass(
     capture_outputs: bool = False,
     batch_transform: Callable[[Any], Any] | None = None,
 ) -> EvaluationPassResult:
-    objective = resolve_prediction_objective(cfg)
     model.eval()
     model_cfg = cfg["model"]
     num_pred = int(model_cfg.get("num_pred", 1))
@@ -105,7 +103,6 @@ def run_evaluation_pass(
                     beam_loss = criterion(step.logits.reshape(-1, num_classes), labels.flatten())
                     loss = compute_prediction_loss(
                         step.model_output,
-                        prepare_prediction_targets(labels=labels, auxiliary_targets={}, cfg=cfg),
                         cfg,
                         reference=step.logits,
                         beam_total_loss=beam_loss,
@@ -129,17 +126,16 @@ def run_evaluation_pass(
         topk_correct=state.topk_correct,
         dba_sum=state.dba_sum,
         cfg=cfg,
-        objective=objective,
     )
     metrics.update(
         {
             "loss_observation_count": int(state.observations.item()),
-            "objective": objective_runtime_metadata(cfg),
+            "objective": objective_runtime_metadata(),
             "enabled_modalities": list(resolve_enabled_modalities(cfg)),
             "prediction_capture": bool(capture_outputs),
         }
     )
-    metrics["available_metrics"] = objective_available_metrics(objective, metrics)
+    metrics["available_metrics"] = objective_available_metrics(metrics)
     outputs = torch.cat(state.outputs) if capture_outputs and state.outputs else None
     labels = torch.cat(state.labels) if capture_outputs and state.labels else None
     return EvaluationPassResult(
@@ -147,7 +143,7 @@ def run_evaluation_pass(
         outputs=outputs,
         labels=labels,
         metadata=state.metadata,
-        objective_metadata=objective_runtime_metadata(cfg),
+        objective_metadata=objective_runtime_metadata(),
         enabled_modalities=resolve_enabled_modalities(cfg),
     )
 
@@ -196,10 +192,7 @@ def _metrics_from_accumulators(
     topk_correct: dict[int, torch.Tensor],
     dba_sum: torch.Tensor,
     cfg: dict[str, Any],
-    objective: str,
 ) -> dict[str, Any]:
-    if objective != "beam":
-        raise ValueError("Only beam evaluation is retained.")
     horizons = metric_horizons_from_config(cfg, num_pred=int(totals.numel()))
     total = totals.detach().cpu().numpy()
     topk = {
@@ -245,11 +238,7 @@ def _metrics_from_outputs(
     outputs: torch.Tensor,
     labels: torch.Tensor,
     cfg: dict[str, Any],
-    *,
-    objective: str = "beam",
 ) -> dict[str, Any]:
-    if objective != "beam":
-        raise ValueError("Only beam evaluation is retained.")
     horizons = metric_horizons_from_config(cfg, num_pred=int(labels.shape[1]))
     topk, total = calculate_topk_accuracy(outputs, labels, cfg.get("evaluation", {}).get("k_values", [1, 3, 5]))
     dba = calculate_dba_score(

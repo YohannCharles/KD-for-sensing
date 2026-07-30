@@ -6,7 +6,6 @@ from typing import Any
 @dataclass
 class TrainingRunContext:
     cfg: dict[str, Any]
-    objective: str
     objective_metadata: dict[str, Any]
     training_cfg: dict[str, Any]
     run_dir: Path
@@ -16,8 +15,6 @@ class TrainingRunContext:
     normalization_artifacts: dict[str, Any]
     device: Any
     throughput_metadata: dict[str, Any]
-    resolved_cfg: dict[str, Any]
-    config_diff: dict[str, Any]
     non_blocking: bool
     amp_enabled: bool
     amp_dtype: Any
@@ -34,7 +31,6 @@ class TrainingRunContext:
     scheduler: Any = None
     optimizer_groups: Any = None
     startup_summary: dict[str, Any] | None = None
-    health_tracker: Any = None
     grad_scaler: Any = None
     extension_context: Any = None
     extensions: list[Any] = field(default_factory=list)
@@ -42,7 +38,6 @@ class TrainingRunContext:
     recorder: Any = None
     checkpoint_manager: Any = None
     batch_runner: Any = None
-    tensorboard_writer: Any = None
     progress_enabled: bool = True
     total_epochs: int = 0
     final_test_metrics: dict[str, Any] | None = None

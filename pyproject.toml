@@ -9,13 +9,11 @@ description = "Clean MMW U0, retained baseline, and DeepSense6G multimodal beam-
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "matplotlib",
     "numpy",
     "pandas",
     "pillow",
     "pyyaml",
     "scipy",
-    "tensorboard",
     "torch",
     "torchvision",
     "tqdm",

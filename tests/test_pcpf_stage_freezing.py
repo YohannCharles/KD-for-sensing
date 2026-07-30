@@ -54,11 +54,6 @@ def _inputs() -> dict[str, torch.Tensor]:
             ("temperature_raw", "tau_raw"),
             ("temperature_raw", "tau_raw"),
         ),
-        (
-            "stage3b_optional_finetune",
-            ("probability_head.", "risk_coefficient_raw", "risk_bias", "temperature_raw", "tau_raw"),
-            ("temperature_raw", "tau_raw", "risk_coefficient_raw"),
-        ),
     ],
 )
 def test_stage_trainable_parameter_contract(

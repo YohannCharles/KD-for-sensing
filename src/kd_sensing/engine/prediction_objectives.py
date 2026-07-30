@@ -4,13 +4,7 @@ from typing import Any
 import torch
 
 from kd_sensing.engine.model_output import ModelOutput
-from kd_sensing.engine.objectives.metadata import resolve_prediction_objective
 from kd_sensing.losses.amber_full import amber_full_auxiliary_loss_from_output
-
-
-@dataclass(frozen=True)
-class PredictionTargets:
-    labels: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -22,23 +16,14 @@ class PredictionLossBundle:
     diagnostics: dict[str, Any]
 
 
-def prepare_prediction_targets(*, labels: torch.Tensor, auxiliary_targets: dict[str, torch.Tensor], cfg: dict[str, Any]) -> PredictionTargets:
-    del auxiliary_targets
-    resolve_prediction_objective(cfg)
-    return PredictionTargets(labels=labels)
-
-
 def compute_prediction_loss(
     model_output: ModelOutput,
-    targets: PredictionTargets,
     cfg: dict[str, Any],
     *,
     reference: torch.Tensor,
     beam_total_loss: torch.Tensor,
     beam_task_loss: torch.Tensor | None = None,
 ) -> PredictionLossBundle:
-    del targets
-    resolve_prediction_objective(cfg)
     beam = beam_task_loss if beam_task_loss is not None else beam_total_loss
     zero = reference.sum() * 0.0
     amber_auxiliary, diagnostics = amber_full_auxiliary_loss_from_output(model_output, cfg, zero)
@@ -51,4 +36,4 @@ def compute_prediction_loss(
     )
 
 
-__all__ = ["PredictionLossBundle", "PredictionTargets", "compute_prediction_loss", "prepare_prediction_targets"]
+__all__ = ["PredictionLossBundle", "compute_prediction_loss"]

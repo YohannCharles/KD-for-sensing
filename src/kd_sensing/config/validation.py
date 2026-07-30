@@ -14,6 +14,8 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     model = cfg.get("model", {}).get("primary", {})
     if cfg.get("preprocessing"):
         return
+    if str(cfg.get("experiment", {}).get("objective", "beam")).strip().lower() != "beam":
+        raise ValueError("Only experiment.objective='beam' is retained.")
     dataset_type = str(data.get("type", "")).strip().lower()
     if dataset_type not in RETAINED_DATASETS:
         raise ValueError(f"Supported data.dataset.type values are {sorted(RETAINED_DATASETS)}.")
@@ -74,7 +76,6 @@ def _validate_pcpf_config(cfg: dict[str, Any], model: dict[str, Any], data: dict
     expected_source = {
         "stage2_risk": "stage1_expert",
         "stage3_fusion": "stage2_risk",
-        "stage3b_optional_finetune": "stage3_fusion",
     }.get(stage)
     if expected_source is not None:
         if not isinstance(initialization, dict):
@@ -84,10 +85,10 @@ def _validate_pcpf_config(cfg: dict[str, Any], model: dict[str, Any], data: dict
         if initialization.get("expected_source_training_stage") != expected_source:
             raise ValueError(f"{stage} requires expected_source_training_stage={expected_source!r}.")
     if stage == "stage1_expert" and initialization not in (None, False):
-        raise ValueError("stage1_expert must not silently initialize from another PCPF stage.")
+        raise ValueError("stage1_expert must start fresh.")
     if stage in {"stage2_risk", "stage3_fusion"} and not loss["stage_preparation"]["enabled"]:
         raise ValueError(f"{stage} requires train-only stage_preparation.enabled=true.")
-    if stage in {"stage3_fusion", "stage3b_optional_finetune"}:
+    if stage == "stage3_fusion":
         gate = training.get("pcpf_stage2_gate")
         if not isinstance(gate, dict):
             raise ValueError(f"{stage} requires training.pcpf_stage2_gate.")

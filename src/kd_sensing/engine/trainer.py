@@ -7,11 +7,8 @@ from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.checkpointing import CheckpointManager, resolve_resume_checkpoint
 from kd_sensing.engine.data_factory import build_dataloaders, final_test_enabled
 from kd_sensing.engine.debug_diagnostics import (
-    ModuleHealthTracker,
     build_startup_summary,
     print_startup_summary,
-    training_health_debug_enabled,
-    write_config_diff_artifact,
     write_startup_summary,
 )
 from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
@@ -20,7 +17,7 @@ from kd_sensing.engine.normalization_artifacts import (
     save_normalization_artifacts,
     validate_normalization_artifact_fingerprint,
 )
-from kd_sensing.engine.objectives.metadata import objective_runtime_metadata, resolve_prediction_objective
+from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.engine.optim import (
     build_device,
     build_model,
@@ -37,11 +34,6 @@ from kd_sensing.engine.runtime import (
     make_grad_scaler,
     resolve_amp_settings,
     transfer_non_blocking,
-)
-from kd_sensing.engine.tensorboard_logging import (
-    close_tensorboard_writer,
-    create_tensorboard_writer,
-    write_tensorboard_startup_scalars,
 )
 from kd_sensing.engine.trainer_runtime_helpers import (
     _evaluate_final_test_split,
@@ -128,8 +120,6 @@ def train(cfg: dict) -> dict:
 def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     configure_torch_runtime_threads(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
-    objective = resolve_prediction_objective(cfg)
-    cfg.setdefault("experiment", {})["objective"] = objective
     training_cfg = cfg.setdefault("training", {})
     if training_cfg.get("resume") is True and not cfg.get("output", {}).get("run_name"):
         raise ValueError("training.resume=true requires output.run_name so checkpoints/last.pth can be resolved.")
@@ -168,15 +158,14 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
         throughput_metadata["cuda_performance"] = cuda_performance
     non_blocking = transfer_non_blocking(cfg)
     amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
-    resolved_cfg = artifact_writer.write_initial_configs(
+    artifact_writer.write_initial_configs(
         split_metadata=split_metadata,
         normalization_artifacts=normalization_artifacts,
         throughput_metadata=throughput_metadata,
     )
     return TrainingRunContext(
         cfg=cfg,
-        objective=objective,
-        objective_metadata=objective_runtime_metadata(cfg),
+        objective_metadata=objective_runtime_metadata(),
         training_cfg=training_cfg,
         run_dir=run_dir,
         artifact_writer=artifact_writer,
@@ -185,8 +174,6 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
         normalization_artifacts=normalization_artifacts,
         device=device,
         throughput_metadata=throughput_metadata,
-        resolved_cfg=resolved_cfg,
-        config_diff=write_config_diff_artifact(cfg, resolved_cfg, run_dir),
         non_blocking=non_blocking,
         amp_enabled=amp_enabled,
         amp_dtype=amp_dtype,
@@ -235,7 +222,6 @@ def _build_training_resources(context: TrainingRunContext) -> None:
     )
     write_startup_summary(context.run_dir, context.startup_summary)
     print_startup_summary(context.startup_summary)
-    context.health_tracker = ModuleHealthTracker(context.primary_model) if training_health_debug_enabled(context.cfg) else None
     context.grad_scaler = make_grad_scaler(context.cfg, context.amp_enabled)
     context.extension_context = ExtensionContext(
         cfg=context.cfg,
@@ -288,10 +274,7 @@ def _restore_training_state(context: TrainingRunContext) -> None:
         extension_context=context.extension_context,
         extensions=context.extensions,
         extension_states=context.extension_states,
-        health_tracker=context.health_tracker,
     )
-    context.tensorboard_writer = create_tensorboard_writer(context.cfg, context.run_dir)
-    write_tensorboard_startup_scalars(context.tensorboard_writer, context.startup_summary)
     context.progress_enabled = bool(context.cfg.get("output", {}).get("progress", {}).get("enabled", True))
     context.total_epochs = int(context.training_cfg.get("epochs", 40))
 
@@ -311,9 +294,6 @@ def _run_training_loop(context: TrainingRunContext) -> None:
             extensions=context.extensions,
             extension_states=context.extension_states,
             extension_context=context.extension_context,
-            health_tracker=context.health_tracker,
-            tensorboard_writer=context.tensorboard_writer,
-            objective=context.objective,
             task_criterion=context.task_criterion,
             device=context.device,
             run_dir=context.run_dir,
@@ -326,7 +306,6 @@ def _run_training_loop(context: TrainingRunContext) -> None:
         )
     finally:
         shutdown_all_dataloaders(context.dataloaders)
-        close_tensorboard_writer(context.tensorboard_writer)
 
 
 def _finalize_training_run(context: TrainingRunContext) -> dict:
@@ -360,7 +339,6 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         throughput_metadata=context.throughput_metadata,
         split_metadata=context.split_metadata,
         startup_summary=context.startup_summary,
-        config_diff=context.config_diff,
         final_test_metrics=context.final_test_metrics,
     )
     write_complete_status(
@@ -382,5 +360,4 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         "throughput": context.throughput_metadata,
         "prediction_objective": context.objective_metadata,
         "startup_summary": context.startup_summary,
-        "config_diff": context.config_diff,
     }

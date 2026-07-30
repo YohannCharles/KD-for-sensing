@@ -138,7 +138,7 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
             "checkpoint_resolution": checkpoint_resolution.to_dict(),
             "normalization_artifacts": normalization_artifacts,
             "throughput": throughput_metadata,
-            "prediction_objective": objective_runtime_metadata(cfg),
+            "prediction_objective": objective_runtime_metadata(),
             "prediction_setup": prediction_setup,
             "enabled_modalities": list(enabled_modalities),
             "lineage": lineage,

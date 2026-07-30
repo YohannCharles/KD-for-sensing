@@ -66,7 +66,7 @@ def pcpf_temporal_risk_loss(
         return _stage1_loss(output, labels, prototype_bank=prototype_bank, config=config)
     if stage == "stage2_risk":
         return _stage2_loss(output, labels, config=config)
-    if stage in {"stage3_fusion", "stage3b_optional_finetune"}:
+    if stage == "stage3_fusion":
         return _stage3_loss(output, labels, config=config)
     raise ValueError(f"Unsupported PCPF-T training stage {stage!r}.")
 
@@ -265,27 +265,6 @@ def _stage3_loss(output: dict[str, Any], labels: torch.Tensor, *, config: dict[s
     ).to(device=logits.device, dtype=torch.float32)
     topology_ce = -(target * F.log_softmax(logits.float(), dim=-1)).sum(dim=-1)[valid].mean()
     total = nll + config["stage3_topology_weight"] * topology_ce
-    loss_risk = logits.sum() * 0.0
-    loss_rank = logits.sum() * 0.0
-    if config["training_stage"] == "stage3b_optional_finetune":
-        available = _available(output, logits.shape[0])
-        risk_target = topology_risk_target(
-            output["unimodal_probabilities"],
-            labels,
-            available,
-            topology_id=topology["id"],
-            topology_permutation=topology["permutation"],
-        )
-        mask = available & valid.unsqueeze(1)
-        loss_risk = _masked_mean(
-            F.smooth_l1_loss(output["raw_risk"].float(), risk_target, reduction="none"), mask
-        )
-        loss_rank, _ = _pair_ranking_loss(
-            output["raw_risk"].float(), risk_target, mask, margin=config["rank_margin"]
-        )
-        total = total + config["stage3b_risk_weight"] * (
-            config["lambda_risk"] * loss_risk + config["lambda_rank"] * loss_rank
-        )
     return {
         "loss": total,
         "task_loss": nll,
@@ -293,8 +272,6 @@ def _stage3_loss(output: dict[str, Any], labels: torch.Tensor, *, config: dict[s
             "loss/pcpf_stage3_total": _scalar(total),
             "loss/pcpf_fusion_nll": _scalar(nll),
             "loss/pcpf_fusion_topology": _scalar(topology_ce),
-            "loss/pcpf_stage3b_risk": _scalar(loss_risk),
-            "loss/pcpf_stage3b_rank": _scalar(loss_rank),
         },
     }
 

@@ -73,8 +73,6 @@ def split_dependent_artifact_metadata(train_dataset: Any) -> dict[str, Any]:
     source_names = {path.name for path in source_paths}
     if source_names == {"inner_train.csv"}:
         source_split = "inner_train"
-    elif source_names == {"full_pool_train.csv"}:
-        source_split = "full_pool_train"
     else:
         source_split = "train"
     payload = {
@@ -106,7 +104,6 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
     protocol = cfg.get("data_protocol")
     if isinstance(protocol, dict) and protocol.get("mode") in {
         "clean_inner_development",
-        "full_pool_development",
         "trajectory_disjoint_development",
     }:
         report = json.loads(Path(str(protocol.get("audit_report", ""))).read_text(encoding="utf-8"))

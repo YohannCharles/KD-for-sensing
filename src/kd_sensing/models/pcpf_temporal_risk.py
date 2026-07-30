@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank, beam_topology_positions
 from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.models.sparse_pilot_encoder import SparsePilotEncoder
 from kd_sensing.models.temporal_transformer import SharedTemporalTransformer
 from kd_sensing.registries import ENCODERS, MODELS
 
@@ -21,7 +22,6 @@ TRAINING_STAGES = (
     "stage1_expert",
     "stage2_risk",
     "stage3_fusion",
-    "stage3b_optional_finetune",
 )
 FUSION_MODES = (
     "uniform",
@@ -31,6 +31,7 @@ FUSION_MODES = (
     "pcpf_analytic",
 )
 RISK_COMPONENT_NAMES = ("var", "proto", "temp", "conflict")
+PCPF_SPARSE_CSI_MODALITY = "csi"
 _FORBIDDEN_INPUT_KEYS = frozenset(
     {
         "channel",
@@ -195,6 +196,8 @@ class PCPFTemporalRiskFusion(nn.Module):
         fusion_mode: str = "uniform",
         temporal_transformer: Mapping[str, Any] | None = None,
         probability_head: Mapping[str, Any] | None = None,
+        use_sparse_csi: bool = False,
+        sparse_csi_encoder: Mapping[str, Any] | None = None,
         risk: Mapping[str, Any] | None = None,
         fusion: Mapping[str, Any] | None = None,
         prototype_topology_id: str = "cyclic_index_v1",
@@ -206,12 +209,18 @@ class PCPFTemporalRiskFusion(nn.Module):
         gps_input_size: int = 3,
     ) -> None:
         super().__init__()
-        self.modalities = normalize_modalities(
+        self.sensing_modalities = normalize_modalities(
             modalities or MODALITY_ORDER,
             context="pcpf_temporal_risk_fusion.modalities",
         )
-        if tuple(self.modalities) != tuple(MODALITY_ORDER):
+        if tuple(self.sensing_modalities) != tuple(MODALITY_ORDER):
             raise ValueError(f"PCPF-T requires canonical modalities {list(MODALITY_ORDER)}.")
+        self.use_sparse_csi = bool(use_sparse_csi)
+        self.modalities = (
+            (*self.sensing_modalities, PCPF_SPARSE_CSI_MODALITY)
+            if self.use_sparse_csi
+            else self.sensing_modalities
+        )
         self.d_model = int(d_model)
         self.num_classes = int(num_classes)
         self.num_pred = int(num_pred)
@@ -246,6 +255,22 @@ class PCPFTemporalRiskFusion(nn.Module):
             allowed={"hidden_dim", "min_logvar", "max_logvar", "initial_logvar"},
             context="model.primary.probability_head",
         )
+        sparse_csi_cfg = _strict_mapping(
+            sparse_csi_encoder,
+            allowed={
+                "hidden_dim",
+                "num_heads",
+                "num_layers",
+                "dropout",
+                "quality_dim",
+                "include_index_embeddings",
+                "num_frequency_indices",
+                "maximum_time_steps",
+            },
+            context="model.primary.sparse_csi_encoder",
+        )
+        if sparse_csi_cfg and not self.use_sparse_csi:
+            raise ValueError("model.primary.sparse_csi_encoder requires use_sparse_csi=true.")
         risk_cfg = _strict_mapping(
             risk,
             allowed={"enabled_components", "coefficient_init", "bias_init", "normalization_epsilon"},
@@ -268,7 +293,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             context="model.primary.fusion",
         )
 
-        encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.modalities}
+        encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.sensing_modalities}
         missing = [name for name, config in encoder_configs.items() if not config]
         if missing:
             raise ValueError(f"PCPF-T requires encoders for {missing}.")
@@ -281,7 +306,7 @@ class PCPFTemporalRiskFusion(nn.Module):
         self.encoder_configs: dict[str, dict[str, Any]] = {}
         self.encoders = nn.ModuleDict()
         self.encoder_projections = nn.ModuleDict()
-        for name in self.modalities:
+        for name in self.sensing_modalities:
             config = {**defaults[name], **encoder_configs[name]}
             config.setdefault("output_dim", self.d_model)
             encoder = ENCODERS.build(config)
@@ -289,6 +314,34 @@ class PCPFTemporalRiskFusion(nn.Module):
             self.encoders[name] = encoder
             self.encoder_projections[name] = nn.Identity() if output_dim == self.d_model else nn.Linear(output_dim, self.d_model)
             self.encoder_configs[name] = config
+
+        self.csi_encoder: SparsePilotEncoder | None = None
+        self.csi_projection: nn.Module | None = None
+        if self.use_sparse_csi:
+            csi_config = {
+                "hidden_dim": 128,
+                "num_heads": 4,
+                "num_layers": 0,
+                "dropout": float(dropout),
+                "quality_dim": 16,
+                "include_index_embeddings": True,
+                "num_frequency_indices": 16,
+                "maximum_time_steps": self.seq_length,
+                **sparse_csi_cfg,
+            }
+            if csi_config["include_index_embeddings"] is not True:
+                raise ValueError("PCPF sparse CSI requires include_index_embeddings=true.")
+            if int(csi_config["num_frequency_indices"]) != 16 or int(csi_config["maximum_time_steps"]) != 5:
+                raise ValueError("PCPF sparse CSI requires 16 mother frequency indices and five history steps.")
+            self.csi_encoder = SparsePilotEncoder(num_candidate_patterns=32, **csi_config)
+            self.csi_projection = nn.Sequential(
+                nn.Linear(int(csi_config["hidden_dim"]), self.d_model),
+                nn.LayerNorm(self.d_model),
+            )
+            self.encoder_configs[PCPF_SPARSE_CSI_MODALITY] = {
+                "type": "sparse_pilot_encoder",
+                **csi_config,
+            }
 
         self.temporal_transformer = SharedTemporalTransformer(
             d_model=self.d_model,
@@ -413,6 +466,13 @@ class PCPFTemporalRiskFusion(nn.Module):
         radar_batch: torch.Tensor | None = None,
         gps_batch: torch.Tensor | None = None,
         lidar_batch: torch.Tensor | None = None,
+        csi_batch: torch.Tensor | None = None,
+        csi_pattern_ids: torch.Tensor | None = None,
+        csi_frequency_positions: torch.Tensor | None = None,
+        csi_pilot_mask: torch.Tensor | None = None,
+        csi_frequency_ids: torch.Tensor | None = None,
+        csi_snr_db: torch.Tensor | float | None = None,
+        csi_snr_available: torch.Tensor | bool | None = None,
         missing_mask: torch.Tensor | None = None,
         force_modality_mask: torch.Tensor | None = None,
         temporal_mask: torch.Tensor | None = None,
@@ -425,8 +485,25 @@ class PCPFTemporalRiskFusion(nn.Module):
             "gps": gps_batch,
             "lidar": lidar_batch,
         }
-        sequences = [self._encode_sequence(name, inputs[name]) for name in self.modalities]
+        sequences = [self._encode_sequence(name, inputs[name]) for name in self.sensing_modalities]
+        csi_diagnostics: dict[str, torch.Tensor] = {}
+        intrinsic_masks: list[torch.Tensor] = [
+            torch.ones(sequence.shape[:2], device=sequence.device, dtype=torch.bool) for sequence in sequences
+        ]
+        if self.use_sparse_csi:
+            csi_sequence, csi_diagnostics = self._encode_csi_sequence(
+                csi_batch,
+                pattern_ids=csi_pattern_ids,
+                frequency_positions=csi_frequency_positions,
+                pilot_mask=csi_pilot_mask,
+                frequency_ids=csi_frequency_ids,
+                snr_db=csi_snr_db,
+                snr_available=csi_snr_available,
+            )
+            sequences.append(csi_sequence)
+            intrinsic_masks.append(csi_diagnostics["csi_frame_available"])
         latent_sequence = torch.stack(sequences, dim=2)
+        intrinsic_temporal_mask = torch.stack(intrinsic_masks, dim=2)
         requested = missing_mask if missing_mask is not None else force_modality_mask
         available = self._resolve_modality_mask(requested, available_modalities, latent_sequence)
         cell_mask = self._resolve_temporal_mask(
@@ -435,6 +512,9 @@ class PCPFTemporalRiskFusion(nn.Module):
             temporal_mask,
             modality_temporal_mask,
         )
+        cell_mask = cell_mask & intrinsic_temporal_mask
+        if not bool(cell_mask.any(dim=(1, 2)).all().item()):
+            raise ValueError("PCPF-T requires at least one intrinsically available temporal cell per sample.")
         temporal = self.temporal_transformer(latent_sequence, cell_mask)
         cls_features = temporal["temporal_cls_features"]
         available = temporal["available_modalities"]
@@ -443,7 +523,7 @@ class PCPFTemporalRiskFusion(nn.Module):
         if probability_stage:
             mu, logvar, sampled = self.probability_head(
                 cls_features,
-                sample=self.training and self.training_stage in {"stage2_risk", "stage3b_optional_finetune"},
+                sample=self.training and self.training_stage == "stage2_risk",
             )
         else:
             mu = cls_features
@@ -539,6 +619,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             "static_eta": self.eta,
             "prototype_state": self.prototype_bank.describe(fused_features),
             "metadata": self.training_strategy_metadata(),
+            **csi_diagnostics,
         }
 
     def training_strategy_metadata(self) -> dict[str, Any]:
@@ -553,6 +634,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             "claim_ineligible": True,
             "outer_test_accessed": False,
             "modalities": list(self.modalities),
+            "use_sparse_csi": self.use_sparse_csi,
             "consumes_missing_mask": True,
             "consumes_missing_modality_metadata": self.consume_missing_modality_metadata,
             "cross_modal_attention": False,
@@ -624,11 +706,6 @@ class PCPFTemporalRiskFusion(nn.Module):
             return {"status": "not_required", "training_stage": self.training_stage}
         if bool(cfg.get("training", {}).get("resume", False)):
             return {"status": "deferred_to_resume_checkpoint", "training_stage": self.training_stage}
-        if self.training_stage == "stage3b_optional_finetune":
-            if not bool(self.risk_stats_fitted.item()) or not bool(self.static_capability_fitted.item()):
-                raise ValueError("Stage 3B requires fitted Stage 2 risk statistics and Stage 3 static capability.")
-            self._validate_stage2_gate_binding(cfg)
-            return {"status": "loaded_from_stage3_checkpoint", "training_stage": self.training_stage}
         if train_loader is None or not hasattr(train_loader, "dataset"):
             raise ValueError("PCPF-T stage preparation requires the train dataloader only.")
         if isinstance(train_loader.dataset, IterableDataset):
@@ -641,14 +718,19 @@ class PCPFTemporalRiskFusion(nn.Module):
             self._validate_stage2_gate_binding(cfg)
 
         batch_size = int(getattr(train_loader, "batch_size", 0) or cfg["data"]["dataloader"]["train_batch_size"])
-        sequential = DataLoader(
-            train_loader.dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0,
-            collate_fn=getattr(train_loader, "collate_fn", None),
-            drop_last=False,
-        )
+        workers = int(getattr(train_loader, "num_workers", 0))
+        loader_options: dict[str, Any] = {
+            "batch_size": batch_size,
+            "shuffle": False,
+            "num_workers": workers,
+            "pin_memory": bool(getattr(train_loader, "pin_memory", False)),
+            "collate_fn": getattr(train_loader, "collate_fn", None),
+            "drop_last": False,
+            "worker_init_fn": getattr(train_loader, "worker_init_fn", None),
+        }
+        if workers:
+            loader_options["prefetch_factor"] = getattr(train_loader, "prefetch_factor", None) or 2
+        sequential = DataLoader(train_loader.dataset, **loader_options)
         max_batches = config["stage_preparation"]["max_batches"]
         cpu_rng = torch.random.get_rng_state()
         cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
@@ -753,16 +835,18 @@ class PCPFTemporalRiskFusion(nn.Module):
             self.mean_train_risk_count.copy_(risk_count)
             self.static_capability_fitted.fill_(True)
 
+        protocol = cfg.get("data_protocol")
+        source_split = str(protocol.get("train_role", "train")) if isinstance(protocol, Mapping) else "train"
         payload = {
             "status": "fitted",
             "training_stage": self.training_stage,
-            "source_split": "inner_train",
+            "source_split": source_split,
             "sample_count": sample_count,
             "batch_count": batch_count,
             "bounded_smoke_pass": max_batches is not None,
             "claim_ineligible": True,
             "outer_test_accessed": False,
-            "protocol": dict(cfg.get("data_protocol", {})),
+            "protocol": dict(protocol) if isinstance(protocol, Mapping) else {},
             "risk_component_mean": self.risk_component_mean.detach().cpu().tolist(),
             "risk_component_std": self.risk_component_std.detach().cpu().tolist(),
             "risk_component_count": self.risk_component_count.detach().cpu().tolist(),
@@ -805,7 +889,14 @@ class PCPFTemporalRiskFusion(nn.Module):
 
     def _expert_fingerprint(self) -> str:
         digest = hashlib.sha256()
-        prefixes = ("encoders.", "encoder_projections.", "temporal_transformer.", "prototype_bank.")
+        prefixes = (
+            "encoders.",
+            "encoder_projections.",
+            "csi_encoder.",
+            "csi_projection.",
+            "temporal_transformer.",
+            "prototype_bank.",
+        )
         for name, tensor in sorted(self.state_dict().items()):
             if not name.startswith(prefixes):
                 continue
@@ -821,7 +912,6 @@ class PCPFTemporalRiskFusion(nn.Module):
             "stage1_expert": "stage1_best.pth",
             "stage2_risk": "stage2_best.pth",
             "stage3_fusion": "stage3_best.pth",
-            "stage3b_optional_finetune": "stage3b_best.pth",
         }[self.training_stage]
 
     def assert_trainable_parameters(self) -> None:
@@ -846,6 +936,11 @@ class PCPFTemporalRiskFusion(nn.Module):
         if self.training_stage == "stage1_expert":
             _set_module_trainable(self.encoders)
             _set_module_trainable(self.encoder_projections)
+            if self.csi_encoder is not None and self.csi_projection is not None:
+                _set_module_trainable(self.csi_encoder)
+                for parameter in self.csi_encoder.quality_projection.parameters():
+                    parameter.requires_grad_(False)
+                _set_module_trainable(self.csi_projection)
             _set_module_trainable(self.temporal_transformer)
             _set_module_trainable(self.prototype_bank)
             if self.static_prior_logits is not None:
@@ -866,10 +961,6 @@ class PCPFTemporalRiskFusion(nn.Module):
             if self.static_prior_logits is not None:
                 self.static_prior_logits.requires_grad_(True)
             if self.finetune_risk_coefficients:
-                self.risk_coefficient_raw.requires_grad_(True)
-                self.risk_bias.requires_grad_(True)
-            if self.training_stage == "stage3b_optional_finetune":
-                _set_module_trainable(self.probability_head)
                 self.risk_coefficient_raw.requires_grad_(True)
                 self.risk_bias.requires_grad_(True)
         self._expected_trainable_names = {name for name, parameter in self.named_parameters() if parameter.requires_grad}
@@ -952,6 +1043,91 @@ class PCPFTemporalRiskFusion(nn.Module):
             raise ValueError(f"{modality} encoder must return [B,{self.seq_length},{self.d_model}], got {tuple(features.shape)}.")
         return features
 
+    def _encode_csi_sequence(
+        self,
+        value: torch.Tensor | None,
+        *,
+        pattern_ids: torch.Tensor | None,
+        frequency_positions: torch.Tensor | None,
+        pilot_mask: torch.Tensor | None,
+        frequency_ids: torch.Tensor | None,
+        snr_db: torch.Tensor | float | None,
+        snr_available: torch.Tensor | bool | None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if self.csi_encoder is None or self.csi_projection is None:
+            raise RuntimeError("PCPF sparse CSI encoder is not initialized.")
+        if value is None or pattern_ids is None or frequency_positions is None or pilot_mask is None or frequency_ids is None:
+            raise ValueError("PCPF sparse CSI requires observations, pattern/frequency ids, positions, and pilot mask.")
+        observations = torch.as_tensor(value)
+        if not torch.is_complex(observations) or observations.ndim != 4:
+            raise ValueError("csi_batch must be complex [B,5,2,2].")
+        batch_size, steps, patterns, frequencies = observations.shape
+        if (steps, patterns, frequencies) != (self.seq_length, 2, 2):
+            raise ValueError(f"csi_batch must have shape [B,{self.seq_length},2,2].")
+        ids = torch.as_tensor(pattern_ids, device=observations.device, dtype=torch.long)
+        valid = torch.as_tensor(pilot_mask, device=observations.device, dtype=torch.bool)
+        if tuple(ids.shape) != (batch_size, steps, patterns) or tuple(valid.shape) != tuple(observations.shape):
+            raise ValueError("csi_pattern_ids and csi_pilot_mask must have shapes [B,5,2] and [B,5,2,2].")
+
+        positions = _repeat_csi_index_values(
+            frequency_positions,
+            batch_size=batch_size,
+            steps=steps,
+            width=frequencies,
+            device=observations.device,
+            dtype=observations.real.dtype,
+            field="csi_frequency_positions",
+        )
+        frequency_index = _repeat_csi_index_values(
+            frequency_ids,
+            batch_size=batch_size,
+            steps=steps,
+            width=frequencies,
+            device=observations.device,
+            dtype=torch.long,
+            field="csi_frequency_ids",
+        )
+        flattened_snr: torch.Tensor | float | None = snr_db
+        if snr_available is not None:
+            availability = torch.as_tensor(snr_available, device=observations.device, dtype=torch.bool)
+            if availability.numel() == 1:
+                availability = availability.reshape(1, 1).expand(batch_size, steps)
+            elif tuple(availability.shape) == (batch_size,):
+                availability = availability[:, None].expand(-1, steps)
+            elif tuple(availability.shape) != (batch_size, steps):
+                raise ValueError("csi_snr_available must be scalar, [B], or [B,5].")
+            if snr_db is None and bool(availability.any().item()):
+                raise ValueError("csi_snr_available=true requires real csi_snr_db observations.")
+            if snr_db is not None and not bool(availability.all().item()):
+                raise ValueError("Partial CSI SNR availability is unsupported without per-frame nullable values.")
+        if torch.is_tensor(snr_db):
+            snr = torch.as_tensor(snr_db, device=observations.device, dtype=observations.real.dtype)
+            if tuple(snr.shape) == (batch_size,):
+                snr = snr[:, None].expand(-1, steps)
+            if tuple(snr.shape) != (batch_size, steps):
+                raise ValueError("csi_snr_db must be scalar, [B], or [B,5].")
+            flattened_snr = snr.reshape(-1)
+        encoded = self.csi_encoder(
+            observations.reshape(batch_size * steps, patterns, frequencies),
+            ids.reshape(batch_size * steps, patterns),
+            positions,
+            valid.reshape(batch_size * steps, patterns, frequencies),
+            flattened_snr,
+            frequency_ids=frequency_index,
+            time_ids=torch.arange(steps, device=observations.device).view(1, steps).expand(batch_size, -1).reshape(-1),
+        )
+        frame_available = encoded["csi_available"].reshape(batch_size, steps)
+        features = self.csi_projection(encoded["csi_feature"]).reshape(batch_size, steps, self.d_model)
+        features = features * frame_available.unsqueeze(-1).to(dtype=features.dtype)
+        return features, {
+            "csi_frame_available": frame_available,
+            "csi_quality": encoded["csi_quality"].reshape(batch_size, steps, -1),
+            "csi_quality_confidence": encoded["quality_confidence"].reshape(batch_size, steps),
+            "csi_valid_ratio": encoded["valid_ratio"].reshape(batch_size, steps),
+            "csi_log_rms": encoded["log_rms"].reshape(batch_size, steps),
+            "csi_snr_available": encoded["snr_available"].reshape(batch_size, steps),
+        }
+
     def _resolve_modality_mask(
         self,
         requested: torch.Tensor | None,
@@ -997,6 +1173,26 @@ class PCPFTemporalRiskFusion(nn.Module):
         if not bool(mask.any(dim=(1, 2)).all().item()):
             raise ValueError("PCPF-T requires at least one available temporal cell per sample.")
         return mask
+
+
+def _repeat_csi_index_values(
+    value: torch.Tensor,
+    *,
+    batch_size: int,
+    steps: int,
+    width: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    field: str,
+) -> torch.Tensor:
+    tensor = torch.as_tensor(value, device=device, dtype=dtype)
+    if tuple(tensor.shape) == (width,):
+        return tensor.view(1, width).expand(batch_size * steps, -1)
+    if tuple(tensor.shape) == (batch_size, width):
+        return tensor[:, None, :].expand(-1, steps, -1).reshape(batch_size * steps, width)
+    if tuple(tensor.shape) == (batch_size, steps, width):
+        return tensor.reshape(batch_size * steps, width)
+    raise ValueError(f"{field} must have shape [2], [B,2], or [B,5,2].")
 
 
 def _temporal_circular_residual(
@@ -1127,6 +1323,32 @@ def validate_pcpf_model_config(primary: Mapping[str, Any], dataset: Mapping[str,
         allowed={"hidden_dim", "min_logvar", "max_logvar", "initial_logvar"},
         context="model.primary.probability_head",
     )
+    sparse_csi = _strict_mapping(
+        primary.get("sparse_csi_encoder"),
+        allowed={
+            "hidden_dim",
+            "num_heads",
+            "num_layers",
+            "dropout",
+            "quality_dim",
+            "include_index_embeddings",
+            "num_frequency_indices",
+            "maximum_time_steps",
+        },
+        context="model.primary.sparse_csi_encoder",
+    )
+    use_sparse_csi = bool(primary.get("use_sparse_csi", False))
+    if sparse_csi and not use_sparse_csi:
+        raise ValueError("model.primary.sparse_csi_encoder requires use_sparse_csi=true.")
+    dataset_sparse_csi = dataset.get("sparse_csi")
+    if use_sparse_csi:
+        if not isinstance(dataset_sparse_csi, Mapping):
+            raise ValueError("PCPF use_sparse_csi=true requires data.dataset.sparse_csi.")
+        from kd_sensing.data.pcpf_sparse_csi import PCPFSparseCSISidecar
+
+        PCPFSparseCSISidecar(dataset_sparse_csi)
+    elif dataset_sparse_csi is not None:
+        raise ValueError("data.dataset.sparse_csi requires model.primary.use_sparse_csi=true.")
     _strict_mapping(
         primary.get("risk"),
         allowed={"enabled_components", "coefficient_init", "bias_init", "normalization_epsilon"},

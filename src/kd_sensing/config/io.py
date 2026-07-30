@@ -7,7 +7,6 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
-from kd_sensing.config.defaults import DEFAULT_CONFIG
 from kd_sensing.config.normalization import normalize_loaded_config
 from kd_sensing.config.parsing import parse_scalar, safe_load_yaml
 from kd_sensing.config.validation import validate_loaded_config
@@ -21,10 +20,8 @@ class LoadedConfigSource:
     source_type: str
 
 
-def load_config(config_path: Optional[str | Path] = None, overrides: Optional[Iterable[str]] = None) -> dict[str, Any]:
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
-    if config_path:
-        cfg = deep_merge(cfg, _resolve_base_config(load_config_source(config_path)))
+def load_config(config_path: str | Path, overrides: Optional[Iterable[str]] = None) -> dict[str, Any]:
+    cfg = _resolve_base_config(load_config_source(config_path))
     override_items = list(overrides or ())
     override_cfg = parse_overrides(override_items) if override_items else {}
     _validate_override_paths(cfg, override_items)

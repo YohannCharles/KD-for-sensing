@@ -15,6 +15,13 @@ from kd_sensing.data.temporal_missing_contract import (
 
 
 DEFAULT_TEMPORAL_MODALITIES = ("image", "radar", "gps", "lidar")
+PCPF_SPARSE_CSI_MODALITIES = (*DEFAULT_TEMPORAL_MODALITIES, "csi")
+PCPF_FIVE_MODALITY_SCHEDULE_ID = "pcpf_five_modality_all_subsets_v1"
+PCPF_FIVE_MODALITY_PANEL_SIZE = 31
+PCPF_FIVE_MODALITY_SEED_ALGORITHM = (
+    "sha256(base_seed,pcpf_five_modality_all_subsets_v1,epoch); "
+    "sample=(step*train_batch_size+row)%31"
+)
 STRATIFIED_TEMPORAL_MISSING_TYPES = ("modality_level", "frame_level", "modality_frame", "block")
 BALANCED_PATTERN_PANEL_SIZE = 600
 BALANCED_PATTERN_SCHEDULE_ID = "mmw_fair_pattern_v1"
@@ -55,6 +62,7 @@ _MODALITY_KEYS = {
     "radar": ("radar_ra", "radar_da"),
     "gps": ("gps",),
     "lidar": ("lidar",),
+    "csi": ("csi", "csi_pilot_mask"),
 }
 
 
@@ -279,8 +287,8 @@ def apply_modality_temporal_mask_to_batch(
     modalities: tuple[str, ...] | list[str] = DEFAULT_TEMPORAL_MODALITIES,
 ) -> dict[str, Any]:
     names = tuple(str(item) for item in modalities)
-    if names != DEFAULT_TEMPORAL_MODALITIES:
-        raise ValueError(f"Four-modality temporal masks require modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
+    if names not in {DEFAULT_TEMPORAL_MODALITIES, PCPF_SPARSE_CSI_MODALITIES}:
+        raise ValueError("Temporal masks require the canonical four modalities or the PCPF sparse-CSI extension.")
     mask = torch.as_tensor(modality_temporal_mask, dtype=torch.bool)
     if mask.ndim == 2:
         mask = mask.unsqueeze(0)
@@ -294,7 +302,7 @@ def apply_modality_temporal_mask_to_batch(
     for index, modality in enumerate(names):
         keys = [key for key in _MODALITY_KEYS[modality] if torch.is_tensor(batch.get(key))]
         if not keys:
-            raise ValueError(f"Four-modality batch is missing {modality} inputs.")
+            raise ValueError(f"Temporal-missing batch is missing {modality} inputs.")
         keep = mask[:, :, index]
         for key in keys:
             tensor = batch[key]
@@ -315,7 +323,7 @@ def _configured_modalities(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     names = tuple(str(item) for item in primary.get("modalities", DEFAULT_TEMPORAL_MODALITIES))
     if names != DEFAULT_TEMPORAL_MODALITIES:
         raise ValueError(f"Four-modality temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
-    return names
+    return PCPF_SPARSE_CSI_MODALITIES if bool(primary.get("use_sparse_csi", False)) else names
 
 
 def _batch_time_shape(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> tuple[int, int]:
@@ -392,6 +400,13 @@ def _validate_balanced_pattern_config(temporal: Mapping[str, Any], *, actual_his
 
 
 def _balanced_schedule_spec(schedule_id: str) -> dict[str, Any]:
+    if schedule_id == PCPF_FIVE_MODALITY_SCHEDULE_ID:
+        return {
+            "panel_size": PCPF_FIVE_MODALITY_PANEL_SIZE,
+            "condition_counts": _pcpf_subset_condition_counts(),
+            "seed_label": PCPF_FIVE_MODALITY_SCHEDULE_ID,
+            "seed_algorithm": PCPF_FIVE_MODALITY_SEED_ALGORITHM,
+        }
     if schedule_id in {BALANCED_PATTERN_SCHEDULE_ID, DEEPSENSE_BALANCED_PATTERN_SCHEDULE_ID}:
         return {
             "panel_size": BALANCED_PATTERN_PANEL_SIZE,
@@ -417,6 +432,20 @@ def _balanced_pattern_panel(
     schedule_id: str = BALANCED_PATTERN_SCHEDULE_ID,
 ) -> tuple[tuple[tuple[str, tuple[tuple[bool, ...], ...]], ...], str]:
     spec = _balanced_schedule_spec(schedule_id)
+    if schedule_id == PCPF_FIVE_MODALITY_SCHEDULE_ID:
+        names = PCPF_SPARSE_CSI_MODALITIES
+        entries = []
+        for bits in range(1, 1 << len(names)):
+            available = tuple(bool(bits & (1 << index)) for index in range(len(names)))
+            condition = _pcpf_subset_name(available)
+            matrix = tuple(available for _ in range(history_window))
+            entries.append((condition, matrix))
+        random.Random(_derived_seed(seed, spec["seed_label"], epoch)).shuffle(entries)
+        immutable = tuple(entries)
+        digest = hashlib.sha256(
+            json.dumps(immutable, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return immutable, digest
     condition_counts = spec["condition_counts"]
     modality_count = len(DEFAULT_TEMPORAL_MODALITIES)
     full = tuple(tuple(True for _ in range(modality_count)) for _ in range(history_window))
@@ -452,6 +481,18 @@ def _balanced_pattern_panel(
         json.dumps(immutable, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return immutable, digest
+
+
+def _pcpf_subset_name(available: tuple[bool, ...]) -> str:
+    selected = [name for name, keep in zip(PCPF_SPARSE_CSI_MODALITIES, available, strict=True) if keep]
+    return "full" if len(selected) == len(PCPF_SPARSE_CSI_MODALITIES) else "only_" + "_".join(selected)
+
+
+def _pcpf_subset_condition_counts() -> dict[str, int]:
+    return {
+        _pcpf_subset_name(tuple(bool(bits & (1 << index)) for index in range(len(PCPF_SPARSE_CSI_MODALITIES)))): 1
+        for bits in range(1, 1 << len(PCPF_SPARSE_CSI_MODALITIES))
+    }
 
 
 def _repair_cell_marginals(
@@ -578,6 +619,9 @@ __all__ = [
     "DEEPSENSE_BALANCED_PATTERN_SCHEDULE_ID",
     "BALANCED_PATTERN_SEED_ALGORITHM",
     "DEFAULT_TEMPORAL_MODALITIES",
+    "PCPF_FIVE_MODALITY_PANEL_SIZE",
+    "PCPF_FIVE_MODALITY_SCHEDULE_ID",
+    "PCPF_SPARSE_CSI_MODALITIES",
     "STRATIFIED_TEMPORAL_MISSING_TYPES",
     "TEMPORAL_SUPERSET_PAYLOAD_KEY",
     "apply_modality_temporal_mask_to_batch",

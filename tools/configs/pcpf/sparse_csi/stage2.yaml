@@ -1,0 +1,23 @@
+_base_: _base.yaml
+experiment:
+  name: PCPF-T-sparse-CSI-stage2
+model:
+  primary:
+    training_stage: stage2_risk
+    fusion_mode: uniform
+training:
+  epochs: 20
+  max_epochs: 20
+  lr: 0.0005
+  initialization_checkpoint:
+    path: outputs/pcpf_temporal_risk/UNRESOLVED_FIVE_MODAL_STAGE1_BEST.pth
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    role: validation_best
+    checkpoint_schema_version: 1
+    required_prefixes: [encoders, csi_encoder, csi_projection, temporal_transformer, prototype_bank]
+    allowed_missing_prefixes: []
+    freeze_prefixes: []
+    expected_source_training_stage: stage1_expert
+  validation:
+    interval_epochs: 1
+

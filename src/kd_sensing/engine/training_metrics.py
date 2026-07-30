@@ -68,7 +68,6 @@ class EpochMetricsRecorder:
         val_metrics: dict[str, Any] | None,
         current_lr: float,
         optimizer_groups: list[dict[str, Any]],
-        health_metrics: dict[str, Any] | None = None,
         extension_metrics: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], float | None, float | None]:
         validation = val_metrics or {}
@@ -101,8 +100,6 @@ class EpochMetricsRecorder:
             "learning_rate": float(current_lr),
             "validation_metrics": validation if val_metrics is not None else None,
         }
-        if health_metrics:
-            log.update(health_metrics)
         if extension_metrics:
             log.update(extension_metrics)
         log.update(self.diagnostics.mean())

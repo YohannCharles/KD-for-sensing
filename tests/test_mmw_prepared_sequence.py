@@ -9,7 +9,6 @@ from PIL import Image
 
 from kd_sensing.data import samples as samples_module
 from kd_sensing.data.datasets.mmw import MMWDataset
-from kd_sensing.data.mmw import full_pool_protocol as full_pool_module
 from kd_sensing.data.mmw.preparation_splits import build_sequence_splits_from_manifest, compute_split_identity_audit
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler
 from kd_sensing.data.transform_ops.image import (
@@ -260,59 +259,6 @@ def test_mmw_resource_validation_deduplicates_paths_and_caps_domain_workers(monk
         ("lidar1", "lidar.npy"),
     ]
     assert samples_module._resource_validation_worker_count(1000) == 6
-
-
-def test_full_pool_identity_audit_preserves_all_scoped_identity_families() -> None:
-    frame = full_pool_module.pd.DataFrame(
-        [
-            {
-                "domain_id": "sunny/scene",
-                "sample_id": "sample-1",
-                "target_sample_id": "target-1",
-                "contiguous_segment_id": "segment-a",
-                "history_frame_ids_json": "[1, 2]",
-                "future_frame_ids_json": "[3]",
-                "camera1": "camera.png",
-                "radar1": "radar_RA.npy",
-                "gps1": "gps.yaml",
-                "bs_gps1": "bs_gps.yaml",
-                "lidar1": "lidar.npy",
-                "beam1": "beam.txt",
-                "future_beam_label1": 7,
-            },
-            {
-                "domain_id": "rain/scene",
-                "sample_id": "sample-1",
-                "target_sample_id": "target-2",
-                "contiguous_segment_id": "",
-                "history_frame_ids_json": "[4, 5]",
-                "future_frame_ids_json": "[6]",
-                "camera1": "camera.png",
-                "radar1": "radar_RA.npy",
-                "gps1": "-99",
-                "bs_gps1": "bs_gps.yaml",
-                "lidar1": "lidar.npy",
-                "beam1": "beam.txt",
-                "future_beam_label1": 8,
-            },
-        ]
-    )
-
-    identities = full_pool_module._audit_identity_sets(frame)
-
-    assert identities["sample_id"] == {"sunny/scene:sample-1", "rain/scene:sample-1"}
-    assert identities["target_sample_id"] == {"sunny/scene:target-1", "rain/scene:target-2"}
-    assert identities["window_frame"] == {"sunny/scene:1", "sunny/scene:2", "rain/scene:4", "rain/scene:5"}
-    assert identities["target_frame"] == {"sunny/scene:3", "rain/scene:6"}
-    assert identities["all_frame_dependency"] == identities["window_frame"] | identities["target_frame"]
-    assert identities["trajectory_session"] == {"sunny/scene:segment-a"}
-    assert identities["camera_resource"] == {"sunny/scene:camera.png", "rain/scene:camera.png"}
-    assert identities["radar_resource"] == {"sunny/scene:radar_RA.npy", "rain/scene:radar_RA.npy"}
-    assert identities["ue_gps_resource"] == {"sunny/scene:gps.yaml"}
-    assert identities["bs_gps_resource"] == {"sunny/scene:bs_gps.yaml", "rain/scene:bs_gps.yaml"}
-    assert identities["lidar_resource"] == {"sunny/scene:lidar.npy", "rain/scene:lidar.npy"}
-    assert identities["channel_resource"] == {"sunny/scene:beam.txt", "rain/scene:beam.txt"}
-    assert len(identities["full_csv_row"]) == 2
 
 
 def test_mmw_dataset_rejects_non_contiguous_columns_before_loading_resources(tmp_path: Path):

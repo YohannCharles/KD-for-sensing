@@ -31,7 +31,7 @@ def _patch_lightweight_step(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         evaluation_pass,
         "compute_prediction_loss",
-        lambda _output, _targets, _cfg, *, beam_total_loss, **_kwargs: SimpleNamespace(total=beam_total_loss),
+        lambda _output, _cfg, *, beam_total_loss, **_kwargs: SimpleNamespace(total=beam_total_loss),
     )
 
 

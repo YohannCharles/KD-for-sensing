@@ -12,7 +12,6 @@ from kd_sensing.engine.objectives.metadata import objective_runtime_metadata
 from kd_sensing.engine.run_lineage import run_lineage_metadata
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_metrics import training_outputs_payload
-from kd_sensing.utils.plotting import plot_training_curves
 from kd_sensing.utils.runtime_output_layout import output_layout_summary, runtime_scope_metadata_from_config
 
 
@@ -43,7 +42,7 @@ def final_config_with_runtime(
         {
             "run_dir": str(run_dir),
             "output_overwrite": bool(cfg.get("output", {}).get("overwrite", False)),
-            "prediction_objective": objective_runtime_metadata(cfg),
+            "prediction_objective": objective_runtime_metadata(),
             "lineage": run_lineage_metadata(cfg),
             "prediction_setup": prediction_setup_metadata(cfg, split_metadata=split_metadata),
         }
@@ -100,7 +99,6 @@ class ArtifactWriter:
         throughput_metadata: dict | None,
         split_metadata: dict | None,
         startup_summary: dict[str, Any],
-        config_diff: dict[str, Any] | None,
         final_test_metrics: dict | None = None,
     ) -> dict[str, Any]:
         np.savez(self.run_dir / "training_outputs.npz", **training_outputs_payload(history, objective_metadata))
@@ -110,7 +108,6 @@ class ArtifactWriter:
             **history,
             "epoch_logs": epoch_logs,
             "startup_summary": startup_summary,
-            "config_diff": config_diff,
             "final_test_metrics": final_test_metrics,
             "lineage": lineage,
             "checkpoint_loads": checkpoint_loads,
@@ -129,7 +126,6 @@ class ArtifactWriter:
                 "normalization_artifacts": normalization_artifacts,
                 "throughput": throughput_metadata,
                 "startup_summary": startup_summary,
-                "config_diff": config_diff,
                 "final_test_metrics": final_test_metrics,
                 "lineage": lineage,
                 "prediction_objective": objective_metadata,
@@ -137,7 +133,6 @@ class ArtifactWriter:
             },
         }
         _write_json_atomic(self.run_dir / "train_log.json", train_log)
-        plot_training_curves(history, self.run_dir)
         dump_config(
             final_config_with_runtime(
                 self.cfg,

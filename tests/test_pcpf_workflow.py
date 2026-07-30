@@ -64,6 +64,7 @@ def test_train_only_stage_preparation_fits_normalization_and_confidence(tmp_path
     cfg = {
         "experiment": {"task": "fusion"},
         "model": {"primary": {"training_stage": "stage2_risk"}},
+        "data_protocol": {"mode": "trajectory_disjoint_development", "train_role": "train"},
         "data": {"dataloader": {"train_batch_size": 2}},
         "training": {"resume": False},
         "loss": {
@@ -83,7 +84,7 @@ def test_train_only_stage_preparation_fits_normalization_and_confidence(tmp_path
         non_blocking=False,
     )
 
-    assert report["source_split"] == "inner_train"
+    assert report["source_split"] == "train"
     assert report["outer_test_accessed"] is False
     assert bool(model.risk_stats_fitted.item())
     assert model.risk_component_count.gt(0).all()

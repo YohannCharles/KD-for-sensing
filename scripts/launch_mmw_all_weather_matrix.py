@@ -85,7 +85,6 @@ def build_config(
         "group_by_scene": False,
         "overwrite": False,
         "progress": {"enabled": False},
-        "tensorboard": {"enabled": False},
     }
     return cfg
 

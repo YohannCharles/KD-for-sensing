@@ -2,9 +2,6 @@ import ast
 import tomllib
 from pathlib import Path
 
-from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_SURFACE
-
-
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 PUBLIC_SCRIPTS = {
@@ -14,8 +11,6 @@ PUBLIC_SCRIPTS = {
 }
 RETAINED_SCRIPTS = {
     "audit_clean_inner_protocol.py",
-    "build_tspc_v2_report.py",
-    "evaluate_tspc_v2_all_masks.py",
     "eval_mmw_all_weather_matrix.py",
     "launch_mmw_all_weather_matrix.py",
     "summarize_mmw_all_weather_matrix.py",
@@ -50,8 +45,6 @@ def test_public_cli_surface_is_exactly_the_three_core_workflows():
     scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
 
     assert scripts == PUBLIC_SCRIPTS
-    assert {name: spec.target for name, spec in PUBLIC_CLI_SURFACE.items()} == PUBLIC_SCRIPTS
-    assert {name for name, _ in PUBLIC_CLI_HELP_SMOKE} == set(PUBLIC_SCRIPTS)
 
 
 def test_public_cli_targets_exist():

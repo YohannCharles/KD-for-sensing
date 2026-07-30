@@ -64,7 +64,7 @@ class SparsePilotEncoder(nn.Module):
         pattern_ids: torch.Tensor,
         frequency_positions: torch.Tensor,
         pilot_mask: torch.Tensor,
-        snr_db: torch.Tensor | float,
+        snr_db: torch.Tensor | float | None = None,
         *,
         frequency_ids: torch.Tensor | None = None,
         time_ids: torch.Tensor | int | None = None,
@@ -142,16 +142,25 @@ class SparsePilotEncoder(nn.Module):
         weights = torch.where(empty[:, None], torch.zeros_like(weights), weights)
         feature = (weights.unsqueeze(-1) * encoded).sum(dim=1)
 
-        snr = torch.as_tensor(snr_db, device=values.device, dtype=values.real.dtype).reshape(-1)
-        if snr.numel() == 1:
-            snr = snr.expand(batch)
-        if snr.numel() != batch:
-            raise ValueError("snr_db must be scalar or shape [B].")
+        if snr_db is None:
+            snr = torch.zeros(batch, device=values.device, dtype=values.real.dtype)
+            snr_available = torch.zeros(batch, device=values.device, dtype=torch.bool)
+        else:
+            snr = torch.as_tensor(snr_db, device=values.device, dtype=values.real.dtype).reshape(-1)
+            if snr.numel() == 1:
+                snr = snr.expand(batch)
+            if snr.numel() != batch or not bool(torch.isfinite(snr).all().item()):
+                raise ValueError("snr_db must be a finite scalar or shape [B].")
+            snr_available = torch.ones(batch, device=values.device, dtype=torch.bool)
         valid_ratio = valid.to(values.real.dtype).mean(dim=(1, 2))
         log_rms = torch.log(rms.clamp_min(1e-8))
         quality_scalars = torch.stack((snr / 30.0, valid_ratio, log_rms), dim=-1)
         learned_quality = self.quality_projection(quality_scalars)
-        quality_confidence = torch.sigmoid((snr + 5.0) / 2.0) * valid_ratio
+        quality_confidence = torch.where(
+            snr_available,
+            torch.sigmoid((snr + 5.0) / 2.0) * valid_ratio,
+            valid_ratio,
+        )
         quality = torch.cat((learned_quality, quality_scalars, quality_confidence[:, None]), dim=-1)
         return {
             "csi_feature": feature,
@@ -160,6 +169,7 @@ class SparsePilotEncoder(nn.Module):
             "valid_ratio": valid_ratio,
             "log_rms": log_rms,
             "csi_available": ~empty,
+            "snr_available": snr_available,
         }
 
 

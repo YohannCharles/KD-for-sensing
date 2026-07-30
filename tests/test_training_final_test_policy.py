@@ -67,7 +67,6 @@ def _finalize_context(tmp_path, *, final_test: object | None, dataloaders: dict)
         throughput_metadata={},
         split_metadata={},
         startup_summary={},
-        config_diff={},
     )
 
 

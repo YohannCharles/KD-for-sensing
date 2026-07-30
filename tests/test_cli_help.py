@@ -7,16 +7,19 @@ import tomllib
 
 import pytest
 
-from kd_sensing.diagnostics.cli_surface import PUBLIC_CLI_HELP_SMOKE, PUBLIC_CLI_SURFACE
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+HELP_EXPECTATIONS = {
+    "kd-sensing-train": "--config",
+    "kd-sensing-evaluate": "--weights",
+    "kd-sensing-preprocess": "--action",
+}
 
 
 @pytest.mark.parametrize(
     ("command", "expected"),
-    list(PUBLIC_CLI_HELP_SMOKE),
+    list(HELP_EXPECTATIONS.items()),
 )
 def test_console_script_help_is_available(command: str, expected: str):
     result = subprocess.run(
@@ -35,8 +38,7 @@ def test_public_cli_help_smoke_covers_pyproject_console_scripts():
     scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
     public_commands = {name for name in scripts if name.startswith("kd-sensing-")}
 
-    assert set(PUBLIC_CLI_SURFACE) == public_commands
-    assert {name for name, _expected in PUBLIC_CLI_HELP_SMOKE} == public_commands
+    assert set(HELP_EXPECTATIONS) == public_commands
 
 
 def test_only_core_cli_are_declared():

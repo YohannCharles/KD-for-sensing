@@ -274,7 +274,6 @@ _RUNTIME_CONTROL_PATHS = (
     ("output", "dir"),
     ("output", "run_name"),
     ("output", "overwrite"),
-    ("output", "tensorboard"),
     ("output", "progress"),
     ("output", "log_every_n_steps"),
     ("output", "log_interval"),

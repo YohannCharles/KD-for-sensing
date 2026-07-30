@@ -8,7 +8,7 @@ import torch.nn as nn
 from kd_sensing.config import load_config
 from kd_sensing.engine.model_output import ModelOutput, adapt_model_output
 from kd_sensing.engine.optim import build_model
-from kd_sensing.engine.prediction_objectives import PredictionTargets, compute_prediction_loss
+from kd_sensing.engine.prediction_objectives import compute_prediction_loss
 from kd_sensing.models.amber_full import AmberFullAdaptiveMaskTransformerCore
 from kd_sensing.models.architecture_summary import summarize_model_architecture
 from kd_sensing.models.modular import ModularSequenceModel
@@ -114,7 +114,6 @@ def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
 
     bundle = compute_prediction_loss(
         output,
-        PredictionTargets(labels=torch.zeros(2, 2, dtype=torch.long)),
         cfg,
         reference=output.logits,
         beam_total_loss=beam,
@@ -126,7 +125,6 @@ def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
 
     ordinary = compute_prediction_loss(
         ModelOutput(logits=output.logits, input_features=None, output_features=None, diagnostics={}),
-        PredictionTargets(labels=torch.zeros(2, 2, dtype=torch.long)),
         {"loss": {"type": "focal_loss"}},
         reference=output.logits,
         beam_total_loss=beam,
@@ -137,7 +135,6 @@ def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
     with torch.no_grad():
         eval_bundle = compute_prediction_loss(
             ModelOutput(logits=output.logits, input_features=None, output_features=None, diagnostics={}),
-            PredictionTargets(labels=torch.zeros(2, 2, dtype=torch.long)),
             cfg,
             reference=output.logits,
             beam_total_loss=beam,
@@ -148,7 +145,6 @@ def test_amber_full_loss_weighting_and_missing_payload_failure() -> None:
     with pytest.raises(ValueError, match="amber_full_auxiliary"):
         compute_prediction_loss(
             ModelOutput(logits=output.logits, input_features=None, output_features=None, diagnostics={}),
-            PredictionTargets(labels=torch.zeros(2, 2, dtype=torch.long)),
             cfg,
             reference=output.logits,
             beam_total_loss=beam,

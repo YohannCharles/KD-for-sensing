@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,15 +14,29 @@ import torch.nn as nn
 from kd_sensing.config import dump_config, load_config
 from kd_sensing.config.io import deep_merge, load_config_source
 from kd_sensing.data.mmw.clean_protocol import (
+    CLEAN_PROTOCOL_MODE,
     audit_clean_inner_protocol,
     load_clean_inner_protocol,
-    protocol_dataset_domains,
-    validate_clean_config_protocol,
+    protocol_dataset_domains as clean_protocol_dataset_domains,
 )
+from kd_sensing.data.mmw.pilot_alignment import resolve_input_channel_refs
+from kd_sensing.data.mmw.protocol import validate_mmw_config_protocol
+from kd_sensing.data.mmw.trajectory_protocol import (
+    TRAJECTORY_PROTOCOL_MODE,
+    build_trajectory_protocol,
+    load_trajectory_protocol,
+    protocol_dataset_domains as trajectory_protocol_dataset_domains,
+)
+from kd_sensing.data.pcpf_sparse_csi import PCPFSparseCSISidecar
+from kd_sensing.data.temporal_missing import apply_training_temporal_missing
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
 from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
+from kd_sensing.engine.normalization_artifacts import (
+    load_normalization_artifacts,
+    validate_normalization_artifact_fingerprint,
+)
 from kd_sensing.engine.optim import build_model, build_optimizer
-from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
+from kd_sensing.engine.runtime import prepare_task_batch, prepare_task_labels, run_model_step
 from kd_sensing.engine.trainer import train as train_model
 from kd_sensing.engine.training_resume import CHECKPOINT_SCHEMA_VERSION
 from kd_sensing.losses.pcpf_temporal_risk import pcpf_temporal_risk_loss, topology_risk_target
@@ -38,25 +53,30 @@ from kd_sensing.utils.seed import set_seed
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PROTOCOL = ROOT / "outputs/prototype_decision_adapter/protocol/clean_inner_development_protocol_current.yaml"
-DEFAULT_AUDIT = ROOT / "outputs/prototype_decision_adapter/protocol/clean_split_audit_current.json"
+DEFAULT_PROTOCOL = ROOT / "outputs/mmw_trajectory_split/protocol/split_manifest.json"
+DEFAULT_AUDIT = ROOT / "outputs/mmw_trajectory_split/protocol/split_audit.json"
+DEFAULT_SPARSE_TEMPLATE = ROOT / "tools/configs/pcpf/sparse_csi/stage1.yaml"
+DEFAULT_CACHE_MANIFEST = ROOT / "outputs/pcpf_sparse_csi_router_v1/cache/trajectory_cache_manifest.json"
 STAGE_FILES = {
     "stage1": "stage1.yaml",
     "stage2": "stage2.yaml",
     "stage3": "stage3.yaml",
-    "stage3b": "stage3b.yaml",
 }
 STAGE_NAMES = {
     "stage1": "stage1_expert",
     "stage2": "stage2_risk",
     "stage3": "stage3_fusion",
-    "stage3b": "stage3b_optional_finetune",
 }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Resolve, preflight, train, and smoke PCPF-T locally.")
     subparsers = parser.add_subparsers(dest="action", required=True)
+
+    prepare = subparsers.add_parser("prepare-trajectory")
+    prepare.add_argument("--output-root", default="outputs/mmw_trajectory_split")
+    prepare.add_argument("--dataset-root", default="dataset/MMW")
+    prepare.add_argument("--force", action="store_true")
 
     resolve = subparsers.add_parser("resolve")
     _add_protocol_args(resolve)
@@ -78,6 +98,11 @@ def main(argv: list[str] | None = None) -> int:
     train = subparsers.add_parser("train")
     train.add_argument("--config", required=True)
 
+    cache = subparsers.add_parser("cache-sparse-csi")
+    _add_protocol_args(cache)
+    cache.add_argument("--template", default=str(DEFAULT_SPARSE_TEMPLATE))
+    cache.add_argument("--output", default=str(DEFAULT_CACHE_MANIFEST))
+
     synthetic = subparsers.add_parser("synthetic-smoke")
     synthetic.add_argument("--output", default="outputs/pcpf_temporal_risk/smoke/synthetic.json")
     synthetic.add_argument("--device", default="auto")
@@ -86,8 +111,14 @@ def main(argv: list[str] | None = None) -> int:
     _add_protocol_args(real)
     real.add_argument("--output-dir", default="outputs/pcpf_temporal_risk/smoke/real_one_batch")
     real.add_argument("--device", default="auto")
+    real.add_argument("--stage1-template")
+    real.add_argument("--stage1-checkpoint")
 
     args = parser.parse_args(argv)
+    if args.action == "prepare-trajectory":
+        protocol = build_trajectory_protocol(args.output_root, dataset_root=args.dataset_root, force=args.force)
+        print(json.dumps(protocol, indent=2))
+        return 0
     if args.action == "resolve":
         cfg = resolve_config(
             stage=args.stage,
@@ -112,6 +143,15 @@ def main(argv: list[str] | None = None) -> int:
         result = train_model(load_config(args.config))
         print(json.dumps(result, indent=2, default=str))
         return 0
+    if args.action == "cache-sparse-csi":
+        report = prefill_sparse_csi_cache(
+            Path(args.protocol),
+            Path(args.audit_report),
+            Path(args.template),
+            Path(args.output),
+        )
+        print(json.dumps(report, indent=2))
+        return 0
     if args.action == "synthetic-smoke":
         report = synthetic_smoke(Path(args.output), device_name=args.device)
         print(json.dumps(report, indent=2))
@@ -121,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.audit_report),
         Path(args.output_dir),
         device_name=args.device,
+        stage1_template=Path(args.stage1_template) if args.stage1_template else None,
+        stage1_checkpoint=Path(args.stage1_checkpoint) if args.stage1_checkpoint else None,
     )
     print(json.dumps(report, indent=2))
     return 0
@@ -143,25 +185,31 @@ def resolve_config(
 ) -> dict[str, Any]:
     if batch_size <= 0 or num_workers < 0:
         raise ValueError("batch_size must be positive and num_workers must be non-negative.")
-    protocol = load_clean_inner_protocol(protocol_path.resolve())
-    audit = _validate_audit(protocol_path.resolve(), audit_path.resolve(), protocol)
+    protocol_path = protocol_path.resolve()
+    audit_path = audit_path.resolve()
+    protocol, audit, domains = _load_protocol_binding(protocol_path, audit_path)
     template_path = (template or (ROOT / "tools/configs/pcpf" / STAGE_FILES[stage])).resolve()
     cfg = _load_template(template_path)
+    _resolve_sparse_csi_paths(cfg)
     configured_stage = cfg.get("model", {}).get("primary", {}).get("training_stage")
     if configured_stage != STAGE_NAMES[stage]:
         raise ValueError(f"Template {template_path} selects {configured_stage!r}, but --stage {stage} requires {STAGE_NAMES[stage]!r}.")
-    cfg["data"]["dataset"]["domains"] = protocol_dataset_domains(protocol)
+    cfg["data"]["dataset"]["domains"] = domains
     cfg["data_protocol"] = {
-        "mode": "clean_inner_development",
-        "path": str(protocol_path.resolve()),
-        "audit_report": str(audit_path.resolve()),
+        "mode": protocol["mode"],
+        "path": str(protocol_path),
+        "audit_report": str(audit_path),
         "protocol_id": protocol["protocol_id"],
         "protocol_fingerprint": protocol["protocol_fingerprint"],
-        "train_role": "inner_train",
-        "validation_role": "inner_validation",
+        "train_role": protocol["train_role"],
+        "validation_role": protocol["validation_role"],
         "outer_test_enabled": False,
         "allow_confirmation_train": False,
+        "allow_test_evaluation": False,
     }
+    if protocol["mode"] == TRAJECTORY_PROTOCOL_MODE:
+        cfg["data"]["normalization_artifacts"] = _load_trajectory_normalization(protocol_path)
+        cfg["data"].setdefault("domain_balanced_sampling", {}).update(enabled=False, replacement=False)
     loader = cfg["data"]["dataloader"]
     loader.update(
         {
@@ -181,20 +229,25 @@ def resolve_config(
             "dir": str((ROOT / output_root).resolve() if not output_root.is_absolute() else output_root.resolve()),
             "run_name": run_name or f"pcpf_{stage}",
             "progress": {"enabled": False},
-            "tensorboard": {"enabled": False},
         }
     )
     preparation = cfg["loss"]["pcpf_temporal_risk"]["stage_preparation"]
     if smoke and stage != "stage1":
         preparation.update({"max_batches": 1, "smoke_only": True})
     if stage == "stage1":
-        if checkpoint is not None or gate_report is not None:
-            raise ValueError("Stage 1 does not accept a source checkpoint or gate report.")
+        sparse_csi = bool(cfg.get("model", {}).get("primary", {}).get("use_sparse_csi", False))
+        if checkpoint is not None:
+            raise ValueError("Stage 1 must start fresh and does not accept a source checkpoint.")
+        if sparse_csi and protocol["mode"] != TRAJECTORY_PROTOCOL_MODE:
+            raise ValueError("Sparse-CSI Stage 1 is restricted to the trajectory protocol.")
+        cfg["training"]["initialization_checkpoint"] = False
+        if gate_report is not None:
+            raise ValueError("Stage 1 does not accept a gate report.")
     else:
         if checkpoint is None:
             raise ValueError(f"{stage} requires --checkpoint.")
         _bind_checkpoint(cfg, checkpoint.resolve(), expected_stage=_source_stage(stage))
-    if stage in {"stage3", "stage3b"}:
+    if stage == "stage3":
         if gate_report is None:
             raise ValueError(f"{stage} requires --gate-report.")
         _bind_gate(cfg, gate_report.resolve())
@@ -203,6 +256,13 @@ def resolve_config(
     cfg.setdefault("runtime", {})["pcpf_resolver"] = {
         "stage": STAGE_NAMES[stage],
         "protocol_audit_id": audit["audit_id"],
+        "train_sample_count": int(audit["train_sample_count"]),
+        "validation_sample_count": int(audit["validation_sample_count"]),
+        "initialization_policy": (
+            "fresh_start_protocol_isolation"
+            if stage == "stage1" and cfg["training"].get("initialization_checkpoint") is False
+            else "validation_best_checkpoint"
+        ),
         "template": str(template_path),
         "smoke_only": bool(smoke),
         "outer_test_accessed": False,
@@ -210,7 +270,11 @@ def resolve_config(
     output = output.resolve()
     dump_config(cfg, output)
     resolved = load_config(output)
-    validate_clean_config_protocol(resolved)
+    validate_mmw_config_protocol(resolved)
+    validate_normalization_artifact_fingerprint(
+        resolved,
+        {"normalization_artifacts": resolved.get("data", {}).get("normalization_artifacts") or {}},
+    )
     dump_config(resolved, output)
     launch_path = output.with_suffix(output.suffix + ".launch.txt")
     launch_path.write_text(
@@ -222,10 +286,14 @@ def resolve_config(
 
 def preflight_config(path: Path, device: torch.device) -> dict[str, Any]:
     cfg = load_config(path)
-    validate_clean_config_protocol(cfg)
+    validate_mmw_config_protocol(cfg)
+    validate_normalization_artifact_fingerprint(
+        cfg,
+        {"normalization_artifacts": cfg.get("data", {}).get("normalization_artifacts") or {}},
+    )
     model = build_model(cfg["model"]["primary"]).to(device)
     load = initialize_model_from_checkpoint(model, cfg["training"], map_location="cpu")
-    if model.training_stage in {"stage3_fusion", "stage3b_optional_finetune"}:
+    if model.training_stage == "stage3_fusion":
         model._validate_stage2_gate_binding(cfg)
     model.assert_trainable_parameters()
     return {
@@ -235,10 +303,104 @@ def preflight_config(path: Path, device: torch.device) -> dict[str, Any]:
         "trainable_parameter_names": [name for name, value in model.named_parameters() if value.requires_grad],
         "trainable_params": sum(value.numel() for value in model.parameters() if value.requires_grad),
         "initialization": load,
-        "gate_binding_validated": model.training_stage in {"stage3_fusion", "stage3b_optional_finetune"},
+        "gate_binding_validated": model.training_stage == "stage3_fusion",
         "claim_ineligible": True,
         "outer_test_accessed": False,
     }
+
+
+def prefill_sparse_csi_cache(
+    protocol_path: Path,
+    audit_path: Path,
+    template_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    protocol_path = protocol_path.resolve()
+    audit_path = audit_path.resolve()
+    protocol, audit, _ = _load_protocol_binding(protocol_path, audit_path)
+    if protocol["mode"] != TRAJECTORY_PROTOCOL_MODE:
+        raise ValueError("Sparse-CSI cache prefill is restricted to the trajectory protocol.")
+
+    cfg = _load_template(template_path.resolve())
+    _resolve_sparse_csi_paths(cfg)
+    sparse_config = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
+    if not isinstance(sparse_config, Mapping):
+        raise ValueError("Sparse-CSI cache prefill requires a template with data.dataset.sparse_csi.")
+    sidecar = PCPFSparseCSISidecar(sparse_config)
+    cache_root = sidecar.cache.root.resolve()
+    before = sum(1 for _ in cache_root.glob("*.npz")) if cache_root.is_dir() else 0
+    role_paths: dict[str, set[str]] = {"train": set(), "validation": set()}
+    role_samples = {"train": 0, "validation": 0}
+
+    for role in ("train", "validation"):
+        split_key = f"{role}_split"
+        for domain in protocol["domains"]:
+            split_path = domain.get(split_key)
+            if not split_path:
+                continue
+            with Path(str(split_path)).open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    channel_columns = sorted(
+                        (key for key in row if key.startswith("csi") and key[3:].isdigit()),
+                        key=lambda key: int(key[3:]),
+                    )
+                    if channel_columns != ["csi1", "csi2", "csi3", "csi4", "csi5"]:
+                        raise ValueError(f"Trajectory row must expose exactly csi1..csi5, got {channel_columns}.")
+                    reference = resolve_input_channel_refs(
+                        row,
+                        [row[key] for key in channel_columns],
+                        data_root=domain["data_root"],
+                        seq_len=5,
+                        num_pred=1,
+                    )
+                    sidecar.load_history(
+                        reference["channel_history_refs"],
+                        history_frame_ids=reference["history_frame_ids"],
+                    )
+                    role_paths[role].update(reference["channel_history_refs"])
+                    role_samples[role] += 1
+
+    expected = {
+        "train": int(audit["train_sample_count"]),
+        "validation": int(audit["validation_sample_count"]),
+    }
+    if role_samples != expected:
+        raise ValueError(f"Trajectory cache scan sample counts changed: expected={expected}, actual={role_samples}.")
+    overlap = role_paths["train"] & role_paths["validation"]
+    if overlap:
+        raise ValueError(f"Trajectory train/validation cache scan found {len(overlap)} shared channel resources.")
+    after = sum(1 for _ in cache_root.glob("*.npz"))
+    report = {
+        "schema_version": 1,
+        "status": "passed",
+        "protocol_id": protocol["protocol_id"],
+        "protocol_fingerprint": protocol["protocol_fingerprint"],
+        "protocol_path": str(protocol_path),
+        "audit_id": audit["audit_id"],
+        "audit_report": str(audit_path),
+        "roles": {
+            role: {
+                "sample_count": role_samples[role],
+                "sample_id_hash": audit[f"{role}_sample_id_hash"],
+                "unique_channel_count": len(role_paths[role]),
+            }
+            for role in ("train", "validation")
+        },
+        "train_validation_channel_overlap": 0,
+        "cache": {
+            "root": str(cache_root),
+            "entries_before": before,
+            "entries_after": after,
+            "entries_added": after - before,
+        },
+        "sparse_csi_identity": sidecar.identity,
+        "outer_test_accessed": False,
+        "claim_ineligible": True,
+    }
+    output = output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {**report, "manifest_path": str(output)}
 
 
 def synthetic_smoke(output: Path, *, device_name: str) -> dict[str, Any]:
@@ -252,9 +414,9 @@ def synthetic_smoke(output: Path, *, device_name: str) -> dict[str, Any]:
     inputs["modality_temporal_mask"] = mask
     labels = torch.tensor([[0], [63], [9]], device=device)
     stages = []
-    for stage in ("stage1_expert", "stage2_risk", "stage3_fusion", "stage3b_optional_finetune"):
+    for stage in ("stage1_expert", "stage2_risk", "stage3_fusion"):
         model = _synthetic_model(stage).to(device).train()
-        if stage in {"stage3_fusion", "stage3b_optional_finetune"}:
+        if stage == "stage3_fusion":
             model.risk_stats_fitted.fill_(True)
             model.static_capability_fitted.fill_(True)
             model.mean_train_risk.copy_(torch.tensor([0.2, 0.3, 0.4, 0.5], device=device))
@@ -289,6 +451,8 @@ def real_one_batch_smoke(
     output_dir: Path,
     *,
     device_name: str,
+    stage1_template: Path | None = None,
+    stage1_checkpoint: Path | None = None,
 ) -> dict[str, Any]:
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -299,7 +463,7 @@ def real_one_batch_smoke(
         stage="stage1",
         protocol_path=protocol_path,
         audit_path=audit_path,
-        checkpoint=None,
+        checkpoint=stage1_checkpoint,
         gate_report=None,
         output=stage1_path,
         output_root=output_dir,
@@ -307,13 +471,35 @@ def real_one_batch_smoke(
         batch_size=1,
         num_workers=0,
         smoke=True,
+        template=stage1_template,
     )
-    dataloaders = build_dataloaders(stage1_cfg)
+    normalization_metadata = {
+        "normalization_artifacts": stage1_cfg.get("data", {}).get("normalization_artifacts") or {}
+    }
+    validate_normalization_artifact_fingerprint(stage1_cfg, normalization_metadata)
+    normalization_overrides = load_normalization_artifacts(normalization_metadata)
+    dataloaders = build_dataloaders(stage1_cfg, normalization_overrides=normalization_overrides or None)
     try:
         raw_batch = next(iter(dataloaders["train"]))
+        smoke_batch = apply_training_temporal_missing(
+            prepare_task_batch(dict(raw_batch)),
+            stage1_cfg,
+            epoch=0,
+            step=0,
+        )
         stage1_model = build_model(stage1_cfg["model"]["primary"]).to(device)
-        stage1_result = _real_batch_step(stage1_model, raw_batch, stage1_cfg, device)
-        stage1_checkpoint, stage1_digest = _publish_smoke_checkpoint(stage1_model, output_dir / "stage1")
+        stage1_initialization = initialize_model_from_checkpoint(
+            stage1_model,
+            stage1_cfg["training"],
+            map_location="cpu",
+        )
+        stage1_result = _real_batch_step(stage1_model, smoke_batch, stage1_cfg, device)
+        stage1_checkpoint, stage1_digest = _publish_smoke_checkpoint(
+            stage1_model,
+            output_dir / "stage1",
+            normalization_artifacts=normalization_metadata["normalization_artifacts"],
+            data_protocol=stage1_cfg["data_protocol"],
+        )
 
         stage2_path = output_dir / "resolved_stage2_smoke.yaml"
         stage2_cfg = resolve_config(
@@ -328,19 +514,28 @@ def real_one_batch_smoke(
             batch_size=1,
             num_workers=0,
             smoke=True,
+            template=(stage1_template.parent / "stage2.yaml") if stage1_template is not None else None,
         )
         stage2_model = build_model(stage2_cfg["model"]["primary"]).to(device)
         initialize_model_from_checkpoint(stage2_model, stage2_cfg["training"], map_location="cpu")
         (output_dir / "stage2").mkdir(parents=True, exist_ok=True)
+        preparation_cfg = copy.deepcopy(stage2_cfg)
+        preparation_cfg["temporal_missing"]["enabled"] = False
         preparation = stage2_model.prepare_training_stage(
-            cfg=stage2_cfg,
+            cfg=preparation_cfg,
             train_loader=dataloaders["train"],
             device=device,
             run_dir=output_dir / "stage2",
             non_blocking=False,
         )
-        stage2_result = _real_batch_step(stage2_model, raw_batch, stage2_cfg, device)
-        stage2_checkpoint, stage2_digest = _publish_smoke_checkpoint(stage2_model, output_dir / "stage2")
+        preparation["smoke_full_modality_fit"] = True
+        stage2_result = _real_batch_step(stage2_model, smoke_batch, stage2_cfg, device)
+        stage2_checkpoint, stage2_digest = _publish_smoke_checkpoint(
+            stage2_model,
+            output_dir / "stage2",
+            normalization_artifacts=normalization_metadata["normalization_artifacts"],
+            data_protocol=stage2_cfg["data_protocol"],
+        )
 
         stage3_cfg = copy.deepcopy(stage2_cfg)
         stage3_cfg["experiment"]["name"] = "PCPF-T-stage3-bounded-smoke"
@@ -364,7 +559,7 @@ def real_one_batch_smoke(
         stage3_model = build_model(stage3_cfg["model"]["primary"]).to(device)
         initialize_model_from_checkpoint(stage3_model, stage3_cfg["training"], map_location="cpu")
         _fit_stage3_smoke_prior(stage3_model, raw_batch, stage3_cfg, device)
-        stage3_result = _real_batch_step(stage3_model, raw_batch, stage3_cfg, device)
+        stage3_result = _real_batch_step(stage3_model, smoke_batch, stage3_cfg, device)
     finally:
         for dataloader in dataloaders.values():
             shutdown_dataloader_workers(dataloader)
@@ -373,9 +568,10 @@ def real_one_batch_smoke(
         "schema_version": 1,
         "smoke_type": "real_mmw_one_batch_stage1_stage2_stage3",
         "device": str(device),
-        "stage1": stage1_result,
+        "stage1": {**stage1_result, "initialization": stage1_initialization},
         "stage2": {**stage2_result, "preparation": preparation},
         "stage3": {**stage3_result, "gate_bypassed_for_bounded_smoke": True},
+        "smoke_mask": smoke_batch.get("temporal_missing_metadata", {}),
         "checkpoints": {
             "stage1": {"path": str(stage1_checkpoint), "sha256": stage1_digest},
             "stage2": {"path": str(stage2_checkpoint), "sha256": stage2_digest},
@@ -458,7 +654,13 @@ def _fit_stage3_smoke_prior(
         model.static_capability_fitted.fill_(True)
 
 
-def _publish_smoke_checkpoint(model: Any, directory: Path) -> tuple[Path, str]:
+def _publish_smoke_checkpoint(
+    model: Any,
+    directory: Path,
+    *,
+    normalization_artifacts: Mapping[str, Any],
+    data_protocol: Mapping[str, Any],
+) -> tuple[Path, str]:
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -466,6 +668,8 @@ def _publish_smoke_checkpoint(model: Any, directory: Path) -> tuple[Path, str]:
         "epoch": 1,
         "state_dict": model.state_dict(),
         "model_metadata": model.checkpoint_metadata(),
+        "normalization_artifacts": copy.deepcopy(dict(normalization_artifacts)),
+        "data_protocol": copy.deepcopy(dict(data_protocol)),
         "selection": {"metric": "bounded_smoke_loss", "mode": "min", "value": 0.0, "epoch": 1},
     }
     path, _ = publish_checkpoint(
@@ -477,6 +681,8 @@ def _publish_smoke_checkpoint(model: Any, directory: Path) -> tuple[Path, str]:
             "checkpoint_source": "one-batch-smoke",
             "checkpoint_policy": "not_formal_validation_selection",
             "model_metadata": model.checkpoint_metadata(),
+            "normalization_artifacts": copy.deepcopy(dict(normalization_artifacts)),
+            "data_protocol": copy.deepcopy(dict(data_protocol)),
             "claim_ineligible": True,
             "outer_test_accessed": False,
         },
@@ -551,7 +757,12 @@ def _register_synthetic_encoder() -> None:
             return self.projection(value)
 
 
-def _bind_checkpoint(cfg: dict[str, Any], path: Path, *, expected_stage: str) -> None:
+def _bind_checkpoint(
+    cfg: dict[str, Any],
+    path: Path,
+    *,
+    expected_stage: str,
+) -> None:
     payload = load_torch_payload(path, map_location="cpu")
     if not isinstance(payload, Mapping) or payload.get("checkpoint_role") != "validation_best":
         raise ValueError("PCPF stage initialization requires a validation_best checkpoint.")
@@ -559,8 +770,34 @@ def _bind_checkpoint(cfg: dict[str, Any], path: Path, *, expected_stage: str) ->
     metadata = payload.get("model_metadata")
     if not isinstance(metadata, Mapping) or metadata.get("training_stage") != expected_stage:
         raise ValueError(f"PCPF source checkpoint must come from {expected_stage!r}.")
+    current_protocol = cfg.get("data_protocol")
+    if isinstance(current_protocol, Mapping) and current_protocol.get("mode") == TRAJECTORY_PROTOCOL_MODE:
+        checkpoint_fingerprint = _checkpoint_protocol_fingerprint(payload)
+        if checkpoint_fingerprint != current_protocol.get("protocol_fingerprint"):
+            raise ValueError(
+                "Trajectory PCPF checkpoint protocol fingerprint does not match the current trajectory split."
+            )
+    normalization_artifacts = payload.get("normalization_artifacts")
+    if isinstance(current_protocol, Mapping) and current_protocol.get("mode") == TRAJECTORY_PROTOCOL_MODE and not normalization_artifacts:
+        raise ValueError("Trajectory PCPF checkpoint requires train-only normalization provenance.")
+    if normalization_artifacts:
+        if not isinstance(normalization_artifacts, Mapping):
+            raise ValueError("PCPF checkpoint normalization_artifacts must be a mapping.")
+        cfg.setdefault("data", {})["normalization_artifacts"] = copy.deepcopy(dict(normalization_artifacts))
+        validate_normalization_artifact_fingerprint(
+            cfg,
+            {"normalization_artifacts": cfg["data"]["normalization_artifacts"]},
+        )
     digest, _ = checkpoint_file_digest(path)
-    cfg["training"]["initialization_checkpoint"].update(
+    initialization = cfg["training"].get("initialization_checkpoint")
+    if not isinstance(initialization, dict):
+        initialization = {
+            "required_prefixes": ["encoders", "encoder_projections", "temporal_transformer", "prototype_bank"],
+            "allowed_missing_prefixes": [],
+            "freeze_prefixes": [],
+        }
+        cfg["training"]["initialization_checkpoint"] = initialization
+    initialization.update(
         {
             "path": str(path),
             "sha256": digest,
@@ -585,7 +822,24 @@ def _bind_gate(cfg: dict[str, Any], path: Path) -> None:
     }
 
 
-def _validate_audit(path: Path, audit_path: Path, protocol: Mapping[str, Any]) -> dict[str, Any]:
+def _load_protocol_binding(
+    path: Path,
+    audit_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    descriptor = load_config_source(path).data
+    mode = descriptor.get("mode")
+    if mode == CLEAN_PROTOCOL_MODE:
+        protocol = load_clean_inner_protocol(path)
+        audit = _validate_clean_audit(path, audit_path, protocol)
+        return protocol, audit, clean_protocol_dataset_domains(protocol)
+    if mode == TRAJECTORY_PROTOCOL_MODE:
+        protocol = load_trajectory_protocol(path)
+        audit = _validate_trajectory_audit(audit_path, protocol)
+        return protocol, audit, trajectory_protocol_dataset_domains(protocol, allow_test_evaluation=False)
+    raise ValueError(f"PCPF requires a supported clean or trajectory MMW protocol, got {mode!r}.")
+
+
+def _validate_clean_audit(path: Path, audit_path: Path, protocol: Mapping[str, Any]) -> dict[str, Any]:
     actual = audit_clean_inner_protocol(path, fail_closed=True)
     supplied = json.loads(audit_path.read_text(encoding="utf-8"))
     required = (
@@ -609,6 +863,65 @@ def _validate_audit(path: Path, audit_path: Path, protocol: Mapping[str, Any]) -
     return actual
 
 
+def _validate_trajectory_audit(audit_path: Path, protocol: Mapping[str, Any]) -> dict[str, Any]:
+    supplied = json.loads(audit_path.read_text(encoding="utf-8"))
+    if not isinstance(supplied, dict) or supplied.get("status") != "passed":
+        raise ValueError("Trajectory split audit report must be a passed JSON object.")
+    if supplied.get("outer_test_accessed") is not False:
+        raise ValueError("Trajectory split audit report must not access outer test.")
+    if supplied.get("protocol_fingerprint") != protocol["protocol_fingerprint"]:
+        raise ValueError("Trajectory split audit fingerprint does not match the supplied protocol.")
+    for role in ("train", "validation", "test"):
+        if int(supplied.get(f"{role}_sample_count", -1)) != int(protocol[f"{role}_window_count"]):
+            raise ValueError(f"Trajectory split audit {role} sample count does not match the supplied protocol.")
+    pairwise = supplied.get("pairwise_overlaps")
+    expected_pairs = {"train_vs_validation", "train_vs_test", "validation_vs_test"}
+    if not isinstance(pairwise, Mapping) or set(pairwise) != expected_pairs:
+        raise ValueError("Trajectory split audit must cover every split pair.")
+    if any(
+        not isinstance(identities, Mapping)
+        or not identities
+        or any(not isinstance(result, Mapping) or int(result.get("count", -1)) != 0 for result in identities.values())
+        for identities in pairwise.values()
+    ):
+        raise ValueError("Trajectory split audit must report zero resource overlap for every split pair.")
+    return supplied
+
+
+def _load_trajectory_normalization(protocol_path: Path) -> dict[str, Any]:
+    path = protocol_path.parent.parent / "normalization_manifest.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload.get("gps_scaler"):
+        raise ValueError(f"Trajectory normalization manifest is invalid: {path}")
+    return payload
+
+
+def _resolve_sparse_csi_paths(cfg: dict[str, Any]) -> None:
+    sparse = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
+    if not isinstance(sparse, dict):
+        return
+    for key in ("codebook_path", "cache_root"):
+        path = Path(str(sparse.get(key, "")))
+        if not path.is_absolute():
+            sparse[key] = str((ROOT / path).resolve())
+
+
+def _checkpoint_protocol_fingerprint(payload: Mapping[str, Any]) -> str | None:
+    protocol = payload.get("data_protocol")
+    if isinstance(protocol, Mapping):
+        return str(protocol.get("protocol_fingerprint") or "") or None
+    resume = payload.get("resume_contract")
+    if not isinstance(resume, Mapping):
+        return None
+    config = resume.get("config")
+    if not isinstance(config, Mapping):
+        return None
+    protocol = config.get("data_protocol")
+    if not isinstance(protocol, Mapping):
+        return None
+    return str(protocol.get("protocol_fingerprint") or "") or None
+
+
 def _load_template(path: Path) -> dict[str, Any]:
     source = load_config_source(path)
     payload = copy.deepcopy(source.data)
@@ -625,7 +938,7 @@ def _load_template(path: Path) -> dict[str, Any]:
 
 
 def _source_stage(stage: str) -> str:
-    return {"stage2": "stage1_expert", "stage3": "stage2_risk", "stage3b": "stage3_fusion"}[stage]
+    return {"stage2": "stage1_expert", "stage3": "stage2_risk"}[stage]
 
 
 def _resolved_summary(cfg: dict[str, Any], output: Path) -> dict[str, Any]:

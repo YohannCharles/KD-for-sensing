@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 from kd_sensing.data.temporal_missing import apply_training_temporal_missing
-from kd_sensing.engine.prediction_objectives import compute_prediction_loss, prepare_prediction_targets
+from kd_sensing.engine.prediction_objectives import compute_prediction_loss
 from kd_sensing.engine.runtime import autocast_context, prepare_task_batch, prepare_task_labels, run_model_step
 from kd_sensing.engine.scalar_metrics import materialize_batch_scalars, mean_metric_term
 from kd_sensing.engine.training_extensions import BaseLossResult, BatchState, ExtensionContext, ForwardControls
@@ -41,7 +41,6 @@ class BatchStepRunner:
         extension_context: ExtensionContext,
         extensions: list,
         extension_states: list,
-        health_tracker=None,
     ) -> None:
         self.cfg = cfg
         self.task = task
@@ -54,7 +53,6 @@ class BatchStepRunner:
         self.context = extension_context
         self.extensions = extensions
         self.extension_states = extension_states
-        self.health_tracker = health_tracker
         self.timing_enabled = _batch_timing_enabled(training_cfg)
 
     def run(self, raw_batch, *, epoch: int, step: int) -> BatchStepResult:
@@ -113,7 +111,6 @@ class BatchStepRunner:
                 diagnostics.update(extra.diagnostics)
             combined = compute_prediction_loss(
                 step_output.model_output,
-                prepare_prediction_targets(labels=labels, auxiliary_targets={}, cfg=self.cfg),
                 self.cfg,
                 reference=step_output.logits,
                 beam_total_loss=total_loss,
@@ -129,6 +126,11 @@ class BatchStepRunner:
         timings.update(self._backward_and_step(total_loss, state))
         terms = _metric_terms(total_loss, task_loss, auxiliary_loss, step_output.logits, labels, observations)
         numerators, denominators, diagnostics = materialize_batch_scalars(terms, diagnostics)
+        metadata = batch.get("temporal_missing_metadata")
+        if isinstance(metadata, dict):
+            for condition in metadata.get("condition_ids") or ():
+                key = f"temporal_missing/mask_count/{condition}"
+                diagnostics[key] = diagnostics.get(key, 0.0) + 1.0
         accuracy = numerators["acc"] / max(denominators["acc"], 1.0)
         return BatchStepResult(
             batch=batch,
@@ -158,14 +160,12 @@ class BatchStepRunner:
         grad_clip = self.training_cfg.get("grad_clip")
         if self.grad_scaler.is_enabled():
             self.grad_scaler.scale(total_loss).backward()
-            if grad_clip or self.health_tracker is not None:
+            if grad_clip:
                 self.grad_scaler.unscale_(self.optimizer)
             for extension, extension_state in zip(self.extensions, self.extension_states):
                 extension.after_backward(self.context, extension_state, state)
             if grad_clip:
                 torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
-            if self.health_tracker is not None:
-                self.health_tracker.observe_gradients()
             backward = time.perf_counter() - started if started is not None else None
             step_started = time.perf_counter() if self.timing_enabled else None
             self.grad_scaler.step(self.optimizer)
@@ -176,8 +176,6 @@ class BatchStepRunner:
                 extension.after_backward(self.context, extension_state, state)
             if grad_clip:
                 torch.nn.utils.clip_grad_norm_(self.context.primary_model.parameters(), grad_clip)
-            if self.health_tracker is not None:
-                self.health_tracker.observe_gradients()
             backward = time.perf_counter() - started if started is not None else None
             step_started = time.perf_counter() if self.timing_enabled else None
             self.optimizer.step()

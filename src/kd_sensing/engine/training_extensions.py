@@ -70,6 +70,8 @@ class LossBundle:
 
 
 class EpochDiagnosticsAccumulator:
+    _SUM_PREFIXES = ("temporal_missing/mask_count/",)
+
     def __init__(self) -> None:
         self.sums: dict[str, float] = {}
         self.counts: dict[str, int] = {}
@@ -84,7 +86,7 @@ class EpochDiagnosticsAccumulator:
 
     def mean(self) -> dict[str, float]:
         return {
-            key: float(value / max(self.counts.get(key, 0), 1))
+            key: float(value if key.startswith(self._SUM_PREFIXES) else value / max(self.counts.get(key, 0), 1))
             for key, value in self.sums.items()
             if self.counts.get(key, 0) > 0
         }

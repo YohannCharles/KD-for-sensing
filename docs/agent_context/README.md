@@ -4,7 +4,7 @@
 
 | Route id | Scoped context | 适用任务 |
 | --- | --- | --- |
-| `model` | `models.md` | PCPF-T、稳定 baseline 与 CSI/TSPC 模型/loss |
+| `model` | `models.md` | PCPF-T 与稳定 baseline 模型/loss |
 | `data` | `data.md` | clean/trajectory protocol、MMW/DeepSense6G 数据与归一化 |
 | `config` | `configs.md` | canonical recipe、PCPF local config 与配置解析 |
 | `cli` | `cli.md` | 三个 package CLI 与隔离的本地 helper |

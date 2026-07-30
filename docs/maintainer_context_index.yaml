@@ -1,7 +1,7 @@
 schema_version: 1
 kind: maintainer_context_index
 purpose:
-  summary: 路由 PCPF-T 主线、稳定 baseline、正式 MMW protocol、DeepSense6G 与 CSI/TSPC 保留面。
+  summary: 路由 PCPF-T 主线、稳定 baseline、正式 MMW protocol 与 DeepSense6G。
 agent_context:
   root: docs/agent_context/README.md
 task_routes:
@@ -54,12 +54,10 @@ task_routes:
       - openspec/specs/repo-boundaries/spec.md
       - openspec/specs/clean-data-integrity/spec.md
     owner_modules:
-      - src/kd_sensing/baselines/
       - tools/
-      - scripts/lib/
-    notes: PCPF-T 是唯一 active research mainline；CSI/TSPC 与 trajectory baseline 保持本地研究面，不得扩展 public CLI 或 canonical recipe；共享 Full-pool 常量以 src/kd_sensing/baselines/full_pool_common.py 为唯一来源。
+    notes: PCPF-T 是唯一 active research mainline；非 PCPF 本地实验面已删除，trajectory 只保留数据协议和 PCPF 直接依赖。
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_full_pool_bt_scl.py tests/test_full_pool_candidate12.py tests/test_full_pool_btma_ablation.py tests/test_missing_decision_adapter.py -q
+      - conda run -n kd_mm_beam pytest tests/test_pcpf_workflow.py tests/test_pcpf_sparse_csi.py -q
       - conda run -n kd_mm_beam python scripts/verify_compile.py
   - id: openspec
     context_path: docs/agent_context/README.md

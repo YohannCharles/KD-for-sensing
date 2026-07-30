@@ -12,8 +12,14 @@ MMW canonical recipes MUST 仅为 `configs/mmw/u0.yaml`、`amber_full.yaml` 和 
 #### Scenario: 运行 PCPF-T 本地研究入口
 
 - **WHEN** 用户显式加载 `tools/configs/pcpf/` 下的 PCPF-T recipe
-- **THEN** 运行 MUST 复用 clean MMW 数据契约
+- **THEN** 运行 MUST 复用显式绑定且审计通过的 MMW 数据契约；sparse-CSI 正式路线 MUST 使用 `mmw_trajectory_disjoint_v1`
 - **AND** canonical MMW launcher 与 recipe 列表 MUST 保持不变
+
+#### Scenario: PCPF-T 启用第五个 sparse CSI 专家
+
+- **WHEN** 本地 PCPF-T recipe 显式声明 `use_sparse_csi=true`
+- **THEN** 第五模态 MUST 只存在于该模型和 dataset sidecar
+- **AND** 全局 canonical modality order、U0 config、U0 state dict 与公共 CLI MUST 保持不变
 
 ## ADDED Requirements
 
@@ -25,4 +31,3 @@ U0 在未声明 `pcpf_temporal_risk_fusion` 时 MUST 不创建、加载或执行
 
 - **WHEN** 配置的模型类型为现有 U0
 - **THEN** state dict、optimizer 参数集合和 forward 图 MUST 不包含任何 PCPF owner
-- **AND** 旧 U0 checkpoint MUST 不因缺少 PCPF stage metadata 而被拒绝

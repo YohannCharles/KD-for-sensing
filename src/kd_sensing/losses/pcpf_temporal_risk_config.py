@@ -27,7 +27,6 @@ _FIELDS = frozenset(
         "beta_kl",
         "lambda_preserve",
         "stage3_topology_weight",
-        "stage3b_risk_weight",
         "stage_preparation",
         "stage2_gate",
     }
@@ -79,9 +78,6 @@ def pcpf_temporal_risk_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_preserve": _finite(raw.get("lambda_preserve", 0.2), "lambda_preserve", non_negative=True),
         "stage3_topology_weight": _finite(
             raw.get("stage3_topology_weight", 0.0), "stage3_topology_weight", non_negative=True
-        ),
-        "stage3b_risk_weight": _finite(
-            raw.get("stage3b_risk_weight", 1.0), "stage3b_risk_weight", non_negative=True
         ),
         "stage_preparation": _stage_preparation(raw.get("stage_preparation")),
         "stage2_gate": _stage2_gate(raw.get("stage2_gate")),
@@ -175,8 +171,8 @@ def _stage2_gate(value: Any) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"stage2_gate contains unsupported fields: {unknown}.")
     minimum_modalities = int(raw.get("minimum_positive_modalities", 3))
-    if not 0 <= minimum_modalities <= 4:
-        raise ValueError("stage2_gate.minimum_positive_modalities must be in [0,4].")
+    if not 0 <= minimum_modalities <= 5:
+        raise ValueError("stage2_gate.minimum_positive_modalities must be in [0,5].")
     return {
         "overall_spearman_min": _finite(
             raw.get("overall_spearman_min", 0.20), "stage2_gate.overall_spearman_min"

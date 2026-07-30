@@ -110,5 +110,3 @@ output:
   overwrite: false
   progress:
     enabled: false
-  tensorboard:
-    enabled: false

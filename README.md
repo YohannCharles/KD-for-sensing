@@ -1,6 +1,6 @@
 # KD for Sensing
 
-PCPF-T 是当前唯一 active research mainline，研究共享 beam prototype、逐模态时序建模、拓扑风险与解析可靠性融合。U0、AMBER-Full、RMBP-MM、DeepSense6G Scene31--34 T2、MMW trajectory baseline 与 CSI/TSPC 继续作为稳定基线或后续研究基础保留。
+PCPF-T 是当前唯一 active research mainline，研究共享 beam prototype、逐模态时序建模、拓扑风险与解析可靠性融合。U0、AMBER-Full、RMBP-MM 与 DeepSense6G Scene31--34 T2 作为稳定 recipe 保留。
 
 MMW 训练只能通过经审计的 clean-inner 或 trajectory-disjoint protocol 启动。outer test、confirmation train 和任何要求隔离的资源重叠都会在创建数据 loader 前被拒绝。
 
@@ -11,6 +11,7 @@ PCPF-T 使用独立注册模型 `pcpf_temporal_risk_fusion`，本地配置位于
 当前 PCPF 开发结果固定为 `claim_ineligible: true`，outer test 保持封存。实现与实验任务以 `openspec/changes/add-pcpf-temporal-risk-fusion/` 为权威。
 
 ```bash
+conda run -n kd_mm_beam python tools/run_pcpf.py prepare-trajectory
 conda run -n kd_mm_beam python tools/run_pcpf.py resolve --stage stage1 --output outputs/pcpf_temporal_risk/resolved/stage1.yaml
 conda run -n kd_mm_beam python tools/run_pcpf.py preflight --config outputs/pcpf_temporal_risk/resolved/stage1.yaml
 conda run -n kd_mm_beam python tools/run_pcpf.py synthetic-smoke
@@ -40,11 +41,7 @@ conda run -n kd_mm_beam python scripts/eval_mmw_all_weather_matrix.py \
   --root outputs/mmw_clean_u0 --methods U0 --seeds 1
 ```
 
-`configs/mmw/u0.yaml`、`amber_full.yaml` 和 `rmbp_mm.yaml` 是 tracked canonical recipe；它们不携带本地 MMW split，不能绕过 protocol 直接训练。`mmw_trajectory_disjoint_v1`、M0--M4 与因果消融保留为本地研究工作流。
-
-## CSI / TSPC
-
-CSI、稀疏导频、Radio、TSPC/TSPC-V2 及其 trajectory/full-pool 依赖继续保留。它们必须使用过去帧输入、train-only codebook/cache、封存 test，并保持 Full 与 CSI-off 硬旁路；这些入口不扩展 public CLI 或 canonical recipe。
+`configs/mmw/u0.yaml`、`amber_full.yaml` 和 `rmbp_mm.yaml` 是 tracked canonical recipe；它们不携带本地 MMW split，不能绕过 protocol 直接训练。`mmw_trajectory_disjoint_v1` 只保留为 PCPF sparse-CSI 与数据隔离协议，不再维护独立 trajectory baseline。
 
 ## DeepSense6G
 

@@ -13,10 +13,6 @@ from tqdm.auto import tqdm
 from kd_sensing.engine.checkpointing import checkpoint_strict as _checkpoint_strict
 from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.model_initialization import enforce_frozen_module_eval
-from kd_sensing.engine.tensorboard_logging import (
-    write_tensorboard_method_scalars as _write_tensorboard_method_scalars,
-    write_tensorboard_scalars as _write_tensorboard_scalars,
-)
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.missing_patterns import resolve_missing_patterns
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
@@ -50,9 +46,6 @@ def run_training_epoch_loop(
     extensions,
     extension_states,
     extension_context,
-    health_tracker,
-    tensorboard_writer,
-    objective: str,
     task_criterion,
     device,
     run_dir: Path,
@@ -88,8 +81,6 @@ def run_training_epoch_loop(
         enforce_frozen_module_eval(primary_model)
         for extension, extension_state in zip(extensions, extension_states):
             extension.before_epoch(extension_context, extension_state, epoch=epoch)
-        if health_tracker is not None:
-            health_tracker.start_epoch()
         current_lr = optimizer.param_groups[0]["lr"]
         recorder.start_epoch(current_lr)
 
@@ -146,14 +137,12 @@ def run_training_epoch_loop(
         extension_metrics = {}
         for extension, extension_state in zip(extensions, extension_states):
             extension_metrics.update(extension.after_epoch(extension_context, extension_state, epoch=epoch))
-        health_metrics = health_tracker.finish_epoch() if health_tracker is not None else None
         epoch_log, val_loss, val_acc = recorder.finish_epoch(
             epoch=epoch,
             total_epochs=total_epochs,
             val_metrics=val_metrics,
             current_lr=current_lr,
             optimizer_groups=optimizer_groups,
-            health_metrics=health_metrics,
             extension_metrics=extension_metrics,
         )
         epoch_log.update(
@@ -182,13 +171,6 @@ def run_training_epoch_loop(
             if val_acc is not None:
                 postfix["val_acc"] = f"{float(val_acc):.4f}"
             epoch_progress.set_postfix(**postfix)
-        _write_tensorboard_scalars(
-            tensorboard_writer,
-            state.history,
-            epoch + 1,
-            objective=objective,
-        )
-        _write_tensorboard_method_scalars(tensorboard_writer, epoch_log, epoch + 1)
         last_checkpoint = checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)
         if (
             checkpoint_selection == "best_validation_loss"
