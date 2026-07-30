@@ -91,3 +91,10 @@
 - [x] 13.2 删除 Stage 3B、公式候选筛选和四转五 checkpoint 迁移
 - [x] 13.3 删除未启用的 TensorBoard/Matplotlib、参数组 DSL 与冗余配置/目标包装层
 - [x] 13.4 更新 current specs、README、维护导航并完成 focused、compile 与 strict OpenSpec 验证
+
+## 14. trajectory 训练吞吐修复
+
+- [x] 14.1 为 train/validation sparse CSI cache scan 增加协议和 SHA256 绑定的 packed 2x2 bundle，并让正式 dataset 严格内存命中
+- [x] 14.2 在 resolver 中恢复 RGB/LiDAR/GPS 严格缓存绑定，将 sparse-CSI 默认 batch 调整为 64、workers 调整为 8
+- [x] 14.3 增加 packed cache、配置绑定和 fail-closed 回归测试，完成 focused、compile 与 strict OpenSpec 验证
+- [x] 14.4 重建 trajectory cache bundle，完成真实 CUDA batch 64 显存/吞吐 smoke，并在新目录 fresh start Stage 1

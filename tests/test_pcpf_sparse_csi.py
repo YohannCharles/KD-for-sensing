@@ -142,6 +142,58 @@ def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(tmp_path: Pa
         sidecar.load_history([channel_path] * 5, history_frame_ids=[1, 2, 4, 5, 6])
 
 
+def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codebook = generate_probe_codebook(64, 16, num_patterns=32, seed=2026, method="random_qpsk")
+    codebook_path = codebook.save(tmp_path / "codebook.npz")
+    rng = np.random.default_rng(8)
+    channel_path = tmp_path / "000001.npz"
+    np.savez(
+        channel_path,
+        a=(rng.standard_normal((1, 1, 16, 1, 64, 2, 1)) + 1j * rng.standard_normal((1, 1, 16, 1, 64, 2, 1))).astype(np.complex64),
+        tau=np.asarray([[[[0.0, 2e-8]]]], dtype=np.float32),
+    )
+    config = {
+        "enabled": True,
+        "codebook_path": str(codebook_path),
+        "codebook_sha256": hashlib.sha256(codebook_path.read_bytes()).hexdigest(),
+        "codebook_hash": codebook.hash,
+        "cache_root": str(tmp_path / "cache"),
+        "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+    }
+    sidecar = PCPFSparseCSISidecar(config)
+    expected = sidecar.load_history([channel_path] * 5, history_frame_ids=range(1, 6))["csi"]
+    bundle = sidecar.export_packed_cache(
+        tmp_path / "packed.npz",
+        protocol_id="trajectory-test",
+        protocol_fingerprint="d" * 64,
+        roles={
+            "train": {"sample_count": 1, "unique_channel_count": 1},
+            "validation": {"sample_count": 0, "unique_channel_count": 0},
+        },
+    )
+    packed_config = {
+        **config,
+        "packed_cache_path": bundle["path"],
+        "packed_cache_sha256": bundle["sha256"],
+        "packed_cache_protocol_fingerprint": "d" * 64,
+    }
+    channel_path.unlink()
+    monkeypatch.setattr(
+        "kd_sensing.channel.pilot_cache.PilotCache.get_or_compute_with_key",
+        lambda *_args, **_kwargs: pytest.fail("strict packed cache reopened the channel cache"),
+    )
+
+    packed = PCPFSparseCSISidecar(packed_config)
+    actual = packed.load_history([channel_path] * 5, history_frame_ids=range(1, 6))["csi"]
+    torch.testing.assert_close(actual, expected)
+    with pytest.raises(FileNotFoundError, match="strict packed cache miss"):
+        packed.load_history([tmp_path / "missing.npz"] * 5, history_frame_ids=range(1, 6))
+    with pytest.raises(ValueError, match="packed cache SHA256 mismatch"):
+        PCPFSparseCSISidecar({**packed_config, "packed_cache_sha256": "0" * 64})
+
+
 def test_five_modality_schedule_cycles_all_31_subsets_equally() -> None:
     batch_size = 62
     batch = {

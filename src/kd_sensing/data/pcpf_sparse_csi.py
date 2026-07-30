@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from functools import lru_cache
 from pathlib import Path
+import tempfile
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -28,6 +31,7 @@ PCPF_SPARSE_CSI_SELECTION = {
 PCPF_SPARSE_CSI_SELECTION_SHA256 = hashlib.sha256(
     json.dumps(PCPF_SPARSE_CSI_SELECTION, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION = 1
 
 _CONFIG_FIELDS = {
     "enabled",
@@ -36,6 +40,9 @@ _CONFIG_FIELDS = {
     "codebook_hash",
     "cache_root",
     "selection_sha256",
+    "packed_cache_path",
+    "packed_cache_sha256",
+    "packed_cache_protocol_fingerprint",
 }
 
 
@@ -82,11 +89,7 @@ class PCPFSparseCSISidecar:
             nr=16,
         )
         self.codebook_file_sha256 = actual_file_hash
-        self._memory_cache: dict[str, np.ndarray] = {}
-
-    @property
-    def identity(self) -> dict[str, Any]:
-        cache_spec = {
+        self.cache_spec_payload = {
             "codebook_hash": self.cache_spec.codebook_hash,
             "frequency_positions_hz": list(self.cache_spec.frequency_positions_hz),
             "subcarrier_spacing_hz": self.cache_spec.subcarrier_spacing_hz,
@@ -95,10 +98,43 @@ class PCPFSparseCSISidecar:
             "nr": self.cache_spec.nr,
             "simulator_version": self.cache_spec.simulator_version,
         }
-        cache_spec_sha256 = hashlib.sha256(
-            json.dumps(cache_spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.cache_spec_sha256 = hashlib.sha256(
+            json.dumps(self.cache_spec_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        return {
+        self._memory_cache: dict[str, np.ndarray] = {}
+        self._cache_keys: dict[str, str] = {}
+        self._packed_cache_path: Path | None = None
+        self._packed_cache_sha256: str | None = None
+        self._packed_cache_metadata: dict[str, Any] | None = None
+        self._packed_frame_index: dict[str, int] | None = None
+        self._packed_frames: np.ndarray | None = None
+
+        packed_fields = (
+            raw.get("packed_cache_path"),
+            raw.get("packed_cache_sha256"),
+            raw.get("packed_cache_protocol_fingerprint"),
+        )
+        if any(value is not None for value in packed_fields):
+            if not all(value is not None for value in packed_fields):
+                raise ValueError(
+                    "PCPF sparse CSI packed cache requires path, SHA256, and protocol fingerprint together."
+                )
+            packed_path = _required_file(packed_fields[0], "packed_cache_path")
+            packed_sha256 = _required_sha256(packed_fields[1], "packed_cache_sha256")
+            protocol_fingerprint = _required_sha256(
+                packed_fields[2], "packed_cache_protocol_fingerprint"
+            )
+            metadata, frame_index, frames = _load_packed_cache(str(packed_path), packed_sha256)
+            self._validate_packed_cache(metadata, protocol_fingerprint)
+            self._packed_cache_path = packed_path
+            self._packed_cache_sha256 = packed_sha256
+            self._packed_cache_metadata = metadata
+            self._packed_frame_index = frame_index
+            self._packed_frames = frames
+
+    @property
+    def identity(self) -> dict[str, Any]:
+        identity = {
             "schema_version": 1,
             "source": "historical_channel_path_domain_simulator",
             "selection": dict(PCPF_SPARSE_CSI_SELECTION),
@@ -117,8 +153,8 @@ class PCPFSparseCSISidecar:
             "frequency_positions_hz": list(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ),
             "cache_identity": {
                 "root": str(self.cache.root.resolve()),
-                "spec": cache_spec,
-                "spec_sha256": cache_spec_sha256,
+                "spec": self.cache_spec_payload,
+                "spec_sha256": self.cache_spec_sha256,
             },
             "complex_re_per_frame": 4,
             "mother_re_per_frame": 32 * 16,
@@ -128,6 +164,15 @@ class PCPFSparseCSISidecar:
             "pilot_dropout_enabled": False,
             "synthetic_corruption_enabled": False,
         }
+        if self._packed_cache_metadata is not None:
+            identity["packed_cache"] = {
+                "path": str(self._packed_cache_path),
+                "sha256": self._packed_cache_sha256,
+                "protocol_fingerprint": self._packed_cache_metadata["protocol_fingerprint"],
+                "entry_count": self._packed_cache_metadata["entry_count"],
+                "strict": True,
+            }
+        return identity
 
     def load_history(
         self,
@@ -157,6 +202,12 @@ class PCPFSparseCSISidecar:
 
     def _load_frame(self, path: Path) -> np.ndarray:
         key = str(path)
+        if self._packed_frame_index is not None:
+            index = self._packed_frame_index.get(key)
+            if index is None:
+                raise FileNotFoundError(f"PCPF sparse CSI strict packed cache miss: {path}")
+            assert self._packed_frames is not None
+            return self._packed_frames[index].copy()
         cached = self._memory_cache.get(key)
         if cached is not None:
             return cached.copy()
@@ -172,12 +223,132 @@ class PCPFSparseCSISidecar:
                 np.asarray(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ, dtype=np.float64),
             )
 
-        mother = self.cache.get_or_compute(path, self.cache_spec, compute)
+        mother, cache_key = self.cache.get_or_compute_with_key(path, self.cache_spec, compute)
         if mother.shape != (32, 2):
             raise ValueError(f"PCPF sparse CSI cached mother frame must have shape [32,2], got {mother.shape}: {path}")
         selected = np.asarray(mother[list(PCPF_SPARSE_CSI_PATTERN_INDICES)], dtype=np.complex64)
         self._memory_cache[key] = selected
+        self._cache_keys[key] = cache_key
         return selected.copy()
+
+    def export_packed_cache(
+        self,
+        path: str | Path,
+        *,
+        protocol_id: str,
+        protocol_fingerprint: str,
+        roles: Mapping[str, Mapping[str, int]],
+    ) -> dict[str, Any]:
+        fingerprint = _required_sha256(protocol_fingerprint, "packed_cache_protocol_fingerprint")
+        paths = sorted(self._memory_cache)
+        if not paths or set(paths) != set(self._cache_keys):
+            raise ValueError("PCPF sparse CSI packed cache export requires complete prefilled frames and cache keys.")
+        normalized_roles = {
+            role: {
+                "sample_count": int(values["sample_count"]),
+                "unique_channel_count": int(values["unique_channel_count"]),
+            }
+            for role, values in roles.items()
+        }
+        if sum(values["unique_channel_count"] for values in normalized_roles.values()) != len(paths):
+            raise ValueError("PCPF sparse CSI packed cache role counts do not match the unique channel union.")
+        metadata = {
+            "schema_version": PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION,
+            "status": "passed",
+            "protocol_id": str(protocol_id),
+            "protocol_fingerprint": fingerprint,
+            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "codebook_hash": self.codebook.hash,
+            "codebook_file_sha256": self.codebook_file_sha256,
+            "cache_root": str(self.cache.root.resolve()),
+            "cache_spec_sha256": self.cache_spec_sha256,
+            "entry_count": len(paths),
+            "roles": normalized_roles,
+            "outer_test_accessed": False,
+        }
+        values = np.stack([self._memory_cache[channel_path] for channel_path in paths]).astype(
+            np.complex64, copy=False
+        )
+        target = Path(path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".npz",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            np.savez_compressed(
+                handle,
+                metadata_json=np.asarray(json.dumps(metadata, sort_keys=True)),
+                channel_paths=np.asarray(paths),
+                cache_keys=np.asarray([self._cache_keys[channel_path] for channel_path in paths]),
+                selected_g=values,
+            )
+        try:
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        digest = _sha256_file(target)
+        return {
+            "path": str(target),
+            "sha256": digest,
+            "size_bytes": target.stat().st_size,
+            "entry_count": len(paths),
+            "metadata": metadata,
+        }
+
+    def _validate_packed_cache(self, metadata: Mapping[str, Any], protocol_fingerprint: str) -> None:
+        expected = {
+            "schema_version": PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION,
+            "status": "passed",
+            "protocol_fingerprint": protocol_fingerprint,
+            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "codebook_hash": self.codebook.hash,
+            "codebook_file_sha256": self.codebook_file_sha256,
+            "cache_root": str(self.cache.root.resolve()),
+            "cache_spec_sha256": self.cache_spec_sha256,
+            "outer_test_accessed": False,
+        }
+        mismatches = {
+            key: {"expected": value, "actual": metadata.get(key)}
+            for key, value in expected.items()
+            if metadata.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(f"PCPF sparse CSI packed cache identity mismatch: {mismatches}")
+
+
+@lru_cache(maxsize=8)
+def _load_packed_cache(path_text: str, expected_sha256: str) -> tuple[dict[str, Any], dict[str, int], np.ndarray]:
+    path = Path(path_text)
+    actual_sha256 = _sha256_file(path)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"PCPF sparse CSI packed cache SHA256 mismatch: expected={expected_sha256}, actual={actual_sha256}."
+        )
+    with np.load(path, allow_pickle=False) as payload:
+        metadata = json.loads(str(np.asarray(payload["metadata_json"]).item()))
+        channel_paths = [str(value) for value in np.asarray(payload["channel_paths"]).tolist()]
+        cache_keys = [str(value) for value in np.asarray(payload["cache_keys"]).tolist()]
+        frames = np.asarray(payload["selected_g"], dtype=np.complex64)
+    if not isinstance(metadata, dict):
+        raise ValueError(f"PCPF sparse CSI packed cache metadata must be a mapping: {path}")
+    if channel_paths != sorted(channel_paths) or len(channel_paths) != len(set(channel_paths)):
+        raise ValueError(f"PCPF sparse CSI packed cache paths must be sorted and unique: {path}")
+    if any(not Path(value).is_absolute() for value in channel_paths):
+        raise ValueError(f"PCPF sparse CSI packed cache paths must be absolute: {path}")
+    if len(cache_keys) != len(channel_paths) or any(
+        len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        for value in cache_keys
+    ):
+        raise ValueError(f"PCPF sparse CSI packed cache keys are invalid: {path}")
+    if frames.shape != (len(channel_paths), 2, 2) or not np.iscomplexobj(frames) or not np.isfinite(frames).all():
+        raise ValueError(f"PCPF sparse CSI packed cache values are invalid: {path}")
+    if int(metadata.get("entry_count", -1)) != len(channel_paths):
+        raise ValueError(f"PCPF sparse CSI packed cache entry count changed: {path}")
+    frames.setflags(write=False)
+    return metadata, {channel_path: index for index, channel_path in enumerate(channel_paths)}, frames
 
 
 def _required_file(value: Any, field: str) -> Path:
@@ -206,6 +377,7 @@ def _sha256_file(path: Path) -> str:
 
 __all__ = [
     "PCPFSparseCSISidecar",
+    "PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION",
     "PCPF_SPARSE_CSI_FREQUENCY_INDICES",
     "PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ",
     "PCPF_SPARSE_CSI_MODALITY",

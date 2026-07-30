@@ -43,6 +43,9 @@ class PilotCache:
 
     def load(self, channel_path: str | Path, spec: PilotCacheSpec) -> np.ndarray | None:
         key, expected = self.key(channel_path, spec)
+        return self._load(key, expected)
+
+    def _load(self, key: str, expected: dict[str, object]) -> np.ndarray | None:
         path = self.root / f"{key}.npz"
         if not path.is_file():
             return None
@@ -55,6 +58,9 @@ class PilotCache:
 
     def store(self, channel_path: str | Path, spec: PilotCacheSpec, candidate_g: np.ndarray) -> Path:
         key, metadata = self.key(channel_path, spec)
+        return self._store(key, metadata, candidate_g)
+
+    def _store(self, key: str, metadata: dict[str, object], candidate_g: np.ndarray) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)
         target = self.root / f"{key}.npz"
         values = np.asarray(candidate_g, dtype=np.complex64)
@@ -74,12 +80,21 @@ class PilotCache:
         spec: PilotCacheSpec,
         compute: Callable[[], np.ndarray],
     ) -> np.ndarray:
-        cached = self.load(channel_path, spec)
+        return self.get_or_compute_with_key(channel_path, spec, compute)[0]
+
+    def get_or_compute_with_key(
+        self,
+        channel_path: str | Path,
+        spec: PilotCacheSpec,
+        compute: Callable[[], np.ndarray],
+    ) -> tuple[np.ndarray, str]:
+        key, metadata = self.key(channel_path, spec)
+        cached = self._load(key, metadata)
         if cached is not None:
-            return cached
+            return cached, key
         values = np.asarray(compute(), dtype=np.complex64)
-        self.store(channel_path, spec, values)
-        return values
+        self._store(key, metadata, values)
+        return values, key
 
 
 def _sha256_file(path: Path) -> str:

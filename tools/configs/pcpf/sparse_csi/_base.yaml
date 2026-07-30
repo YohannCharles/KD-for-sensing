@@ -10,6 +10,14 @@ data:
       codebook_hash: eec8709fbabff5bf2530a7b3789d3d23ad59165c1eead8ebad44af995ec763fa
       cache_root: outputs/cache/pcpf_sparse_csi/tspc_v2_2x2
       selection_sha256: 87bad2292ba3d22cac413e71d9303f2dd229ed64fe39eeb4df6272f42e6bca28
+  dataloader:
+    train_batch_size: 64
+    validation_batch_size: 64
+    test_batch_size: 64
+    num_workers: 8
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
 model:
   primary:
     use_sparse_csi: true

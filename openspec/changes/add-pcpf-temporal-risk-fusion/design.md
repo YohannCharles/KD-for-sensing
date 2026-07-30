@@ -122,6 +122,12 @@ opt-in 训练 schedule 以 global sample position 和 epoch seed 确定性轮转
 
 评估器必须输出可复算的样本表，至少包含 sample/group identity、label/final prediction、每专家 logits/probability/prediction/真实 circular error/risk/risk components/static weight/dynamic weight、availability、confidence/correctness、CSI norm/valid fraction/quality/SNR availability。D0 使用原始逐样本 risk；D1 在相同 domain+mask 内以固定 seed 打乱 risk；D2 用相同 domain+mask 的平均 risk；D3 使用 static prior，四者只在相同缓存 evidence 上重算融合。另行报告逐模态/天气/domain/CSI presence/cardinality 的 risk-error 与 component-error 相关性、AUROC、confident-wrong、weight 分布和 Full-to-mask transfer。置信区间必须按可用独立 group 做 paired bootstrap；无 trajectory id 时使用审计通过的稳定 sample group key，不得把 mask 重复或帧伪装为独立样本。
 
+### 15. 正式 trajectory 运行使用严格派生缓存与固定物理 batch
+
+trajectory sparse-CSI resolver 直接绑定现有 `outputs/cache/MMW` RGB/LiDAR 严格帧缓存和当前协议的 train/validation GPS coordinate cache；任一缓存目录、metadata、协议 fingerprint 或 coverage manifest 不匹配时，在长训练前失败。CSI cache scan 除逐 channel 内容寻址 cache 外，再发布一个只含 train/validation 44,055 个唯一历史 channel 的紧凑 packed bundle。bundle 保存确定性 `[2,2]` complex selection、绝对 channel path、原内容寻址 cache key、selection/codebook/cache spec、protocol fingerprint 和自身 SHA256；dataset 在父进程中一次校验并加载，worker 只做内存查找，不再重复打开 source channel 或逐文件 cache。
+
+正式 sparse-CSI seed1 模板使用 batch 64、8 workers；Stage 1/2/3 与 R1--R7 沿用同一物理 batch 约定，CLI 仅在显式给出时覆盖。batch 64 先经过真实 CUDA 单步显存 smoke，失败时必须显式记录回退配置并重新 fresh start，不能从不同 batch 的 checkpoint 续训。
+
 ## Risks / Trade-offs
 
 - [Stage 2 risk 可能与 `R_star` 无相关性或常数化] -> 预注册 gate 失败即停止，不自动启动 Stage 3，也不修改阈值。
@@ -135,13 +141,15 @@ opt-in 训练 schedule 以 global sample position 和 epoch seed 确定性轮转
 - [真实 SNR 不可得] -> metadata 明确 `snr_available=false`，encoder 的 SNR 入口可空且不影响 feature；禁止用随机或常数 SNR 填补。
 - [31-mask schedule 或诊断按 batch 顺序偏置] -> 使用 global sample position/epoch 确定性轮转并记录计数，样本级 paired 表按稳定 identity 聚合。
 - [清理历史 source 时误删 PCPF sparse-CSI 原语] -> 删除前执行 import/reference 审计；dataset、outputs、cache、日志和 checkpoint 不读取、不移动、不删除。
+- [逐 worker 重算 channel SHA 和打开大量小 cache 文件导致 CPU 饱和、GPU 饥饿] -> cache scan 发布协议/SHA 绑定的 packed CSI bundle，正式 dataset 只允许严格 bundle 命中；Camera/LiDAR/GPS 同时绑定已验证的严格缓存。
+- [batch 64 超出目标 GPU 显存] -> 正式启动前执行真实 CUDA forward/backward smoke；若失败则生成新的显式 batch 配置并 fresh start，不修改或跨配置续用已有 checkpoint。
 
 ## Migration Plan
 
 1. 合入新 capability/delta specs、模型/loss/config parser 和 focused tests；不改 U0 recipe。
 2. 先以 synthetic tensor 完成三阶段冻结、checkpoint metadata、数值和 backward smoke。
 3. 由本地 resolver 注入 trajectory protocol、split audit、37,510 条 train-only GPS scaler、fresh-start Stage 1 和后续 gate sidecar，生成 `outputs/` 下 resolved configs。
-4. 先扫描 trajectory train/validation 补齐固定 2x2 CSI cache，再运行真实 MMW 一个 batch的 Stage 1/2/3 smoke；全程不构建 test loader。
+4. 先扫描 trajectory train/validation 补齐固定 2x2 CSI cache并发布 packed bundle，绑定严格 RGB/LiDAR/GPS cache，再运行真实 MMW 一个 batch的 Stage 1/2/3 smoke；全程不构建 test loader。
 5. 按现有 seed1 budget 依次运行 fresh Stage 1、Stage 2、gate、Stage 3。长训练全部保留 resolved config、validation-best、日志和 claim-ineligible metadata。
 6. 回滚只需停止使用 PCPF local configs/registry type；stable baseline 无迁移步骤。
 7. 将其他 change 以 closure note 和仓库外快照归档；删除非 PCPF 本地实验 owner。

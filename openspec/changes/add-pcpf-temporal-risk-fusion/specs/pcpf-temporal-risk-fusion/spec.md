@@ -178,7 +178,7 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 
 ### Requirement: 历史 sparse CSI 必须固定、复数且可审计
 
-启用 sparse CSI 时，系统 MUST 对每个历史 frame 使用固定 pattern index `[0,1]` 与 frequency index `[0,15]`，得到 `[5,2,2]` complex tensor；mother grid MUST 为 `[5,32,16]`，每帧抽样率 MUST 为 `4/(32*16)=0.78125%`。正式路线 MUST 绑定 `mmw_trajectory_disjoint_v1` 的 37,510/6,365 train/validation，selection descriptor、selection SHA256、probe codebook logical/file SHA256、physical frequency offset、历史 frame id、channel path identity、protocol fingerprint 与 cache identity MUST 写入 resolved config 或 sidecar metadata。训练前 cache scan MUST 只遍历 train/validation 并记录 `outer_test_accessed=false`。生成路径 MUST 不加入 AWGN、pilot dropout、随机 corruption 或任何 current/future CSI。真实 SNR 不可得时 MUST 记录 `snr_available=false`，不得随机生成或用常数冒充。
+启用 sparse CSI 时，系统 MUST 对每个历史 frame 使用固定 pattern index `[0,1]` 与 frequency index `[0,15]`，得到 `[5,2,2]` complex tensor；mother grid MUST 为 `[5,32,16]`，每帧抽样率 MUST 为 `4/(32*16)=0.78125%`。正式路线 MUST 绑定 `mmw_trajectory_disjoint_v1` 的 37,510/6,365 train/validation，selection descriptor、selection SHA256、probe codebook logical/file SHA256、physical frequency offset、历史 frame id、channel path identity、protocol fingerprint 与 cache identity MUST 写入 resolved config 或 sidecar metadata。训练前 cache scan MUST 只遍历 train/validation 并记录 `outer_test_accessed=false`，并 MUST 发布由 protocol fingerprint、自身 SHA256 和原内容寻址 cache key 绑定的 packed `[N,2,2]` complex cache；正式 dataset MUST 严格命中该 bundle，不得在 worker 中回退到 source channel 计算。正式 resolver 还 MUST 绑定并严格校验 RGB/LiDAR 帧缓存和同一 trajectory protocol 的 GPS coordinate cache。生成路径 MUST 不加入 AWGN、pilot dropout、随机 corruption 或任何 current/future CSI。真实 SNR 不可得时 MUST 记录 `snr_available=false`，不得随机生成或用常数冒充。
 
 #### Scenario: 编码历史 sparse CSI
 - **WHEN** batch 提供 `[B,5,2,2]` complex pilot 与 `[B,5,2]` pattern id/frequency position
@@ -188,6 +188,16 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 #### Scenario: channel 引用或时间顺序不一致
 - **WHEN** 任一 channel 文件 stem 不匹配对应历史 frame id，或最后历史 frame 不早于 target
 - **THEN** dataset MUST 在返回样本前失败并报告 sample identity
+
+#### Scenario: 正式缓存绑定不完整
+- **WHEN** packed CSI bundle 的 SHA256、protocol fingerprint、selection/codebook/cache spec 不匹配，或任一历史 channel path 不在 bundle 中，或严格 RGB/LiDAR/GPS cache 缺失
+- **THEN** resolver 或 dataset MUST 在长训练前失败
+- **AND** 不得静默回退到 raw channel、在线图像变换、LiDAR BEV 构建或 GPS 文本解析
+
+#### Scenario: 正式 sparse-CSI 物理 batch
+- **WHEN** resolver 未收到显式 batch override 并解析正式 sparse-CSI seed1 模板
+- **THEN** train/validation batch size MUST 为 64，worker 数 MUST 为 8
+- **AND** batch 64 MUST 在 fresh-start 长训练前通过真实 CUDA 单步显存 smoke
 
 ### Requirement: 五模态扩展必须保持缺失语义并 fresh start
 

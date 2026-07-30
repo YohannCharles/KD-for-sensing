@@ -29,6 +29,7 @@ from kd_sensing.data.mmw.trajectory_protocol import (
 )
 from kd_sensing.data.pcpf_sparse_csi import PCPFSparseCSISidecar
 from kd_sensing.data.temporal_missing import apply_training_temporal_missing
+from kd_sensing.data.transform_ops.lidar import parameterized_lidar_cache_dir, validate_lidar_cache_metadata
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
 from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
 from kd_sensing.engine.normalization_artifacts import (
@@ -36,7 +37,14 @@ from kd_sensing.engine.normalization_artifacts import (
     validate_normalization_artifact_fingerprint,
 )
 from kd_sensing.engine.optim import build_model, build_optimizer
-from kd_sensing.engine.runtime import prepare_task_batch, prepare_task_labels, run_model_step
+from kd_sensing.engine.runtime import (
+    autocast_context,
+    make_grad_scaler,
+    prepare_task_batch,
+    prepare_task_labels,
+    resolve_amp_settings,
+    run_model_step,
+)
 from kd_sensing.engine.trainer import train as train_model
 from kd_sensing.engine.training_resume import CHECKPOINT_SCHEMA_VERSION
 from kd_sensing.losses.pcpf_temporal_risk import pcpf_temporal_risk_loss, topology_risk_target
@@ -57,6 +65,7 @@ DEFAULT_PROTOCOL = ROOT / "outputs/mmw_trajectory_split/protocol/split_manifest.
 DEFAULT_AUDIT = ROOT / "outputs/mmw_trajectory_split/protocol/split_audit.json"
 DEFAULT_SPARSE_TEMPLATE = ROOT / "tools/configs/pcpf/sparse_csi/stage1.yaml"
 DEFAULT_CACHE_MANIFEST = ROOT / "outputs/pcpf_sparse_csi_router_v1/cache/trajectory_cache_manifest.json"
+DEFAULT_FRAME_CACHE_ROOT = ROOT / "outputs/cache/MMW"
 STAGE_FILES = {
     "stage1": "stage1.yaml",
     "stage2": "stage2.yaml",
@@ -87,8 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     resolve.add_argument("--output", required=True)
     resolve.add_argument("--output-root", default="outputs/pcpf_temporal_risk")
     resolve.add_argument("--run-name")
-    resolve.add_argument("--batch-size", type=int, default=32)
-    resolve.add_argument("--num-workers", type=int, default=4)
+    resolve.add_argument("--batch-size", type=int)
+    resolve.add_argument("--num-workers", type=int)
     resolve.add_argument("--smoke", action="store_true")
 
     preflight = subparsers.add_parser("preflight")
@@ -178,13 +187,15 @@ def resolve_config(
     output: Path,
     output_root: Path,
     run_name: str | None,
-    batch_size: int,
-    num_workers: int,
+    batch_size: int | None,
+    num_workers: int | None,
     smoke: bool,
     template: Path | None = None,
 ) -> dict[str, Any]:
-    if batch_size <= 0 or num_workers < 0:
-        raise ValueError("batch_size must be positive and num_workers must be non-negative.")
+    if batch_size is not None and batch_size <= 0:
+        raise ValueError("batch_size must be positive when supplied.")
+    if num_workers is not None and num_workers < 0:
+        raise ValueError("num_workers must be non-negative when supplied.")
     protocol_path = protocol_path.resolve()
     audit_path = audit_path.resolve()
     protocol, audit, domains = _load_protocol_binding(protocol_path, audit_path)
@@ -210,16 +221,24 @@ def resolve_config(
     if protocol["mode"] == TRAJECTORY_PROTOCOL_MODE:
         cfg["data"]["normalization_artifacts"] = _load_trajectory_normalization(protocol_path)
         cfg["data"].setdefault("domain_balanced_sampling", {}).update(enabled=False, replacement=False)
+        frame_cache_binding = _bind_trajectory_runtime_caches(cfg, protocol_path, domains)
+    else:
+        frame_cache_binding = None
+    sparse_cache_binding = _bind_sparse_csi_cache(cfg, protocol) if protocol["mode"] == TRAJECTORY_PROTOCOL_MODE else None
     loader = cfg["data"]["dataloader"]
+    effective_batch_size = int(loader["train_batch_size"] if batch_size is None else batch_size)
+    effective_num_workers = int(loader["num_workers"] if num_workers is None else num_workers)
+    if effective_batch_size <= 0 or effective_num_workers < 0:
+        raise ValueError("Resolved batch_size must be positive and num_workers must be non-negative.")
     loader.update(
         {
-            "train_batch_size": int(batch_size),
-            "validation_batch_size": int(batch_size),
-            "test_batch_size": int(batch_size),
-            "num_workers": int(num_workers),
-            "pin_memory": bool(num_workers),
-            "persistent_workers": bool(num_workers),
-            "prefetch_factor": 2 if num_workers else None,
+            "train_batch_size": effective_batch_size,
+            "validation_batch_size": effective_batch_size,
+            "test_batch_size": effective_batch_size,
+            "num_workers": effective_num_workers,
+            "pin_memory": bool(effective_num_workers),
+            "persistent_workers": bool(effective_num_workers),
+            "prefetch_factor": 2 if effective_num_workers else None,
         }
     )
     cfg["training"]["final_test"] = {"enabled": False}
@@ -266,6 +285,8 @@ def resolve_config(
         "template": str(template_path),
         "smoke_only": bool(smoke),
         "outer_test_accessed": False,
+        "frame_cache_binding": frame_cache_binding,
+        "sparse_csi_cache_binding": sparse_cache_binding,
     }
     output = output.resolve()
     dump_config(cfg, output)
@@ -370,22 +391,37 @@ def prefill_sparse_csi_cache(
     if overlap:
         raise ValueError(f"Trajectory train/validation cache scan found {len(overlap)} shared channel resources.")
     after = sum(1 for _ in cache_root.glob("*.npz"))
+    role_summary = {
+        role: {
+            "sample_count": role_samples[role],
+            "sample_id_hash": audit[f"{role}_sample_id_hash"],
+            "unique_channel_count": len(role_paths[role]),
+        }
+        for role in ("train", "validation")
+    }
+    output = output.resolve()
+    packed_cache = sidecar.export_packed_cache(
+        output.with_name(f"{output.stem}_packed.npz"),
+        protocol_id=protocol["protocol_id"],
+        protocol_fingerprint=protocol["protocol_fingerprint"],
+        roles=role_summary,
+    )
+    packed_config = dict(sparse_config)
+    packed_config.update(
+        packed_cache_path=packed_cache["path"],
+        packed_cache_sha256=packed_cache["sha256"],
+        packed_cache_protocol_fingerprint=protocol["protocol_fingerprint"],
+    )
+    packed_sidecar = PCPFSparseCSISidecar(packed_config)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed",
         "protocol_id": protocol["protocol_id"],
         "protocol_fingerprint": protocol["protocol_fingerprint"],
         "protocol_path": str(protocol_path),
         "audit_id": audit["audit_id"],
         "audit_report": str(audit_path),
-        "roles": {
-            role: {
-                "sample_count": role_samples[role],
-                "sample_id_hash": audit[f"{role}_sample_id_hash"],
-                "unique_channel_count": len(role_paths[role]),
-            }
-            for role in ("train", "validation")
-        },
+        "roles": role_summary,
         "train_validation_channel_overlap": 0,
         "cache": {
             "root": str(cache_root),
@@ -393,11 +429,11 @@ def prefill_sparse_csi_cache(
             "entries_after": after,
             "entries_added": after - before,
         },
-        "sparse_csi_identity": sidecar.identity,
+        "packed_cache": packed_cache,
+        "sparse_csi_identity": packed_sidecar.identity,
         "outer_test_accessed": False,
         "claim_ineligible": True,
     }
-    output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return {**report, "manifest_path": str(output)}
@@ -595,30 +631,34 @@ def _real_batch_step(model: Any, raw_batch: dict[str, Any], cfg: dict[str, Any],
     model.train()
     optimizer = build_optimizer(cfg, model)
     optimizer.zero_grad(set_to_none=True)
-    step = run_model_step(
-        model,
-        cfg["experiment"].get("task", "fusion"),
-        raw_batch,
-        seq_length=int(model.seq_length),
-        num_pred=int(model.num_pred),
-        device=device,
-    )
-    labels = prepare_task_labels(step.batch, num_pred=model.num_pred, device=device)
-    output = {
-        "logits": step.model_output.logits,
-        "input_features": step.model_output.input_features,
-        "output_features": step.model_output.output_features,
-        **step.model_output.diagnostics,
-    }
-    loss = pcpf_temporal_risk_loss(
-        output,
-        labels,
-        prototype_bank=model.prototype_bank,
-        config=pcpf_temporal_risk_config(cfg),
-    )
-    loss["loss"].backward()
+    amp_enabled, amp_dtype = resolve_amp_settings(cfg, device)
+    grad_scaler = make_grad_scaler(cfg, amp_enabled)
+    with autocast_context(amp_enabled, device, amp_dtype):
+        step = run_model_step(
+            model,
+            cfg["experiment"].get("task", "fusion"),
+            raw_batch,
+            seq_length=int(model.seq_length),
+            num_pred=int(model.num_pred),
+            device=device,
+        )
+        labels = prepare_task_labels(step.batch, num_pred=model.num_pred, device=device)
+        output = {
+            "logits": step.model_output.logits,
+            "input_features": step.model_output.input_features,
+            "output_features": step.model_output.output_features,
+            **step.model_output.diagnostics,
+        }
+        loss = pcpf_temporal_risk_loss(
+            output,
+            labels,
+            prototype_bank=model.prototype_bank,
+            config=pcpf_temporal_risk_config(cfg),
+        )
+    grad_scaler.scale(loss["loss"]).backward()
     result = _smoke_stage_report(model, output, loss, step.batch)
-    optimizer.step()
+    grad_scaler.step(optimizer)
+    grad_scaler.update()
     return result
 
 
@@ -896,11 +936,137 @@ def _load_trajectory_normalization(protocol_path: Path) -> dict[str, Any]:
     return payload
 
 
+def _bind_trajectory_runtime_caches(
+    cfg: dict[str, Any],
+    protocol_path: Path,
+    domains: list[dict[str, Any]],
+) -> dict[str, Any]:
+    dataset = cfg["data"]["dataset"]
+    frame_root = DEFAULT_FRAME_CACHE_ROOT.resolve()
+    gps_root = (protocol_path.parent.parent / "cache/gps_coordinates").resolve()
+    gps_manifest_path = gps_root / "manifest.json"
+    if not frame_root.is_dir():
+        raise FileNotFoundError(f"Trajectory strict frame cache root is missing: {frame_root}")
+    if not gps_manifest_path.is_file():
+        raise FileNotFoundError(f"Trajectory GPS cache manifest is missing: {gps_manifest_path}")
+    gps_manifest = json.loads(gps_manifest_path.read_text(encoding="utf-8"))
+    expected_fingerprint = cfg["data_protocol"]["protocol_fingerprint"]
+    if (
+        gps_manifest.get("protocol_fingerprint") != expected_fingerprint
+        or gps_manifest.get("strict_cache_coverage") is not True
+        or gps_manifest.get("outer_test_accessed") is not False
+    ):
+        raise ValueError("Trajectory GPS cache manifest does not match the bound train/validation protocol.")
+
+    active_domains = [domain for domain in domains if domain.get("train_csv_name") or domain.get("val_csv_name")]
+    manifest_domain_ids = {
+        str(item.get("domain_id"))
+        for item in gps_manifest.get("domains", [])
+        if isinstance(item, Mapping)
+    }
+    missing_domains = sorted(str(domain["id"]) for domain in active_domains if domain["id"] not in manifest_domain_ids)
+    if missing_domains:
+        raise ValueError(f"Trajectory GPS cache manifest is missing active domains: {missing_domains}")
+
+    image_size = dataset.get("image_size", [224, 224])
+    image_profile = str(dataset.get("image_profile", "rgb_imagenet"))
+    lidar_options = {
+        "bev_size": dataset.get("lidar_bev_size", [224, 224]),
+        "roi": dataset.get("lidar_roi", [-30.0, 30.0, -30.0, 30.0, -3.0, 5.0]),
+        "fov_degrees": dataset.get("lidar_fov_degrees"),
+        "remove_ground": bool(dataset.get("lidar_remove_ground", False)),
+        "ground_z_threshold": float(dataset.get("lidar_ground_z_threshold", 0.1)),
+        "background_distance_threshold": float(dataset.get("lidar_background_distance_threshold", 0.2)),
+    }
+    for condition in sorted({str(domain["condition"]) for domain in active_domains}):
+        image_dir = frame_root / condition / "image_derived" / image_profile / f"{image_size[0]}x{image_size[1]}"
+        if not image_dir.is_dir():
+            raise FileNotFoundError(f"Trajectory strict RGB cache directory is missing: {image_dir}")
+        lidar_dir = parameterized_lidar_cache_dir(frame_root / condition / "lidar_bev", **lidar_options)
+        validate_lidar_cache_metadata(lidar_dir, **lidar_options)
+    for domain in active_domains:
+        gps_path = gps_root / f"{domain['condition']}__{domain['scene']}.npz"
+        if not gps_path.is_file():
+            raise FileNotFoundError(f"Trajectory strict GPS coordinate cache is missing: {gps_path}")
+
+    dataset.update(
+        frame_cache_root=str(frame_root),
+        frame_cache_strict=True,
+        gps_coordinate_cache_root=str(gps_root),
+    )
+    return {
+        "frame_cache_root": str(frame_root),
+        "gps_coordinate_cache_root": str(gps_root),
+        "gps_manifest": str(gps_manifest_path),
+        "strict": True,
+        "active_domain_count": len(active_domains),
+        "outer_test_accessed": False,
+    }
+
+
+def _bind_sparse_csi_cache(cfg: dict[str, Any], protocol: Mapping[str, Any]) -> dict[str, Any] | None:
+    sparse = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
+    if not isinstance(sparse, dict):
+        return None
+    manifest_path = DEFAULT_CACHE_MANIFEST.resolve()
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Trajectory sparse CSI cache manifest is missing; run cache-sparse-csi first: {manifest_path}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    roles = manifest.get("roles")
+    expected_role_counts = {
+        "train": int(protocol["train_window_count"]),
+        "validation": int(protocol["validation_window_count"]),
+    }
+    actual_role_counts = {
+        role: int(roles.get(role, {}).get("sample_count", -1)) if isinstance(roles, Mapping) else -1
+        for role in expected_role_counts
+    }
+    if (
+        manifest.get("schema_version") != 2
+        or manifest.get("status") != "passed"
+        or manifest.get("protocol_fingerprint") != protocol["protocol_fingerprint"]
+        or manifest.get("outer_test_accessed") is not False
+        or int(manifest.get("train_validation_channel_overlap", -1)) != 0
+        or actual_role_counts != expected_role_counts
+    ):
+        raise ValueError("Trajectory sparse CSI cache manifest does not match the bound train/validation protocol.")
+    identity = manifest.get("sparse_csi_identity")
+    if not isinstance(identity, Mapping) or (
+        identity.get("selection_sha256") != sparse.get("selection_sha256")
+        or identity.get("codebook_hash") != sparse.get("codebook_hash")
+        or identity.get("codebook_file_sha256") != sparse.get("codebook_sha256")
+        or Path(str(identity.get("cache_identity", {}).get("root", ""))).resolve()
+        != Path(str(sparse.get("cache_root", ""))).resolve()
+    ):
+        raise ValueError("Trajectory sparse CSI cache manifest identity does not match the resolved template.")
+    packed = manifest.get("packed_cache")
+    if not isinstance(packed, Mapping):
+        raise ValueError("Trajectory sparse CSI cache manifest does not bind a packed cache.")
+    sparse.update(
+        packed_cache_path=str(packed.get("path", "")),
+        packed_cache_sha256=str(packed.get("sha256", "")),
+        packed_cache_protocol_fingerprint=str(protocol["protocol_fingerprint"]),
+    )
+    packed_identity = PCPFSparseCSISidecar(sparse).identity["packed_cache"]
+    manifest_sha256, _ = checkpoint_file_digest(manifest_path)
+    return {
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": manifest_sha256,
+        "packed_cache": packed_identity,
+        "strict": True,
+        "outer_test_accessed": False,
+    }
+
+
 def _resolve_sparse_csi_paths(cfg: dict[str, Any]) -> None:
     sparse = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
     if not isinstance(sparse, dict):
         return
-    for key in ("codebook_path", "cache_root"):
+    for key in ("codebook_path", "cache_root", "packed_cache_path"):
+        if not sparse.get(key):
+            continue
         path = Path(str(sparse.get(key, "")))
         if not path.is_absolute():
             sparse[key] = str((ROOT / path).resolve())

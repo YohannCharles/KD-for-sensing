@@ -71,3 +71,6 @@ def test_sparse_trajectory_stage1_template_is_fresh_start() -> None:
 
     assert cfg["training"]["initialization_checkpoint"] is False
     assert "historical_reference" not in cfg["evaluation"]["pcpf_diagnostics"]
+    assert cfg["data"]["dataloader"]["train_batch_size"] == 64
+    assert cfg["data"]["dataloader"]["validation_batch_size"] == 64
+    assert cfg["data"]["dataloader"]["num_workers"] == 8
