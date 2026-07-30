@@ -98,15 +98,19 @@ def run_evaluation_pass(
                     non_blocking=non_blocking,
                     force_modality_mask=force_modality_mask,
                 )
-                beam_loss = criterion(step.logits.reshape(-1, num_classes), labels.flatten())
-                loss = compute_prediction_loss(
-                    step.model_output,
-                    prepare_prediction_targets(labels=labels, auxiliary_targets={}, cfg=cfg),
-                    cfg,
-                    reference=step.logits,
-                    beam_total_loss=beam_loss,
-                    beam_task_loss=beam_loss,
-                ).total
+                validation_loss = getattr(model, "compute_validation_loss", None)
+                if callable(validation_loss):
+                    loss = validation_loss(step.model_output, labels, cfg)
+                else:
+                    beam_loss = criterion(step.logits.reshape(-1, num_classes), labels.flatten())
+                    loss = compute_prediction_loss(
+                        step.model_output,
+                        prepare_prediction_targets(labels=labels, auxiliary_targets={}, cfg=cfg),
+                        cfg,
+                        reference=step.logits,
+                        beam_total_loss=beam_loss,
+                        beam_task_loss=beam_loss,
+                    ).total
             _accumulate_beam_metrics(state, step.logits.detach(), labels, cfg)
             weighted_loss = loss.detach() * observations.to(dtype=loss.dtype)
             state.loss_sum = weighted_loss if state.loss_sum is None else state.loss_sum + weighted_loss

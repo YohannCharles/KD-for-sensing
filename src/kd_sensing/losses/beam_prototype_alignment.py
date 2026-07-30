@@ -57,14 +57,13 @@ def make_soft_beam_labels(
         raise ValueError("num_beams and sigma must be positive.")
     if bool(((labels < 0) | (labels >= int(num_beams))).any().item()):
         raise ValueError(f"labels must be in [0, {int(num_beams) - 1}].")
-    resolved_topology, use_cyclic, positions = _resolve_topology(
+    _, use_cyclic, positions = _resolve_topology(
         int(num_beams),
         circular=bool(circular),
         topology_id=topology_id,
         topology_permutation=topology_permutation,
         device=labels.device,
     )
-    del resolved_topology
     beams = positions.view(1, -1)
     target_positions = positions[labels].to(dtype=torch.float32).view(-1, 1)
     distance = (beams - target_positions).abs()

@@ -38,6 +38,18 @@ rounds:
     budgets: [16x16, 8x16, 16x8, 8x8, 4x16, 4x8]
     tasks: [I3]
     fusion_mode: replace
+  round4_low_re:
+    budgets: [4x4, 2x4, 4x2, 2x2]
+    tasks: [I3]
+    fusion_mode: replace
+  round5_single_frame_4re:
+    budgets: [2x2]
+    tasks: [I2]
+    fusion_mode: replace
+  round6_single_frame_20re:
+    budgets: [5x4, 4x5]
+    tasks: [I2]
+    fusion_mode: replace
   round3_fallback:
     tasks: [I3]
     fusion_mode: hard_fallback

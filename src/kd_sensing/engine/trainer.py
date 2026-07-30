@@ -55,16 +55,12 @@ from kd_sensing.engine.training_state import TrainingState
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.paths import output_dir as resolve_output_dir
 from kd_sensing.utils.artifact_registry import load_checkpoint_metadata
-from kd_sensing.utils.runtime_output_layout import evaluation_output_base, scoped_output_base
+from kd_sensing.utils.runtime_output_layout import evaluation_output_base
 from kd_sensing.utils.seed import set_seed
 
 
 def create_run_dir(cfg: dict) -> Path:
-    base = scoped_output_base(
-        resolve_output_dir(cfg["output"]["dir"]),
-        cfg,
-        purpose="training",
-    )
+    base = resolve_output_dir(cfg["output"]["dir"])
     run_name = cfg.get("output", {}).get("run_name") or f"{cfg.get('experiment', {}).get('name', 'run')}_{dt.datetime.now():%Y%m%d_%H%M%S}"
     path = base / run_name
     if path.exists() and not cfg.get("output", {}).get("overwrite", False) and not cfg.get("training", {}).get("resume"):
@@ -98,7 +94,16 @@ def _unique_run_path(path: Path) -> Path:
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
     u_mask_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {}) if isinstance(cfg.get("loss"), dict) else {}
-    if isinstance(u_mask_cfg, dict) and bool(u_mask_cfg.get("enabled", False)):
+    pcpf_cfg = cfg.get("loss", {}).get("pcpf_temporal_risk", {}) if isinstance(cfg.get("loss"), dict) else {}
+    u_mask_enabled = isinstance(u_mask_cfg, dict) and bool(u_mask_cfg.get("enabled", False))
+    pcpf_enabled = isinstance(pcpf_cfg, dict) and bool(pcpf_cfg.get("enabled", False))
+    if u_mask_enabled and pcpf_enabled:
+        raise ValueError("U0 and PCPF-T training extensions are mutually exclusive.")
+    if pcpf_enabled:
+        from kd_sensing.losses.pcpf_temporal_risk import PCPFTemporalRiskTrainingExtension
+
+        return [PCPFTemporalRiskTrainingExtension()]
+    if u_mask_enabled:
         from kd_sensing.losses.u_mask_beam_jepa import UMaskBeamJEPATrainingExtension
 
         return [UMaskBeamJEPATrainingExtension()]
@@ -207,6 +212,16 @@ def _build_training_resources(context: TrainingRunContext) -> None:
     if initialization_load is not None:
         context.state.checkpoint_loads.append(initialization_load)
         context.cfg.setdefault("runtime", {})["model_initialization"] = initialization_load
+    prepare_stage = getattr(context.primary_model, "prepare_training_stage", None)
+    if callable(prepare_stage):
+        preparation = prepare_stage(
+            cfg=context.cfg,
+            train_loader=context.dataloaders.get("train"),
+            device=context.device,
+            run_dir=context.run_dir,
+            non_blocking=context.non_blocking,
+        )
+        context.cfg.setdefault("runtime", {})["pcpf_stage_preparation"] = preparation
     context.task_criterion = build_task_criterion(context.cfg)
     context.optimizer = build_optimizer(context.cfg, context.primary_model)
     context.scheduler = build_scheduler(context.cfg, context.optimizer)

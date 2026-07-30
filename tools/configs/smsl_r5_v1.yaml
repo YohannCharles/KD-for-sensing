@@ -1,0 +1,134 @@
+experiment_id: smsl_r5_v1
+
+protocol:
+  id: mmw_trajectory_disjoint_v1
+  manifest: outputs/mmw_trajectory_split/protocol/split_manifest.json
+  audit: outputs/mmw_trajectory_split/protocol/split_audit.json
+  expected_train_samples: 37510
+  expected_validation_samples: 6365
+  expected_train_trajectories: 12
+  expected_validation_trajectories: 2
+  outer_test_enabled: false
+
+source:
+  checkpoint: outputs/mmw_trajectory_split/m4_availability_balanced_topology_consistency/best_checkpoint.pt
+  normalization_root: outputs/mmw_trajectory_split
+  topology_manifest: outputs/cache/mmw_codebook_topology/v1/a692c2b43365b483/topology_manifest.json
+  train_m4_cache: outputs/compositional_prototype_deformation_diagnostic/trajectory_v1/cache/train_sensing_features.pt
+  validation_m4_cache: outputs/compositional_prototype_deformation_diagnostic/trajectory_v1/cache/validation_sensing_features.pt
+  geometry_cache_root: outputs/full_missing_hard_sample_geometry/trajectory_v1/cache
+  expected_checkpoint_sha256: 77e3a35a26596d8d70b0e2ca88dd214a9fc41209cc3d2b75adbb3fad6a5078e7
+  expected_split_manifest_sha256: b5348e064bf8c597c0f5e0a76d505f019bb1dcce4fdf65d8a0864a7341f49644
+  expected_topology_manifest_sha256: f0208dda49c6e4d4923c0cab6d736ed28f12b39023112a6a7388ef9a53b281b4
+
+safety:
+  sensing_modalities: [image, lidar, radar, gps]
+  csi_used: false
+  channel_input_used: false
+  f1_used: false
+  outer_test_accessed: false
+  future_beam_power_role: label_side_evaluation_metric_only
+
+f2:
+  target: G1_full_correct_missing_wrong
+  source_role: train_only
+  feature_contract: missing_view_only_v1
+  feature_names:
+    - mask_image_available
+    - mask_lidar_available
+    - mask_radar_available
+    - mask_gps_available
+    - missing_top1_top2_gap
+    - missing_entropy
+    - missing_embedding_norm
+    - available_unimodal_agreement
+    - available_unimodal_pairwise_disagreement
+  excluded_features:
+    - label
+    - target_beam
+    - missing_target_rank
+    - full_output
+    - future_frames
+    - trajectory_metadata
+    - weather_or_scene
+    - future_beam_power
+  l2: 0.001
+  epochs: 20
+  batch_size: 8192
+  trajectory_cv_folds: 4
+  seed: 45101
+  risk_clamp: [0.05, 0.95]
+  weight_clamp: [0.5, 2.0]
+  alpha: 1.0
+  warmup_fraction: 0.1
+
+training:
+  base_method: m4_availability_balanced_topology_consistency
+  base_seed: 2026
+  seeds: [2026, 2027, 2028]
+  batch_size: 64
+  epochs: 20
+  screening_epochs: 3
+  smoke_batches: 8
+  one_batch_overfit_steps: 100
+  gradient_clip: 1.0
+  f2_weight_scope: available_count_lte_2
+  lambda_subset: 1.0
+  lambda_margin: 0.5
+  checkpoint_selection: final_epoch_train_only
+  arms: [a0, a1, a2, a3, c1, c2, c3]
+  gpu_map:
+    a0: 0
+    a1: 1
+    a2: 2
+    a3: 3
+    c1: 4
+    c2: 5
+    c3: 6
+  monitor_interval_seconds: 600
+
+runtime:
+  dataloader_workers: 8
+  torch_intraop_threads: 1
+  torch_interop_threads: 1
+  thread_environment:
+    OMP_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    NUMEXPR_NUM_THREADS: "1"
+
+screening:
+  mode: train_trajectory_4fold_cv
+  folds: 4
+  heldout_role: train_heldout_only
+  no_validation_access: true
+  gate:
+    a2_beats_at_least_two_of: [a1, c1, c2]
+    a3_must_beat: c3
+    primary_metrics: [single_worst_top1, severe_worst_top1]
+    no_material_degradation_metrics: [within3, mae]
+    within3_tolerance: 0.005
+    mae_tolerance: 0.05
+
+success:
+  single_worst_gain: 0.02
+  severe_worst_gain: 0.015
+  severe_macro_gain: 0.01
+  all14_worst_gain: 0.015
+  within3_max_drop: 0.005
+  mae_max_increase: 0.05
+  full_top1_max_drop: 0.005
+  far_error_requires_decrease: true
+  within_mask_min_positive_fraction: 0.7
+
+evaluation:
+  masks: all_15
+  near_cycle_distance: 3
+  risk_buckets: [0.2, 0.8]
+  trajectory_bootstrap_replicates: 1000
+  confidence_level: 0.95
+  validation_evaluations: 1
+  outer_test_enabled: false
+
+output:
+  root: outputs/smsl_r5_v1

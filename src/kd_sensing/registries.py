@@ -109,6 +109,7 @@ def import_default_components() -> None:
     import kd_sensing.models.image_encoders  # noqa: F401
     import kd_sensing.models.lidar  # noqa: F401
     import kd_sensing.models.modular  # noqa: F401
+    import kd_sensing.models.pcpf_temporal_risk  # noqa: F401
     import kd_sensing.models.radar  # noqa: F401
     import kd_sensing.models.rmbp_mm  # noqa: F401
     import kd_sensing.models.tinyvit  # noqa: F401

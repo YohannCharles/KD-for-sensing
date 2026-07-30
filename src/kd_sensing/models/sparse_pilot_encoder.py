@@ -14,14 +14,27 @@ class SparsePilotEncoder(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         quality_dim: int = 16,
+        include_index_embeddings: bool = False,
+        num_frequency_indices: int = 16,
+        maximum_time_steps: int = 5,
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.quality_dim = int(quality_dim)
+        self.include_index_embeddings = bool(include_index_embeddings)
         if int(num_layers) < 0:
             raise ValueError("num_layers must be non-negative.")
+        if self.include_index_embeddings and (int(num_frequency_indices) <= 0 or int(maximum_time_steps) <= 0):
+            raise ValueError("Index-embedding frequency and time dimensions must be positive.")
         self.token_projection = nn.Linear(5, self.hidden_dim)
         self.pattern_embedding = nn.Embedding(int(num_candidate_patterns), self.hidden_dim)
+        self.frequency_embedding: nn.Embedding | None = None
+        self.time_embedding: nn.Embedding | None = None
+        self.validity_embedding: nn.Embedding | None = None
+        if self.include_index_embeddings:
+            self.frequency_embedding = nn.Embedding(int(num_frequency_indices), self.hidden_dim)
+            self.time_embedding = nn.Embedding(int(maximum_time_steps), self.hidden_dim)
+            self.validity_embedding = nn.Embedding(2, self.hidden_dim)
         self.encoder = None
         if int(num_layers):
             layer = nn.TransformerEncoderLayer(
@@ -52,6 +65,9 @@ class SparsePilotEncoder(nn.Module):
         frequency_positions: torch.Tensor,
         pilot_mask: torch.Tensor,
         snr_db: torch.Tensor | float,
+        *,
+        frequency_ids: torch.Tensor | None = None,
+        time_ids: torch.Tensor | int | None = None,
     ) -> dict[str, torch.Tensor]:
         values = torch.as_tensor(pilot_observations)
         if not torch.is_complex(values) or values.ndim != 3:
@@ -91,8 +107,37 @@ class SparsePilotEncoder(nn.Module):
         empty = ~safe_valid.any(dim=1)
         safe_valid[empty, 0] = True
         tokens = self.token_projection(token_features) + self.pattern_embedding(token_ids)
+        if self.include_index_embeddings:
+            assert self.frequency_embedding is not None
+            assert self.time_embedding is not None
+            assert self.validity_embedding is not None
+            if frequency_ids is None or time_ids is None:
+                raise ValueError("frequency_ids and time_ids are required when include_index_embeddings=true.")
+            frequency_index = torch.as_tensor(frequency_ids, device=values.device, dtype=torch.long)
+            if frequency_index.ndim == 1:
+                if tuple(frequency_index.shape) != (frequencies,):
+                    raise ValueError("frequency_ids must have shape [K], [B,K], or [B,M,K].")
+                frequency_index = frequency_index[None, None, :].expand(batch, patterns, -1)
+            elif frequency_index.ndim == 2:
+                if tuple(frequency_index.shape) != (batch, frequencies):
+                    raise ValueError("Batched frequency_ids must have shape [B,K].")
+                frequency_index = frequency_index[:, None, :].expand(-1, patterns, -1)
+            elif tuple(frequency_index.shape) != (batch, patterns, frequencies):
+                raise ValueError("frequency_ids must have shape [K], [B,K], or [B,M,K].")
+            if bool(((frequency_index < 0) | (frequency_index >= self.frequency_embedding.num_embeddings)).any()):
+                raise ValueError("frequency_ids contains an out-of-range index.")
+            time_index = torch.as_tensor(time_ids, device=values.device, dtype=torch.long).reshape(-1)
+            if time_index.numel() == 1:
+                time_index = time_index.expand(batch)
+            if time_index.numel() != batch or bool(
+                ((time_index < 0) | (time_index >= self.time_embedding.num_embeddings)).any()
+            ):
+                raise ValueError("time_ids must be scalar or [B] within the configured range.")
+            tokens = tokens + self.frequency_embedding(frequency_index.reshape(batch, -1))
+            tokens = tokens + self.time_embedding(time_index)[:, None]
+            tokens = tokens + self.validity_embedding(flat_valid.long())
         encoded = tokens if self.encoder is None else self.encoder(tokens, src_key_padding_mask=~safe_valid)
-        scores = self.pool_score(encoded).squeeze(-1).masked_fill(~flat_valid, torch.finfo(encoded.dtype).min)
+        scores = self.pool_score(encoded).squeeze(-1).masked_fill(~flat_valid, float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         weights = torch.where(empty[:, None], torch.zeros_like(weights), weights)
         feature = (weights.unsqueeze(-1) * encoded).sum(dim=1)

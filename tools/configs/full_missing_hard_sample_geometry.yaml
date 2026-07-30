@@ -1,0 +1,117 @@
+diagnostic_id: full_missing_hard_sample_geometry_trajectory_v1
+
+protocol:
+  id: mmw_trajectory_disjoint_v1
+  manifest: outputs/mmw_trajectory_split/protocol/split_manifest.json
+  audit: outputs/mmw_trajectory_split/protocol/split_audit.json
+  expected_train_samples: 37510
+  expected_validation_samples: 6365
+  expected_train_trajectories: 12
+  expected_validation_trajectories: 2
+  history_frames: 5
+  prediction_horizon: 1
+  outer_test_enabled: false
+
+source:
+  checkpoint: outputs/mmw_trajectory_split/m4_availability_balanced_topology_consistency/best_checkpoint.pt
+  baseline_root: outputs/mmw_trajectory_split
+  normalization_manifest: outputs/mmw_trajectory_split/normalization_manifest.json
+  topology_manifest: outputs/cache/mmw_codebook_topology/v1/a692c2b43365b483/topology_manifest.json
+  sensing_cache_manifest: outputs/compositional_prototype_deformation_diagnostic/trajectory_v1/cache/cache_manifest.json
+  train_sensing_cache: outputs/compositional_prototype_deformation_diagnostic/trajectory_v1/cache/train_sensing_features.pt
+  validation_sensing_cache: outputs/compositional_prototype_deformation_diagnostic/trajectory_v1/cache/validation_sensing_features.pt
+  expected_checkpoint_sha256: 77e3a35a26596d8d70b0e2ca88dd214a9fc41209cc3d2b75adbb3fad6a5078e7
+  expected_prototype_sha256: 9af0153bb2a85dcafec9004ab56599bdbaea1130be232b92f91c898ec76da52a
+  expected_split_sha256: b5348e064bf8c597c0f5e0a76d505f019bb1dcce4fdf65d8a0864a7341f49644
+  expected_topology_manifest_sha256: f0208dda49c6e4d4923c0cab6d736ed28f12b39023112a6a7388ef9a53b281b4
+  expected_train_cache_sha256: e7c53cb8eb5226c26ae4e94beecd286b08697e6d05ad5a3123af492a0e89b1cd
+  expected_validation_cache_sha256: 3f89b019949f5aa91b73f73542a411949b68f08607cf22852c50ec861e9825d7
+  expected_train_sample_sha256: 745066d8a890c8b44152592a5d72feb6fa57e992cff8ba13e3063438d5613801
+  expected_validation_sample_sha256: 7aa67bf71d434818968ff131ce9ac742f4b95fd3ce18f53268a43ce65ff524b0
+
+geometry:
+  num_beams: 64
+  feature_dimension: 64
+  temperature: 0.1
+  near_cycle_distance: 3
+  collapse_rank_threshold: 10
+  low_margin_quantile: 0.25
+  high_margin_quantile: 0.75
+  counterfactual_steps: 100
+  pca_components: [1, 2, 4, 8, 16, 32]
+  knn_k: [5, 10, 20, 50]
+
+layers:
+  - {id: L0, name: encoder_tokens, shape: [5, 4, 64], present: true}
+  - {id: L1, name: positioned_tokens, shape: [5, 4, 64], present: true}
+  - {id: L2, name: masked_flat_fusion_input, shape: [1280], present: true}
+  - {id: L3, name: fusion_hidden_1024, shape: [1024], present: true}
+  - {id: L4, name: fusion_hidden_512, shape: [512], present: true}
+  - {id: L5, name: final_sensing_embedding, shape: [64], present: true}
+  - {id: L6, name: prototype_logits, shape: [64], present: true}
+  - {id: L7, name: probability_rank_margin_entropy, shape: [64], present: true}
+  - {id: NA, name: per_frame_fusion, shape: null, present: false, reason: not_present_in_frozen_m4}
+  - {id: NA, name: temporal_module, shape: null, present: false, reason: not_present_in_frozen_m4}
+
+cache:
+  version: full_missing_multilayer_v1
+  shard_size: 1024
+  hidden_dtype: float16
+  final_dtype: float32
+  temporal_ablations: [T0_original, T1_last_only, T2_history_mean, T3_fixed_permutation, T4_drop_earliest, T5_drop_last]
+  temporal_permutation: [2, 0, 4, 1, 3]
+
+statistics:
+  bootstrap_replicates: 1000
+  confidence_level: 0.95
+  fdr_q: 0.05
+  matrix_sample_cap: 768
+  probe_projection_dimension: 128
+  bootstrap_seed: 44101
+  sample_selection_seed: 44201
+  probe_seed: 44301
+  negative_control_seed: 44401
+  random_counterfactual_seeds: [44501, 44502, 44503, 44504, 44505, 44506, 44507, 44508, 44509, 44510, 44511, 44512, 44513, 44514, 44515, 44516, 44517, 44518, 44519, 44520]
+
+probe:
+  model: logistic_regression
+  l2: 0.001
+  epochs: 20
+  batch_size: 8192
+  trajectory_cv_folds: 4
+  stability_epochs: 5
+  validation_evaluations: 1
+
+stability:
+  trajectory_direction_fraction: 0.75
+  rank_spearman: 0.5
+  top_feature_jaccard: 0.5
+  validation_trajectories_must_agree: true
+
+success:
+  layer_break_standardized_min: 0.2
+  route_pca_k: 16
+  alpha_star_median_max: 0.25
+  fusion_mask_count_min: 10
+  low_rank_k_max: 16
+  f2_pr_auc_lift_min: 0.05
+  top20_recall_lift_min: 0.05
+
+safety:
+  sensing_modalities: [image, lidar, radar, gps]
+  csi_used: false
+  channel_input_used: false
+  f1_used: false
+  outer_test_accessed: false
+  future_beam_power_role: label_side_evaluation_metric_only
+
+runtime:
+  device: cuda:0
+  analysis_device: cpu
+  knn_device: cuda:0
+  dataloader_workers: 8
+  cache_batch_size: 64
+  monitor_interval_seconds: 600
+
+output:
+  root: outputs/full_missing_hard_sample_geometry/trajectory_v1

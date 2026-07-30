@@ -1,0 +1,6 @@
+_base_: ../stage3.yaml
+experiment:
+  name: PCPF-T-A1-static-prior
+model:
+  primary:
+    fusion_mode: static_prior

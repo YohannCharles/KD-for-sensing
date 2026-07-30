@@ -1,0 +1,6 @@
+_base_: ../stage2.yaml
+experiment:
+  name: PCPF-T-A4-no-risk-supervision
+loss:
+  pcpf_temporal_risk:
+    risk_supervision_enabled: false

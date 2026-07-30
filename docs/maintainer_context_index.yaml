@@ -1,7 +1,7 @@
 schema_version: 1
 kind: maintainer_context_index
 purpose:
-  summary: 只路由 Clean MMW U0、两个保留 baseline、DeepSense6G 和数据隔离边界。
+  summary: 路由 PCPF-T 主线、稳定 baseline、正式 MMW protocol、DeepSense6G 与 CSI/TSPC 保留面。
 agent_context:
   root: docs/agent_context/README.md
 task_routes:
@@ -9,21 +9,23 @@ task_routes:
     context_path: docs/agent_context/models.md
     authority_paths:
       - openspec/specs/u0-mainline/spec.md
+      - openspec/changes/add-pcpf-temporal-risk-fusion/specs/pcpf-temporal-risk-fusion/spec.md
     owner_modules:
       - src/kd_sensing/models/
       - src/kd_sensing/losses/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_u_mask_beam_jepa.py tests/test_amber_full_architecture.py tests/test_component_registry.py -q
+      - conda run -n kd_mm_beam pytest tests/test_pcpf_temporal_transformer.py tests/test_pcpf_risk.py tests/test_pcpf_fusion.py tests/test_pcpf_loss.py tests/test_pcpf_stage_freezing.py tests/test_u_mask_beam_jepa.py tests/test_component_registry.py -q
   - id: data
     context_path: docs/agent_context/data.md
     authority_paths:
       - openspec/specs/clean-data-integrity/spec.md
+      - openspec/specs/mmw-trajectory-disjoint-protocol/spec.md
       - openspec/specs/repo-boundaries/spec.md
     owner_modules:
       - src/kd_sensing/data/
       - src/kd_sensing/engine/data_factory.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_clean_inner_protocol.py tests/test_train_only_normalization.py tests/test_deepsense6g_dataset.py -q
+      - conda run -n kd_mm_beam pytest tests/test_clean_inner_protocol.py tests/test_mmw_trajectory_split.py tests/test_train_only_normalization.py tests/test_deepsense6g_dataset.py -q
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:
@@ -33,6 +35,7 @@ task_routes:
       - src/kd_sensing/config/
       - configs/mmw/
       - configs/deepsense6g/
+      - tools/configs/pcpf/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
   - id: cli
@@ -54,7 +57,7 @@ task_routes:
       - src/kd_sensing/baselines/
       - tools/
       - scripts/lib/
-    notes: 本地实验面，不得扩展 public CLI 或 canonical recipe；共享工具与 Full-pool 协议常量以 src/kd_sensing/baselines/full_pool_common.py 为唯一来源。
+    notes: PCPF-T 是唯一 active research mainline；CSI/TSPC 与 trajectory baseline 保持本地研究面，不得扩展 public CLI 或 canonical recipe；共享 Full-pool 常量以 src/kd_sensing/baselines/full_pool_common.py 为唯一来源。
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_full_pool_bt_scl.py tests/test_full_pool_candidate12.py tests/test_full_pool_btma_ablation.py tests/test_missing_decision_adapter.py -q
       - conda run -n kd_mm_beam python scripts/verify_compile.py

@@ -187,7 +187,6 @@ def run_training_epoch_loop(
             state.history,
             epoch + 1,
             objective=objective,
-            tensorboard_cfg=cfg.get("output", {}).get("tensorboard", {}),
         )
         _write_tensorboard_method_scalars(tensorboard_writer, epoch_log, epoch + 1)
         last_checkpoint = checkpoint_manager.save_last_checkpoint(state=state, epoch=epoch, val_loss=val_loss)

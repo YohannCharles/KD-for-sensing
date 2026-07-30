@@ -13,7 +13,7 @@ from kd_sensing.engine.training_resume import (
 )
 from kd_sensing.engine.training_state import TrainingState
 from kd_sensing.utils.artifact_registry import gps_checkpoint_provenance
-from kd_sensing.utils.checkpoint import load_checkpoint, publish_checkpoint
+from kd_sensing.utils.checkpoint import checkpoint_sidecar_path, load_checkpoint, publish_checkpoint
 
 
 def checkpoint_strict(cfg: dict) -> bool:
@@ -96,7 +96,7 @@ class CheckpointManager:
         )
 
     def save_best_checkpoint(self, *, state: TrainingState, epoch: int, val_loss: float) -> Path:
-        return self._save_checkpoint(
+        path = self._save_checkpoint(
             state=state,
             epoch=epoch,
             val_loss=float(val_loss),
@@ -111,6 +111,10 @@ class CheckpointManager:
                 "epoch": int(epoch) + 1,
             },
         )
+        alias_name = getattr(self.primary_model, "validation_best_alias", None)
+        if callable(alias_name):
+            _publish_relative_alias(path, str(alias_name()))
+        return path
 
     def _save_checkpoint(
         self,
@@ -124,6 +128,7 @@ class CheckpointManager:
         checkpoint_policy: str,
         selection: dict[str, Any] | None = None,
     ) -> Path:
+        model_metadata = _model_checkpoint_metadata(self.primary_model)
         payload = {
             "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
             "checkpoint_role": role,
@@ -140,6 +145,7 @@ class CheckpointManager:
                 self.split_metadata,
                 self.normalization_artifacts,
             ),
+            "model_metadata": model_metadata,
             **gps_checkpoint_provenance(self.cfg),
         }
         if selection is not None:
@@ -157,6 +163,7 @@ class CheckpointManager:
                 "split_metadata": self.split_metadata,
                 "task": self.cfg.get("experiment", {}).get("task"),
                 "enabled_modalities": list(self.cfg.get("model", {}).get("primary", {}).get("modalities", ())),
+                "model_metadata": model_metadata,
                 **gps_checkpoint_provenance(self.cfg),
             },
         )
@@ -170,3 +177,27 @@ class CheckpointManager:
             extension_states=self.extension_states,
             training_state=state,
         )
+
+
+def _model_checkpoint_metadata(model: Any) -> dict[str, Any] | None:
+    provider = getattr(model, "checkpoint_metadata", None)
+    if callable(provider):
+        metadata = provider()
+        if not isinstance(metadata, dict):
+            raise TypeError("model.checkpoint_metadata() must return a mapping.")
+        return metadata
+    return None
+
+
+def _publish_relative_alias(checkpoint: Path, alias_name: str) -> None:
+    if not alias_name or Path(alias_name).name != alias_name:
+        raise ValueError("validation_best_alias() must return a filename without directories.")
+    alias = checkpoint.with_name(alias_name)
+    if alias == checkpoint:
+        return
+    alias.unlink(missing_ok=True)
+    alias.symlink_to(checkpoint.name)
+    source_sidecar = checkpoint_sidecar_path(checkpoint)
+    alias_sidecar = checkpoint_sidecar_path(alias)
+    alias_sidecar.unlink(missing_ok=True)
+    alias_sidecar.symlink_to(source_sidecar.name)

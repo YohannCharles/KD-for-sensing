@@ -23,6 +23,7 @@ from kd_sensing.config.parsing import safe_load_yaml
 from kd_sensing.data.mmw.trajectory_protocol import load_trajectory_protocol
 from kd_sensing.data.transform_ops.gps import load_gps_scaler
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
+
 if __package__:
     from .run_mmw_trajectory_baselines import ALL_PATTERNS, _fixed_loader, _inputs, build_config
     from .run_sparse_pilot_recovery import (
@@ -72,6 +73,18 @@ def parse_budget(value: str) -> tuple[int, int]:
     if patterns <= 0 or frequencies <= 0:
         raise ValueError("Pilot budget dimensions must be positive.")
     return patterns, frequencies
+
+
+def pilot_resource_accounting(task: str, budget: tuple[int, int]) -> dict[str, int]:
+    per_frame = int(budget[0]) * int(budget[1])
+    history_frames = int(TASKS[task]["history_length"])
+    total = per_frame * history_frames
+    return {
+        "pilot_re": total,
+        "pilot_re_per_frame": per_frame,
+        "pilot_history_frames": history_frames,
+        "pilot_re_total": total,
+    }
 
 
 def nested_frequency_indices(maximum: int, count: int) -> torch.Tensor:
@@ -178,9 +191,7 @@ def _extract_role(
                 chunks[f"p0_{name}"].append(output["logits"].float().softmax(dim=-1).cpu())
         current_power = torch.as_tensor(batch["current_beam_power"]).float()
         current_labels = current_power.argmax(dim=-1).long()
-        prepared_alias_mismatches += int(
-            torch.as_tensor(batch["prepared_beam_label"]).reshape(-1).long().ne(current_labels).sum().item()
-        )
+        prepared_alias_mismatches += int(torch.as_tensor(batch["prepared_beam_label"]).reshape(-1).long().ne(current_labels).sum().item())
         chunks["labels_current"].append(current_labels)
         chunks["labels_future"].append(torch.as_tensor(batch["target_beam"]).reshape(-1).long())
         chunks["current_beam_power"].append(current_power)
@@ -247,9 +258,7 @@ def prepare(args: argparse.Namespace, config: dict[str, Any]) -> None:
     )
     codebook_path = output_root / "pilot_codebook_32x16.npz"
     codebook.save(codebook_path)
-    subcarriers = pilot_subcarrier_indices(
-        int(pilot["num_subcarriers"]), int(pilot["max_pilot_subcarriers"])
-    )
+    subcarriers = pilot_subcarrier_indices(int(pilot["num_subcarriers"]), int(pilot["max_pilot_subcarriers"]))
     frequencies = frequency_offsets_hz(
         subcarriers,
         num_subcarriers=int(pilot["num_subcarriers"]),
@@ -356,9 +365,7 @@ def _task_records(
         "beam_power": power.repeat(len(names), 1),
         "sensing_feature": torch.cat([records[f"z_{name}"] for name in names]),
         "p0": torch.cat([records[f"p0_{name}"] for name in names]),
-        "is_full": torch.cat(
-            [torch.full((len(labels),), name == "full", dtype=torch.bool) for name in names]
-        ),
+        "is_full": torch.cat([torch.full((len(labels),), name == "full", dtype=torch.bool) for name in names]),
         "physical_sample_count": torch.tensor(len(labels)),
         "mask_names": names,
     }
@@ -375,9 +382,7 @@ def _batch_forward(
     candidates = batch["candidate_history"]
     expanded_snr = snr[:, None].expand(-1, candidates.shape[1])
     observations, valid = _noisy_observations(candidates, expanded_snr, generator=generator)
-    pattern_ids = torch.arange(candidates.shape[2], device=candidates.device).expand(
-        candidates.shape[0], candidates.shape[1], -1
-    )
+    pattern_ids = torch.arange(candidates.shape[2], device=candidates.device).expand(candidates.shape[0], candidates.shape[1], -1)
     return model(
         observations,
         pattern_ids,
@@ -405,11 +410,7 @@ def _predict_probabilities(
     generator = torch.Generator(device=device).manual_seed(100_000 + int(seed))
     for start in range(0, len(records["labels"]), int(batch_size)):
         stop = start + int(batch_size)
-        batch = {
-            key: value[start:stop].to(device)
-            for key, value in records.items()
-            if torch.is_tensor(value) and value.ndim > 0
-        }
+        batch = {key: value[start:stop].to(device) for key, value in records.items() if torch.is_tensor(value) and value.ndim > 0}
         snr = torch.full((len(batch["labels"]),), float(snr_db), device=device)
         output = _batch_forward(model, batch, frequencies=frequencies, snr=snr, generator=generator)
         probabilities.append(output["logits"].softmax(dim=-1).cpu())
@@ -451,10 +452,7 @@ def evaluate(
     for index, name in enumerate(records["mask_names"]):
         subset = slice(index * physical_count, (index + 1) * physical_count)
         per_mask.append(
-            {"mask": name}
-            | _prediction_metrics(
-                probs[subset], labels[subset], power[subset], base[subset] if base is not None else None
-            )
+            {"mask": name} | _prediction_metrics(probs[subset], labels[subset], power[subset], base[subset] if base is not None else None)
         )
     metric_names = (
         "top1",
@@ -468,10 +466,7 @@ def evaluate(
         "harm_rate",
         "p_final_p0_kl",
     )
-    aggregate = {
-        key: float(np.mean([float(row[key]) for row in per_mask if row[key] is not None]))
-        for key in metric_names
-    }
+    aggregate = {key: float(np.mean([float(row[key]) for row in per_mask if row[key] is not None])) for key in metric_names}
     return aggregate | {
         "validation_loss": loss,
         "worst_top1": min(float(row["top1"]) for row in per_mask),
@@ -502,10 +497,7 @@ def _aggregate_prediction_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, f
         "harm_rate",
         "p_final_p0_kl",
     )
-    return {
-        key: float(np.mean([float(row[key]) for row in rows if row.get(key) is not None]))
-        for key in metrics
-    }
+    return {key: float(np.mean([float(row[key]) for row in rows if row.get(key) is not None])) for key in metrics}
 
 
 def _validate_run(args: argparse.Namespace, config: Mapping[str, Any]) -> tuple[dict[str, Any], tuple[int, int], str]:
@@ -545,16 +537,12 @@ def _initialize_model(
         transferable = {
             key: value
             for key, value in state.items()
-            if key.startswith(prefixes)
-            and key in model.state_dict()
-            and model.state_dict()[key].shape == value.shape
+            if key.startswith(prefixes) and key in model.state_dict() and model.state_dict()[key].shape == value.shape
         }
         model.load_state_dict(transferable, strict=False)
         if not transferable:
             raise ValueError("Residual initialization did not find transferable CSI state.")
-        if bool(model.classifier[-1].weight.detach().count_nonzero()) or bool(
-            model.classifier[-1].bias.detach().count_nonzero()
-        ):
+        if bool(model.classifier[-1].weight.detach().count_nonzero()) or bool(model.classifier[-1].bias.detach().count_nonzero()):
             raise ValueError("Residual output layer must remain zero after initialization.")
         loaded = list(transferable)
         mode = "sparse_to_zero_residual_partial_state"
@@ -582,11 +570,10 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     train_raw = torch.load(args.output_root / "records/train.pt", map_location="cpu", weights_only=False)
-    validation_raw = torch.load(
-        args.output_root / "records/validation.pt", map_location="cpu", weights_only=False
-    )
+    validation_raw = torch.load(args.output_root / "records/validation.pt", map_location="cpu", weights_only=False)
     max_frequencies = int(config["pilot"]["max_pilot_subcarriers"])
     spec = TASKS[task]
+    resources = pilot_resource_accounting(task, budget)
     train_masks = (*SEVERE_MASKS, "full") if fusion_mode == "residual" else SEVERE_MASKS
     train_records = _task_records(
         train_raw,
@@ -613,11 +600,7 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         if spec["concat"]
         else None
     )
-    full_records = (
-        _task_records(validation_raw, task, budget, max_frequencies=max_frequencies, masks=("full",))
-        if spec["concat"]
-        else None
-    )
+    full_records = _task_records(validation_raw, task, budget, max_frequencies=max_frequencies, masks=("full",)) if spec["concat"] else None
     device = torch.device(args.device)
     model = SparsePilotInformationClassifier(
         history_length=int(spec["history_length"]),
@@ -634,16 +617,10 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         lr=float(training["learning_rate"]),
         weight_decay=float(training["weight_decay"]),
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=int(training["max_epochs"])
-    )
-    prepared = safe_load_yaml(
-        (args.output_root / "resolved_configs/prepare.yaml").read_text(encoding="utf-8")
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(training["max_epochs"]))
+    prepared = safe_load_yaml((args.output_root / "resolved_configs/prepare.yaml").read_text(encoding="utf-8"))
     frequency_indices = nested_frequency_indices(max_frequencies, budget[1])
-    frequencies = torch.tensor(prepared["runtime"]["frequency_positions_hz"], device=device).index_select(
-        0, frequency_indices.to(device)
-    )
+    frequencies = torch.tensor(prepared["runtime"]["frequency_positions_hz"], device=device).index_select(0, frequency_indices.to(device))
     resolved = prepared | {
         "training": dict(training),
         "run": {
@@ -651,14 +628,14 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
             "task": task,
             "seed": seed,
             "budget": args.budget,
-            "pilot_re": budget[0] * budget[1],
+            **resources,
             "fusion_mode": fusion_mode,
             "train_masks": list(train_masks) if spec["concat"] else [],
             "frequency_indices": frequency_indices.tolist(),
             "device": str(device),
             "initialization": initialization,
             **spec,
-        }
+        },
     }
     dump_config(resolved, round_root / "resolved_configs" / f"{stem}.yaml")
     history_rows: list[dict[str, Any]] = []
@@ -681,11 +658,7 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         seen = batches = 0
         for start in range(0, len(order), batch_size):
             indices = order[start : start + batch_size]
-            batch = {
-                key: value[indices].to(device)
-                for key, value in train_records.items()
-                if torch.is_tensor(value) and value.ndim > 0
-            }
+            batch = {key: value[indices].to(device) for key, value in train_records.items() if torch.is_tensor(value) and value.ndim > 0}
             snr = torch.empty(len(batch["labels"]), device=device).uniform_(
                 float(training["snr_db_min"]),
                 float(training["snr_db_max"]),
@@ -774,9 +747,7 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         }
         worst_improved = False
         for filename, (name, value, minimize) in selections.items():
-            improved = epoch == 1 or (
-                value is not None and (value < best[name] if minimize else value > best[name])
-            )
+            improved = epoch == 1 or (value is not None and (value < best[name] if minimize else value > best[name]))
             if improved:
                 if value is not None:
                     best[name] = value
@@ -795,9 +766,7 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         if patience_count >= int(training["patience"]):
             stop_reason = "early_stopping_patience"
             break
-    payload = torch.load(
-        checkpoint_dir / "best_single_worst.pt", map_location=device, weights_only=False
-    )
+    payload = torch.load(checkpoint_dir / "best_single_worst.pt", map_location=device, weights_only=False)
     model.load_state_dict(payload["model_state"])
     final_primary = evaluate(
         model,
@@ -839,7 +808,7 @@ def train(args: argparse.Namespace, config: dict[str, Any]) -> None:
         "task": task,
         "seed": seed,
         "budget": args.budget,
-        "pilot_re": budget[0] * budget[1],
+        **resources,
         "fusion_mode": fusion_mode,
         "initialization": initialization,
         "input_time": spec["input_time"],
@@ -874,14 +843,13 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
     if budget[0] > maximum[0] or budget[1] > maximum[1]:
         raise ValueError("Requested budget exceeds the prepared mother observation.")
     seed = int(args.seed)
+    resources = pilot_resource_accounting("I3", budget)
     round_root = args.output_root / args.round_name
     stem = f"seed{seed}_I3_{args.budget}_hard_fallback"
     result_path = round_root / "results" / f"{stem}.json"
     if result_path.exists() and not args.overwrite:
         raise FileExistsError(f"Trajectory fallback result already exists: {result_path}")
-    validation = torch.load(
-        args.output_root / "records/validation.pt", map_location="cpu", weights_only=False
-    )
+    validation = torch.load(args.output_root / "records/validation.pt", map_location="cpu", weights_only=False)
     records = _task_records(
         validation,
         "I3",
@@ -898,15 +866,9 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
         fusion_mode="replace",
     ).to(device)
     initialization = _initialize_model(model, args.init_checkpoint, fusion_mode="replace")
-    prepared = safe_load_yaml(
-        (args.output_root / "resolved_configs/prepare.yaml").read_text(encoding="utf-8")
-    )
-    frequency_indices = nested_frequency_indices(
-        int(config["pilot"]["max_pilot_subcarriers"]), budget[1]
-    )
-    frequencies = torch.tensor(
-        prepared["runtime"]["frequency_positions_hz"], device=device
-    ).index_select(0, frequency_indices.to(device))
+    prepared = safe_load_yaml((args.output_root / "resolved_configs/prepare.yaml").read_text(encoding="utf-8"))
+    frequency_indices = nested_frequency_indices(int(config["pilot"]["max_pilot_subcarriers"]), budget[1])
+    frequencies = torch.tensor(prepared["runtime"]["frequency_positions_hz"], device=device).index_select(0, frequency_indices.to(device))
     csi_probabilities, entropy = _predict_probabilities(
         model,
         records,
@@ -934,7 +896,7 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
         "task": "I3",
         "seed": seed,
         "budget": args.budget,
-        "pilot_re": budget[0] * budget[1],
+        **resources,
         "fusion_mode": "hard_fallback",
         "input_time": TASKS["I3"]["input_time"],
         "target_time": TASKS["I3"]["target_time"],
@@ -945,9 +907,7 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
         "stop_reason": "fixed_availability_integration",
         "outer_test_accessed": False,
         **single,
-        "validation_loss": float(
-            F.nll_loss(csi_probabilities.clamp_min(1e-12).log(), labels).item()
-        ),
+        "validation_loss": float(F.nll_loss(csi_probabilities.clamp_min(1e-12).log(), labels).item()),
         "q_entropy": float(entropy.mean().item()),
         "single_macro": single["top1"],
         "single_worst": min(float(row["top1"]) for row in singles),
@@ -959,9 +919,7 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
         "full_fix_rate": full["fix_rate"],
         "full_harm_rate": full["harm_rate"],
         "full_probability_max_abs_diff": float((full_final - full_base).abs().max().item()),
-        "full_argmax_mismatch": int(
-            (full_final.argmax(dim=-1) != full_base.argmax(dim=-1)).sum().item()
-        ),
+        "full_argmax_mismatch": int((full_final.argmax(dim=-1) != full_base.argmax(dim=-1)).sum().item()),
     }
     resolved = prepared | {
         "run": {
@@ -969,7 +927,7 @@ def integrate_fallback(args: argparse.Namespace, config: dict[str, Any]) -> None
             "task": "I3",
             "seed": seed,
             "budget": args.budget,
-            "pilot_re": budget[0] * budget[1],
+            **resources,
             "fusion_mode": "hard_fallback",
             "availability_rule": "csi_if_sensing_count_lte_2_else_m4",
             "frequency_indices": frequency_indices.tolist(),
@@ -993,6 +951,9 @@ def _baseline_row(records: Mapping[str, Any]) -> dict[str, Any]:
         "seed": "frozen",
         "budget": "0x0",
         "pilot_re": 0,
+        "pilot_re_per_frame": 0,
+        "pilot_history_frames": 0,
+        "pilot_re_total": 0,
         "fusion_mode": "frozen_m4",
         "top1": float(np.mean([row["top1"] for row in singles])),
         "top3": float(np.mean([row["top3"] for row in singles])),
@@ -1012,6 +973,182 @@ def _baseline_row(records: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _conditional_expert_metrics(
+    csi_probabilities: torch.Tensor,
+    sensing_probabilities: torch.Tensor,
+    labels: torch.Tensor,
+) -> dict[str, float]:
+    csi_correct = csi_probabilities.argmax(dim=-1).eq(labels)
+    sensing_correct = sensing_probabilities.argmax(dim=-1).eq(labels)
+    sensing_wrong = ~sensing_correct
+    csi_wrong = ~csi_correct
+    return {
+        "sensing_top1": float(sensing_correct.float().mean().item()),
+        "csi_top1": float(csi_correct.float().mean().item()),
+        "conditional_fix": float((csi_correct & sensing_wrong).sum().item() / sensing_wrong.sum().item()),
+        "conditional_harm": float((csi_wrong & sensing_correct).sum().item() / sensing_correct.sum().item()),
+        "oracle_top1": float((csi_correct | sensing_correct).float().mean().item()),
+        "error_overlap": float((csi_wrong & sensing_wrong).float().mean().item()),
+    }
+
+
+def _select_low_re_candidate(
+    candidates: Sequence[Mapping[str, Any]],
+    baseline: Mapping[str, Any],
+    *,
+    strength_margin: float = 0.005,
+    oracle_margin: float = 0.05,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    upper = float(baseline["all14_macro"]) - float(strength_margin)
+    lower = float(baseline["all14_worst"])
+    assessed: list[dict[str, Any]] = []
+    for source in candidates:
+        row = dict(source)
+        row["below_no_csi"] = float(row["csi_top1"]) <= upper
+        row["above_no_csi_worst"] = float(row["csi_top1"]) > lower
+        row["oracle_margin_passed"] = float(row["oracle_gain"]) >= float(oracle_margin)
+        row["eligible"] = bool(row["below_no_csi"] and row["above_no_csi_worst"] and row["oracle_margin_passed"])
+        assessed.append(row)
+    eligible = [row for row in assessed if row["eligible"]]
+    if not eligible:
+        return None, assessed
+    best_top1 = max(float(row["csi_top1"]) for row in eligible)
+    near_best = [row for row in eligible if float(row["csi_top1"]) >= best_top1 - 0.005]
+    selected = min(
+        near_best,
+        key=lambda row: (
+            int(row["pilot_re"]),
+            parse_budget(str(row["budget"]))[0],
+            -float(row["csi_top1"]),
+        ),
+    )
+    return selected, assessed
+
+
+def _select_equal_re_shape(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    top1_margin: float = 0.005,
+) -> dict[str, Any]:
+    if not candidates:
+        raise ValueError("Equal-RE shape selection requires at least one candidate.")
+    if len({int(row["pilot_re_total"]) for row in candidates}) != 1:
+        raise ValueError("Equal-RE shape selection requires one shared window budget.")
+    best_top1 = max(float(row["csi_top1"]) for row in candidates)
+    near_best = [row for row in candidates if float(row["csi_top1"]) >= best_top1 - top1_margin]
+    return dict(
+        min(
+            near_best,
+            key=lambda row: (
+                parse_budget(str(row["budget"]))[0],
+                -float(row["csi_top1"]),
+                str(row["budget"]),
+            ),
+        )
+    )
+
+
+def _low_re_candidate_analysis(
+    args: argparse.Namespace,
+    config: Mapping[str, Any],
+    validation: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    baseline: Mapping[str, Any],
+) -> dict[str, Any]:
+    if len({int(row["seed"]) for row in rows}) != 1:
+        raise ValueError("Low-RE anti-dominance selection is pre-registered for one seed.")
+    tasks = {str(row["task"]) for row in rows}
+    if len(tasks) != 1:
+        raise ValueError("Low-RE analysis requires exactly one CSI-only task.")
+    seed = int(rows[0]["seed"])
+    task = next(iter(tasks))
+    spec = TASKS[task]
+    if bool(spec["concat"]):
+        raise ValueError("Low-RE analysis requires a CSI-only task.")
+    device = torch.device(args.device)
+    max_frequencies = int(config["pilot"]["max_pilot_subcarriers"])
+    prepared = safe_load_yaml((args.output_root / "resolved_configs/prepare.yaml").read_text(encoding="utf-8"))
+    all_candidates: list[dict[str, Any]] = []
+    per_mask_rows: list[dict[str, Any]] = []
+    for row in rows:
+        budget_name = str(row["budget"])
+        budget = parse_budget(budget_name)
+        records = _task_records(
+            validation,
+            task,
+            budget,
+            max_frequencies=max_frequencies,
+        )
+        model = SparsePilotInformationClassifier(
+            history_length=int(spec["history_length"]),
+            sensing_dim=0,
+            hidden_dim=int(config["model"]["hidden_dim"]),
+            num_candidate_patterns=int(config["pilot"]["max_patterns"]),
+            encoder_layers=int(config["model"]["encoder_layers"]),
+            fusion_mode="replace",
+        ).to(device)
+        stem = f"seed{seed}_{task}_{budget_name}_replace"
+        checkpoint = args.output_root / args.round_name / "checkpoints" / stem / "best_single_worst.pt"
+        payload = torch.load(checkpoint, map_location=device, weights_only=False)
+        model.load_state_dict(payload["model_state"], strict=True)
+        frequency_indices = nested_frequency_indices(max_frequencies, budget[1])
+        frequencies = torch.tensor(prepared["runtime"]["frequency_positions_hz"], device=device).index_select(
+            0, frequency_indices.to(device)
+        )
+        probabilities, _ = _predict_probabilities(
+            model,
+            records,
+            frequencies=frequencies,
+            snr_db=float(config["training"]["validation_snr_db"]),
+            batch_size=int(config["training"]["batch_size"]),
+            device=device,
+            seed=seed,
+        )
+        csi_top1 = float(probabilities.argmax(dim=-1).eq(records["labels"]).float().mean().item())
+        if abs(csi_top1 - float(row["top1"])) > 1e-7:
+            raise ValueError(f"Low-RE prediction replay mismatch for {budget_name}: {csi_top1} vs {row['top1']}.")
+        mask_metrics = []
+        for mask_name in ALL_MISSING_MASKS:
+            metrics = _conditional_expert_metrics(
+                probabilities,
+                validation[f"p0_{mask_name}"],
+                validation["labels_future"],
+            )
+            item = {"budget": budget_name, **pilot_resource_accounting(task, budget), "mask": mask_name} | metrics
+            mask_metrics.append(item)
+            per_mask_rows.append(item)
+        candidate = {
+            "budget": budget_name,
+            **pilot_resource_accounting(task, budget),
+            "csi_top1": csi_top1,
+            "conditional_fix_macro": float(np.mean([item["conditional_fix"] for item in mask_metrics])),
+            "conditional_harm_macro": float(np.mean([item["conditional_harm"] for item in mask_metrics])),
+            "oracle_all14_macro": float(np.mean([item["oracle_top1"] for item in mask_metrics])),
+            "error_overlap_macro": float(np.mean([item["error_overlap"] for item in mask_metrics])),
+        }
+        candidate["oracle_gain"] = float(candidate["oracle_all14_macro"]) - float(baseline["all14_macro"])
+        all_candidates.append(candidate)
+    selected, assessed = _select_low_re_candidate(all_candidates, baseline)
+    round_root = args.output_root / args.round_name
+    _write_csv(round_root / "complementarity_per_mask.csv", per_mask_rows)
+    _write_csv(round_root / "anti_dominance_candidates.csv", assessed)
+    decision = {
+        "task": task,
+        "input_time": spec["input_time"],
+        "target_time": spec["target_time"],
+        "strength_margin": 0.005,
+        "oracle_margin": 0.05,
+        "candidates": assessed,
+        "feasible_budget_found": selected is not None,
+        "selected_budget": None if selected is None else selected["budget"],
+        "selected_pilot_re": None if selected is None else selected["pilot_re"],
+        "continue_to_1x2_1x1": bool(selected is None and any(row["budget"] == "2x2" and not row["below_no_csi"] for row in assessed)),
+    }
+    if selected is not None:
+        (round_root / "selected_budget.json").write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
+    return decision
+
+
 def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
     if args.round_name not in config["rounds"]:
         raise ValueError("Summarize mode requires a configured --round-name.")
@@ -1019,11 +1156,7 @@ def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
     budgets = list(round_cfg.get("budgets") or ([args.budget] if args.budget else []))
     if not budgets:
         raise ValueError("Round summary has no budget.")
-    seeds = (
-        [int(value) for value in args.seeds.split(",")]
-        if args.seeds
-        else [int(value) for value in config["training"]["seeds"]]
-    )
+    seeds = [int(value) for value in args.seeds.split(",")] if args.seeds else [int(value) for value in config["training"]["seeds"]]
     rows: list[dict[str, Any]] = []
     missing = []
     fusion = str(round_cfg["fusion_mode"])
@@ -1037,9 +1170,7 @@ def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
                     missing.append(str(path))
     if missing:
         raise FileNotFoundError("Missing round results:\n" + "\n".join(missing))
-    validation = torch.load(
-        args.output_root / "records/validation.pt", map_location="cpu", weights_only=False
-    )
+    validation = torch.load(args.output_root / "records/validation.pt", map_location="cpu", weights_only=False)
     baseline = _baseline_row(validation)
     csv_rows = [baseline]
     metrics = (
@@ -1079,6 +1210,23 @@ def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
     }
     if args.round_name == "round1_dense":
         decision["means"] = {row["task"]: {key: row.get(key) for key in metrics} for row in mean_rows}
+    elif args.round_name in {"round4_low_re", "round5_single_frame_4re", "round6_single_frame_20re"}:
+        candidate_analysis = _low_re_candidate_analysis(args, config, validation, rows, baseline)
+        if args.round_name == "round6_single_frame_20re":
+            selected = _select_equal_re_shape(candidate_analysis["candidates"])
+            candidate_analysis.update(
+                anti_dominance_feasible_budget_found=candidate_analysis["feasible_budget_found"],
+                anti_dominance_selected_budget=candidate_analysis["selected_budget"],
+                feasible_budget_found=True,
+                selected_budget=selected["budget"],
+                selected_pilot_re=selected["pilot_re_total"],
+                selection_rule="max_csi_top1_then_fewer_patterns_within_0.5pp",
+                continue_to_1x2_1x1=False,
+            )
+            (round_root / "selected_budget.json").write_text(
+                json.dumps(candidate_analysis, indent=2, sort_keys=True), encoding="utf-8"
+            )
+        decision.update(candidate_analysis)
     elif args.round_name == "round2_sparse":
         candidate_task = str(round_cfg["tasks"][0])
         candidates = [row for row in mean_rows if row["task"] == candidate_task]
@@ -1107,9 +1255,7 @@ def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
             selected_full_top1=baseline["full_top1"],
             full_catastrophic_regression=False,
         )
-        (round_root / "selected_budget.json").write_text(
-            json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        (round_root / "selected_budget.json").write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
     else:
         selected = next(row for row in mean_rows if row["task"] == round_cfg["tasks"][0])
         decision.update(
@@ -1125,16 +1271,12 @@ def summarize(args: argparse.Namespace, config: dict[str, Any]) -> None:
                 if row["task"] == round_cfg["tasks"][0]
             ),
         )
-    (round_root / "analysis.json").write_text(
-        json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    (round_root / "analysis.json").write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(decision, indent=2, sort_keys=True), flush=True)
 
 
 def _return_code_path(args: argparse.Namespace) -> Path | None:
-    if args.mode not in {"train", "integrate"} or not all(
-        (args.round_name, args.task, args.budget, args.seed)
-    ):
+    if args.mode not in {"train", "integrate"} or not all((args.round_name, args.task, args.budget, args.seed)):
         return None
     fusion = args.fusion_mode or "configured"
     return args.output_root / args.round_name / "return_codes" / f"seed{args.seed}_{args.task}_{args.budget}_{fusion}.txt"
@@ -1142,9 +1284,7 @@ def _return_code_path(args: argparse.Namespace) -> Path | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run trajectory-disjoint sparse-pilot recovery rounds.")
-    parser.add_argument(
-        "--mode", choices=("prepare", "train", "integrate", "summarize"), required=True
-    )
+    parser.add_argument("--mode", choices=("prepare", "train", "integrate", "summarize"), required=True)
     parser.add_argument(
         "--config",
         type=Path,
@@ -1152,7 +1292,15 @@ def main() -> None:
     )
     parser.add_argument("--output-root", type=Path)
     parser.add_argument(
-        "--round-name", choices=("round1_dense", "round2_sparse", "round3_fallback")
+        "--round-name",
+        choices=(
+            "round1_dense",
+            "round2_sparse",
+            "round3_fallback",
+            "round4_low_re",
+            "round5_single_frame_4re",
+            "round6_single_frame_20re",
+        ),
     )
     parser.add_argument("--task", choices=tuple(TASKS))
     parser.add_argument("--seed", type=int)

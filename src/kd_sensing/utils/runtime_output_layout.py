@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -24,41 +23,16 @@ PROTECTED_MAINLINE_PARTITIONS = (
 )
 
 
-@dataclass(frozen=True)
-class RuntimeOutputScope:
-    kind: str
-    slug: str
-    source: str
-
-    def to_metadata(self) -> dict[str, Any]:
-        return {"scope_kind": self.kind, "scope_slug": self.slug, "source": self.source}
-
-
 def canonical_runtime_partitions(outputs_root: str | Path = OUTPUT_ROOT) -> dict[str, str]:
     root = Path(outputs_root)
     return {name: str(root / name) for name in PROTECTED_MAINLINE_PARTITIONS}
 
 
-def runtime_output_scope_from_config(
-    cfg: Mapping[str, Any],
-    *,
-    purpose: str = "training",
-) -> RuntimeOutputScope | None:
-    del purpose
+def runtime_scope_metadata_from_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
     dataset = cfg.get("data", {}).get("dataset", {}) if isinstance(cfg.get("data"), Mapping) else {}
     if not isinstance(dataset, Mapping) or str(dataset.get("type", "mmw")) != "mmw":
-        return None
-    return RuntimeOutputScope(kind="mmw", slug="mmw", source="data.dataset.type")
-
-
-def runtime_scope_metadata_from_config(cfg: Mapping[str, Any], *, purpose: str = "training") -> dict[str, Any]:
-    scope = runtime_output_scope_from_config(cfg, purpose=purpose)
-    return scope.to_metadata() if scope is not None else {}
-
-
-def scoped_output_base(base: str | Path, cfg: Mapping[str, Any], *, purpose: str = "training") -> Path:
-    del cfg, purpose
-    return Path(base)
+        return {}
+    return {"scope_kind": "mmw", "scope_slug": "mmw", "source": "data.dataset.type"}
 
 
 def evaluation_study_id_from_config(cfg: Mapping[str, Any]) -> str:
@@ -133,14 +107,11 @@ __all__ = [
     "PARTITION_CLEANUP_MANIFESTS",
     "PARTITION_EVALUATIONS",
     "PROTECTED_MAINLINE_PARTITIONS",
-    "RuntimeOutputScope",
     "canonical_runtime_partitions",
     "evaluation_output_base",
     "evaluation_study_id_from_config",
     "is_default_outputs_root",
     "is_default_skipped_partition",
     "output_layout_summary",
-    "runtime_output_scope_from_config",
     "runtime_scope_metadata_from_config",
-    "scoped_output_base",
 ]

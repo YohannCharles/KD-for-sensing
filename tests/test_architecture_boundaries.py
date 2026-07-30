@@ -14,6 +14,8 @@ PUBLIC_SCRIPTS = {
 }
 RETAINED_SCRIPTS = {
     "audit_clean_inner_protocol.py",
+    "build_tspc_v2_report.py",
+    "evaluate_tspc_v2_all_masks.py",
     "eval_mmw_all_weather_matrix.py",
     "launch_mmw_all_weather_matrix.py",
     "summarize_mmw_all_weather_matrix.py",
@@ -77,13 +79,24 @@ def test_retired_u2_and_capacity_owners_are_absent():
     assert all(not (ROOT / path).exists() for path in RETIRED_OWNERS)
 
 
-def test_openspec_current_context_is_limited_to_the_u0_mainline() -> None:
+def test_openspec_current_context_is_scoped_to_pcpf_mainline() -> None:
     specs = {
         path.parent.name
         for path in (ROOT / "openspec/specs").glob("*/spec.md")
     }
+    active_changes = {
+        path.name
+        for path in (ROOT / "openspec/changes").iterdir()
+        if path.is_dir() and path.name != "archive"
+    }
 
-    assert specs == {"clean-data-integrity", "repo-boundaries", "u0-mainline"}
+    assert specs == {
+        "clean-data-integrity",
+        "mmw-trajectory-disjoint-protocol",
+        "repo-boundaries",
+        "u0-mainline",
+    }
+    assert active_changes == {"add-pcpf-temporal-risk-fusion"}
     assert not (ROOT / "openspec/changes/archive").exists()
 
 

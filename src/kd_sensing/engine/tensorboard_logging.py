@@ -22,7 +22,6 @@ def write_tensorboard_scalars(
     step: int,
     *,
     objective: str = "beam",
-    tensorboard_cfg: dict | None = None,  # noqa: ARG001
 ) -> None:
     if writer is None:
         return

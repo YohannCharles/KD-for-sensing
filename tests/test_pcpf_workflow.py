@@ -1,0 +1,156 @@
+import json
+from pathlib import Path
+
+import pytest
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+
+from kd_sensing.config import load_config
+from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion
+from kd_sensing.models.u_mask_beam_jepa import UMaskBeamJEPA
+from kd_sensing.registries import ENCODERS
+from kd_sensing.utils.checkpoint import checkpoint_file_digest
+
+
+@ENCODERS.register("pcpf_workflow_test_sequence", force=True)
+class _WorkflowSequenceEncoder(nn.Module):
+    def __init__(self, output_dim: int = 64, **_: object) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.scale = nn.Parameter(torch.ones(self.output_dim))
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        if value.ndim == 3:
+            scalar = value.float().mean(dim=-1, keepdim=True)
+        else:
+            scalar = value.float().flatten(start_dim=2).mean(dim=-1, keepdim=True)
+        return scalar * self.scale.view(1, 1, -1)
+
+
+class _WorkflowDataset(Dataset):
+    def __len__(self) -> int:
+        return 4
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        generator = torch.Generator().manual_seed(index)
+        return {
+            "image": torch.randn(5, 3, 8, 8, generator=generator),
+            "radar_ra": torch.randn(5, 1, 128, 64, generator=generator),
+            "radar_da": torch.randn(5, 1, 128, 64, generator=generator),
+            "gps": torch.randn(5, 3, generator=generator),
+            "lidar": torch.randn(5, 3, 8, 8, generator=generator),
+            "target_beam": torch.tensor([index]),
+        }
+
+
+def _encoders() -> dict[str, dict[str, object]]:
+    return {name: {"type": "pcpf_workflow_test_sequence", "output_dim": 64} for name in ("image", "radar", "gps", "lidar")}
+
+
+def _model(stage: str) -> PCPFTemporalRiskFusion:
+    return PCPFTemporalRiskFusion(
+        encoders=_encoders(),
+        training_stage=stage,
+        fusion_mode="uniform" if stage == "stage2_risk" else "pcpf_analytic",
+        temporal_transformer={"dropout": 0.0},
+    )
+
+
+def test_train_only_stage_preparation_fits_normalization_and_confidence(tmp_path) -> None:
+    model = _model("stage2_risk")
+    loader = DataLoader(_WorkflowDataset(), batch_size=2, shuffle=True)
+    cfg = {
+        "experiment": {"task": "fusion"},
+        "model": {"primary": {"training_stage": "stage2_risk"}},
+        "data": {"dataloader": {"train_batch_size": 2}},
+        "training": {"resume": False},
+        "loss": {
+            "pcpf_temporal_risk": {
+                "enabled": True,
+                "prototype_topology": "cyclic_index_v1",
+                "stage_preparation": {"enabled": True, "max_batches": 1, "smoke_only": True},
+            }
+        },
+    }
+
+    report = model.prepare_training_stage(
+        cfg=cfg,
+        train_loader=loader,
+        device=torch.device("cpu"),
+        run_dir=tmp_path,
+        non_blocking=False,
+    )
+
+    assert report["source_split"] == "inner_train"
+    assert report["outer_test_accessed"] is False
+    assert bool(model.risk_stats_fitted.item())
+    assert model.risk_component_count.gt(0).all()
+    assert model.train_confidence_count.gt(0).all()
+    assert model.train_confidence_p90.gt(0).all()
+
+
+def test_stage3_gate_binds_sha_unbounded_report_and_expert_fingerprint(tmp_path) -> None:
+    model = _model("stage3_fusion")
+    report = {
+        "stage2_gate_passed": True,
+        "claim_ineligible": True,
+        "outer_test_accessed": False,
+        "source_training_stage": "stage2_risk",
+        "bounded_evaluation": False,
+        "expert_fingerprint": model._expert_fingerprint(),
+    }
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    digest, _ = checkpoint_file_digest(path)
+    cfg = {
+        "training": {
+            "pcpf_stage2_gate": {
+                "report_path": str(path),
+                "sha256": digest,
+                "stage2_gate_passed": True,
+            }
+        }
+    }
+
+    model._validate_stage2_gate_binding(cfg)
+
+    report["expert_fingerprint"] = "0" * 64
+    path.write_text(json.dumps(report), encoding="utf-8")
+    cfg["training"]["pcpf_stage2_gate"]["sha256"] = checkpoint_file_digest(path)[0]
+    with pytest.raises(ValueError, match="expert fingerprint"):
+        model._validate_stage2_gate_binding(cfg)
+
+
+def test_u0_state_dict_remains_free_of_pcpf_owners() -> None:
+    model = UMaskBeamJEPA(
+        encoders=_encoders(),
+        temporal_pooling={"enabled": True, "type": "masked_mean"},
+    )
+    keys = set(model.state_dict())
+
+    assert not any(key.startswith("probability_head.") for key in keys)
+    assert "risk_coefficient_raw" not in keys
+    assert "temperature_raw" not in keys
+    assert "tau_raw" not in keys
+    assert "train_confidence_p90" not in keys
+
+
+def test_pcpf_config_keeps_image_profile_at_dataset_boundary() -> None:
+    cfg = load_config("tools/configs/pcpf/stage1.yaml")
+
+    assert cfg["data"]["dataset"]["image_profile"] == "rgb_imagenet"
+    assert "image_profile" not in cfg["model"]["primary"]
+
+
+def test_direct_router_control_allows_only_its_new_checkpoint_prefix() -> None:
+    cfg = load_config("tools/configs/pcpf/ablations/a2_direct_router_control.yaml")
+
+    initialization = cfg["training"]["initialization_checkpoint"]
+    assert initialization["allowed_missing_prefixes"] == ["direct_router"]
+
+
+def test_all_pcpf_templates_pass_strict_config_loading() -> None:
+    for path in sorted(Path("tools/configs/pcpf").rglob("*.yaml")):
+        cfg = load_config(path)
+        assert cfg["model"]["primary"]["type"] == "pcpf_temporal_risk_fusion"

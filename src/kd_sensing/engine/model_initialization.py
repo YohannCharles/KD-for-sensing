@@ -52,6 +52,9 @@ def initialize_model_from_checkpoint(
         required=False,
     )
     freeze_prefixes = _prefixes(request.get("freeze_prefixes", ()), field="freeze_prefixes", required=False)
+    expected_source_stage = request.get("expected_source_training_stage")
+    if expected_source_stage is not None:
+        expected_source_stage = _required_string(request, "expected_source_training_stage")
     _reject_overlapping_prefixes(required_prefixes, allowed_missing_prefixes)
 
     actual_sha256, checkpoint_size = checkpoint_file_digest(path)
@@ -74,6 +77,18 @@ def initialize_model_from_checkpoint(
             f"Initialization checkpoint schema mismatch for {path}: "
             f"expected={expected_schema!r}, actual={payload.get('checkpoint_schema_version')!r}."
         )
+    source_model_metadata = payload.get("model_metadata")
+    if expected_source_stage is not None:
+        if not isinstance(source_model_metadata, Mapping):
+            raise CheckpointLoadError(
+                f"Initialization checkpoint lacks model_metadata required for source stage validation: {path}."
+            )
+        actual_source_stage = source_model_metadata.get("training_stage")
+        if actual_source_stage != expected_source_stage:
+            raise CheckpointLoadError(
+                f"Initialization checkpoint training stage mismatch for {path}: "
+                f"expected={expected_source_stage!r}, actual={actual_source_stage!r}."
+            )
     source_state = payload.get("state_dict")
     if not isinstance(source_state, Mapping):
         raise CheckpointLoadError(f"Initialization checkpoint state_dict must be a mapping: {path}.")
@@ -127,6 +142,9 @@ def initialize_model_from_checkpoint(
         "allowed_missing_prefixes": list(allowed_missing_prefixes),
         "freeze_prefixes": list(freeze_prefixes),
         "frozen_parameter_count": len(frozen_parameter_names),
+        "source_training_stage": source_model_metadata.get("training_stage")
+        if isinstance(source_model_metadata, Mapping)
+        else None,
     }
 
 
