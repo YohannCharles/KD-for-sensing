@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from kd_sensing.engine import data_factory
 from kd_sensing.engine.data_factory import _build_pooled_domain_dataset
 from kd_sensing.engine.data_factory_scalers import fit_gps_scaler, gps_scaler_kwargs
 from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts, save_normalization_artifacts, validate_normalization_artifact_fingerprint
+from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 
 
 class _MMWLeaf(Dataset):
@@ -43,6 +45,8 @@ def test_gps_scaler_fits_train_only_and_round_trips(tmp_path: Path):
     np.testing.assert_allclose(train.gps_scaler.mean_, [2.0, 0.0, 1.0])
     assert test.gps_scaler is train.gps_scaler
     artifacts = save_normalization_artifacts({"train": SimpleNamespace(dataset=train)}, tmp_path / "run")
+    expected_sample_hash = hashlib.sha256(b"0\n1").hexdigest()
+    assert artifacts["metadata"]["sample_id_hash"] == expected_sample_hash
     assert artifacts["metadata"]["source_split"] == "train"
     assert artifacts["metadata"]["sample_id_hash"]
     assert Path(artifacts["metadata_sidecar"]).is_file()
@@ -53,12 +57,26 @@ def test_gps_scaler_fits_train_only_and_round_trips(tmp_path: Path):
         validate_normalization_artifact_fingerprint({"data": {"dataset": {"gps_feature_mode": "other"}}}, {"normalization_artifacts": artifacts})
 
 
-def test_clean_scaler_identity_mismatch_is_rejected(tmp_path: Path) -> None:
-    train = _MMWLeaf([1.0, 3.0], tmp_path / "inner_train.csv")
-    validation = _MMWLeaf([100.0], tmp_path / "inner_validation.csv")
+def test_trajectory_scaler_identity_mismatch_is_rejected(tmp_path: Path) -> None:
+    train = _MMWLeaf([1.0, 3.0], tmp_path / "train.csv")
+    validation = _MMWLeaf([100.0], tmp_path / "validation.csv")
+    manifest = tmp_path / "seed_0.json"
+    train.data_protocol_identity = {
+        "split_protocol": TRAJECTORY_PROTOCOL_MODE,
+        "protocol_version": 1,
+        "split_seed": 0,
+        "block_size": 128,
+        "split_manifest_hash": "b" * 64,
+        "data_source_hash": "c" * 64,
+        "window_config_hash": "d" * 64,
+        "weather_binding": True,
+        "split_manifest": str(manifest),
+        "protocol_fingerprint": "a" * 64,
+    }
     fit_gps_scaler(train, validation, source="train_split_streaming_fit")
     artifacts = save_normalization_artifacts({"train": SimpleNamespace(dataset=train)}, tmp_path / "run")
-    audit = tmp_path / "clean_split_audit.json"
+    expected_sample_hash = artifacts["metadata"]["sample_id_hash"]
+    audit = tmp_path / "seed_0_audit.json"
     audit.write_text(
         json.dumps(
             {
@@ -70,11 +88,29 @@ def test_clean_scaler_identity_mismatch_is_rejected(tmp_path: Path) -> None:
     )
     cfg = {
         "data": {"dataset": {"gps_feature_mode": "relative_polar"}},
-        "data_protocol": {"mode": "clean_inner_development", "audit_report": str(audit)},
+        "data_protocol": {
+            "mode": TRAJECTORY_PROTOCOL_MODE,
+            "protocol_id": TRAJECTORY_PROTOCOL_MODE,
+            "protocol_version": 1,
+            "split_seed": 0,
+            "block_size": 128,
+            "split_manifest_hash": "b" * 64,
+            "data_source_hash": "c" * 64,
+            "window_config_hash": "d" * 64,
+            "weather_binding": True,
+            "split_manifest": str(manifest),
+            "protocol_fingerprint": "a" * 64,
+            "audit_report": str(audit),
+        },
     }
 
     with pytest.raises(ValueError, match="sample identity"):
         validate_normalization_artifact_fingerprint(cfg, {"normalization_artifacts": artifacts})
+
+    report = json.loads(audit.read_text(encoding="utf-8"))
+    report["train_sample_id_hash"] = expected_sample_hash
+    audit.write_text(json.dumps(report), encoding="utf-8")
+    validate_normalization_artifact_fingerprint(cfg, {"normalization_artifacts": artifacts})
 
     np.testing.assert_allclose(train.gps_scaler.mean_, [2.0, 0.0, 1.0])
     np.testing.assert_allclose(validation.gps_scaler.mean_, [2.0, 0.0, 1.0])

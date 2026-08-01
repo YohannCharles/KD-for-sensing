@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and launch the three Clean MMW training routes."""
+"""Generate and launch retained MMW routes on one trajectory split."""
 
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from kd_sensing.config import dump_config, load_config
 from kd_sensing.config.io import deep_merge, load_config_source
-from kd_sensing.data.mmw.clean_protocol import (
-    audit_clean_inner_protocol,
-    load_clean_inner_protocol,
-    protocol_dataset_domains,
-    validate_clean_config_protocol,
+from kd_sensing.data.mmw.trajectory_protocol import (
+    TRAJECTORY_PROTOCOL_MODE,
+    TRAJECTORY_SPLIT_SEED,
+    bind_trajectory_config,
+    trajectory_audit_path,
+    trajectory_manifest_path,
+    validate_trajectory_config_protocol,
 )
 
 
@@ -29,7 +31,8 @@ METHOD_BASES = {
     "amber_full": "configs/mmw/amber_full.yaml",
     "rmbp_mm": "configs/mmw/rmbp_mm.yaml",
 }
-DEFAULT_OUTPUT_ROOT = "outputs/mmw_clean_u0"
+DEFAULT_OUTPUT_ROOT = "outputs/mmw_trajectory_u0"
+DEFAULT_PROTOCOL = trajectory_manifest_path(ROOT / "outputs", TRAJECTORY_SPLIT_SEED)
 
 
 def build_config(
@@ -37,35 +40,23 @@ def build_config(
     output_root: Path,
     *,
     protocol_path: Path,
-    audit_report: Path,
-    seed: int,
+    split_seed: int,
+    train_seed: int,
     epochs: int,
     batch_size: int,
     smoke: bool = False,
 ) -> dict[str, Any]:
-    """Build one train-only config from a retained route and audited protocol."""
+    """Build one train/validation config from a retained route and manifest."""
     if method not in METHOD_BASES:
-        raise ValueError(f"Unsupported Clean MMW method: {method}")
-    protocol = load_clean_inner_protocol(protocol_path)
-    _validate_audit_report(protocol_path, audit_report, protocol)
+        raise ValueError(f"Unsupported MMW method: {method}")
 
     cfg = _load_base_config(ROOT / METHOD_BASES[method])
     dataset = cfg.setdefault("data", {}).setdefault("dataset", {})
     dataset["type"] = "mmw"
-    dataset["domains"] = protocol_dataset_domains(protocol)
-    for domain in dataset["domains"]:
-        domain.pop("test_csv_name", None)
-    cfg["data_protocol"] = {
-        "mode": "clean_inner_development",
-        "path": str(protocol_path.resolve()),
-        "audit_report": str(audit_report.resolve()),
-        "protocol_id": protocol["protocol_id"],
-        "protocol_fingerprint": protocol["protocol_fingerprint"],
-        "train_role": "inner_train",
-        "validation_role": "inner_validation",
-        "outer_test_enabled": False,
-        "allow_confirmation_train": False,
-    }
+    cfg.setdefault("runtime", {})["evaluate_test_requested"] = False
+    cfg.setdefault("data", {}).update(split_protocol=TRAJECTORY_PROTOCOL_MODE, split_seed=int(split_seed))
+    cfg.setdefault("experiment", {}).update(name=method, seed=int(train_seed), train_seed=int(train_seed))
+    bind_trajectory_config(cfg, protocol_path)
 
     loader = cfg.setdefault("data", {}).setdefault("dataloader", {})
     loader.update(
@@ -78,10 +69,9 @@ def build_config(
     training = cfg.setdefault("training", {})
     training.update({"epochs": 1 if smoke else int(epochs), "max_epochs": 1 if smoke else int(epochs)})
     training["final_test"] = {"enabled": False}
-    cfg.setdefault("experiment", {}).update({"name": method, "seed": int(seed)})
     cfg["output"] = {
         "dir": str(output_root / method),
-        "run_name": f"seed{seed}",
+        "run_name": f"train_seed{train_seed}",
         "group_by_scene": False,
         "overwrite": False,
         "progress": {"enabled": False},
@@ -90,27 +80,27 @@ def build_config(
 
 
 def build_job_matrix(
-    methods: tuple[str, ...], seeds: tuple[int, ...], gpus: tuple[int, ...] | None, output_root: Path
+    methods: tuple[str, ...], train_seeds: tuple[int, ...], gpus: tuple[int, ...] | None, output_root: Path
 ) -> list[dict[str, Any]]:
     if not methods or len(set(methods)) != len(methods) or set(methods) - set(METHODS):
         raise ValueError(f"methods must be unique members of: {', '.join(METHODS)}")
-    if not seeds or len(set(seeds)) != len(seeds) or any(seed <= 0 for seed in seeds):
-        raise ValueError("seeds must be unique positive integers")
-    pairs = [(method, seed) for method in methods for seed in seeds]
+    if not train_seeds or len(set(train_seeds)) != len(train_seeds) or any(seed < 0 for seed in train_seeds):
+        raise ValueError("train seeds must be unique non-negative integers")
+    pairs = [(method, train_seed) for method in methods for train_seed in train_seeds]
     selected_gpus = tuple(range(len(pairs))) if gpus is None else gpus
     if len(selected_gpus) != len(pairs) or len(set(selected_gpus)) != len(selected_gpus) or any(gpu < 0 for gpu in selected_gpus):
         raise ValueError(f"provide {len(pairs)} unique non-negative GPU ids")
     return [
         {
             "method": method,
-            "seed": seed,
+            "train_seed": train_seed,
             "gpu": gpu,
-            "config_path": output_root / "generated_configs" / f"{method}_seed{seed}.yaml",
-            "log_path": output_root / "logs" / f"{method}_seed{seed}.log",
-            "run_dir": output_root / method / f"seed{seed}",
+            "config_path": output_root / "generated_configs" / f"{method}_train_seed{train_seed}.yaml",
+            "log_path": output_root / "logs" / f"{method}_train_seed{train_seed}.log",
+            "run_dir": output_root / method / f"train_seed{train_seed}",
             "status": "planned",
         }
-        for (method, seed), gpu in zip(pairs, selected_gpus)
+        for (method, train_seed), gpu in zip(pairs, selected_gpus)
     ]
 
 
@@ -124,12 +114,12 @@ def validate_job_targets(jobs: list[dict[str, Any]], manifest_path: Path) -> Non
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Launch the Clean MMW U0, AMBER, and RMBP routes.")
-    parser.add_argument("--protocol", required=True, help="Clean inner-development protocol YAML.")
-    parser.add_argument("--audit-report", required=True, help="Matching passed clean split audit JSON.")
+    parser = argparse.ArgumentParser(description="Launch MMW U0, AMBER, and RMBP on one trajectory split.")
+    parser.add_argument("--protocol", default=str(DEFAULT_PROTOCOL), help="MMW trajectory manifest JSON.")
+    parser.add_argument("--split-seed", type=int, default=TRAJECTORY_SPLIT_SEED)
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--methods", default=",".join(METHODS))
-    parser.add_argument("--seeds", default="1")
+    parser.add_argument("--train-seeds", default="0")
     parser.add_argument("--gpus")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -139,14 +129,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         methods = tuple(_csv(args.methods))
-        seeds = tuple(int(item) for item in _csv(args.seeds))
+        train_seeds = tuple(int(item) for item in _csv(args.train_seeds))
         gpus = None if args.gpus is None else tuple(int(item) for item in _csv(args.gpus))
         protocol_path = Path(args.protocol).resolve()
-        audit_report = Path(args.audit_report).resolve()
-        protocol = load_clean_inner_protocol(protocol_path)
-        _validate_audit_report(protocol_path, audit_report, protocol)
+        if protocol_path != trajectory_manifest_path(protocol_path.parents[2], args.split_seed):
+            raise ValueError("--protocol path and --split-seed do not identify the same trajectory manifest.")
+        if not trajectory_audit_path(protocol_path).is_file():
+            raise FileNotFoundError(f"MMW split audit is missing: {trajectory_audit_path(protocol_path)}")
         output_root = (ROOT / args.output_root).resolve()
-        jobs = build_job_matrix(methods, seeds, gpus, output_root)
+        jobs = build_job_matrix(methods, train_seeds, gpus, output_root)
         manifest_path = output_root / "jobs.json"
         validate_job_targets(jobs, manifest_path)
     except (FileNotFoundError, ValueError) as exc:
@@ -160,15 +151,15 @@ def main(argv: list[str] | None = None) -> int:
             job["method"],
             output_root,
             protocol_path=protocol_path,
-            audit_report=audit_report,
-            seed=int(job["seed"]),
+            split_seed=args.split_seed,
+            train_seed=int(job["train_seed"]),
             epochs=args.epochs,
             batch_size=args.batch_size,
             smoke=args.smoke,
         )
         dump_config(config, config_path)
         resolved = load_config(config_path)
-        validate_clean_config_protocol(resolved)
+        validate_trajectory_config_protocol(resolved)
         dump_config(resolved, config_path)
         for key in ("config_path", "log_path", "run_dir"):
             job[key] = str(Path(job[key]).relative_to(ROOT))
@@ -193,31 +184,6 @@ def _load_base_config(path: Path) -> dict[str, Any]:
             base_path = source.path.parent / base_path
         merged = deep_merge(merged, _load_base_config(base_path))
     return deep_merge(merged, payload)
-
-
-def _validate_audit_report(protocol_path: Path, audit_report: Path, protocol: Mapping[str, Any]) -> None:
-    if not audit_report.is_file():
-        raise FileNotFoundError(f"Clean split audit report is missing: {audit_report}")
-    actual = audit_clean_inner_protocol(protocol_path, fail_closed=True)
-    report = json.loads(audit_report.read_text(encoding="utf-8"))
-    if not isinstance(report, dict):
-        raise ValueError("Clean split audit report must be a JSON object.")
-    required = (
-        "audit_id",
-        "protocol_file_sha256",
-        "protocol_fingerprint",
-        "train_sample_id_hash",
-        "validation_sample_id_hash",
-        "pair_count",
-        "overlap_counts",
-        "failed_pairs",
-    )
-    if report.get("status") != "passed" or report.get("outer_test_accessed") is not False:
-        raise ValueError("Clean split audit report must be passed and must not access outer test.")
-    if any(report.get(key) != actual[key] for key in required):
-        raise ValueError("Clean split audit report does not match the supplied protocol.")
-    if protocol["protocol_fingerprint"] != actual["protocol_fingerprint"]:
-        raise ValueError("Clean protocol fingerprint changed during audit validation.")
 
 
 def _run_jobs(jobs: list[dict[str, Any]], manifest_path: Path) -> int:

@@ -14,6 +14,7 @@ import torch
 from kd_sensing.channel.pilot_cache import PilotCache, PilotCacheSpec
 from kd_sensing.channel.probe_codebook import load_probe_codebook
 from kd_sensing.channel.sparse_pilot_simulator import load_path_channel, simulate_candidate_pilots
+from kd_sensing.data.mmw.trajectory_protocol import split_cache_identity
 
 
 PCPF_SPARSE_CSI_MODALITY = "csi"
@@ -31,7 +32,7 @@ PCPF_SPARSE_CSI_SELECTION = {
 PCPF_SPARSE_CSI_SELECTION_SHA256 = hashlib.sha256(
     json.dumps(PCPF_SPARSE_CSI_SELECTION, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
-PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION = 1
+PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION = 3
 
 _CONFIG_FIELDS = {
     "enabled",
@@ -42,7 +43,12 @@ _CONFIG_FIELDS = {
     "selection_sha256",
     "packed_cache_path",
     "packed_cache_sha256",
+    "packed_cache_protocol_id",
     "packed_cache_protocol_fingerprint",
+    "packed_cache_manifest_version",
+    "packed_cache_split_seed",
+    "packed_cache_split_manifest",
+    "packed_cache_split_identity",
 }
 
 
@@ -112,20 +118,45 @@ class PCPFSparseCSISidecar:
         packed_fields = (
             raw.get("packed_cache_path"),
             raw.get("packed_cache_sha256"),
+            raw.get("packed_cache_protocol_id"),
             raw.get("packed_cache_protocol_fingerprint"),
+            raw.get("packed_cache_manifest_version"),
+            raw.get("packed_cache_split_seed"),
+            raw.get("packed_cache_split_manifest"),
+            raw.get("packed_cache_split_identity"),
         )
         if any(value is not None for value in packed_fields):
             if not all(value is not None for value in packed_fields):
                 raise ValueError(
-                    "PCPF sparse CSI packed cache requires path, SHA256, and protocol fingerprint together."
+                    "PCPF sparse CSI packed cache requires path, SHA256, protocol ID/fingerprint, "
+                    "manifest version, split seed, split manifest, and the full split identity together."
                 )
             packed_path = _required_file(packed_fields[0], "packed_cache_path")
             packed_sha256 = _required_sha256(packed_fields[1], "packed_cache_sha256")
+            protocol_id = str(packed_fields[2]).strip()
+            if not protocol_id:
+                raise ValueError("PCPF sparse CSI packed_cache_protocol_id must be non-empty.")
             protocol_fingerprint = _required_sha256(
-                packed_fields[2], "packed_cache_protocol_fingerprint"
+                packed_fields[3], "packed_cache_protocol_fingerprint"
             )
+            manifest_version = _required_nonnegative_int(
+                packed_fields[4], "packed_cache_manifest_version"
+            )
+            split_seed = _required_nonnegative_int(packed_fields[5], "packed_cache_split_seed")
+            split_manifest = str(Path(str(packed_fields[6])).resolve())
+            if not isinstance(packed_fields[7], Mapping):
+                raise ValueError("PCPF sparse CSI packed_cache_split_identity must be a mapping.")
+            cache_split_identity = split_cache_identity(packed_fields[7])
             metadata, frame_index, frames = _load_packed_cache(str(packed_path), packed_sha256)
-            self._validate_packed_cache(metadata, protocol_fingerprint)
+            self._validate_packed_cache(
+                metadata,
+                protocol_id,
+                protocol_fingerprint,
+                manifest_version,
+                split_seed,
+                split_manifest,
+                cache_split_identity,
+            )
             self._packed_cache_path = packed_path
             self._packed_cache_sha256 = packed_sha256
             self._packed_cache_metadata = metadata
@@ -168,7 +199,15 @@ class PCPFSparseCSISidecar:
             identity["packed_cache"] = {
                 "path": str(self._packed_cache_path),
                 "sha256": self._packed_cache_sha256,
+                "protocol_id": self._packed_cache_metadata["protocol_id"],
                 "protocol_fingerprint": self._packed_cache_metadata["protocol_fingerprint"],
+                "manifest_version": self._packed_cache_metadata["manifest_version"],
+                "split_seed": self._packed_cache_metadata["split_seed"],
+                "split_manifest": self._packed_cache_metadata["split_manifest"],
+                "split_identity": {
+                    key: self._packed_cache_metadata[key]
+                    for key in split_cache_identity(self._packed_cache_metadata)
+                },
                 "entry_count": self._packed_cache_metadata["entry_count"],
                 "strict": True,
             }
@@ -237,9 +276,22 @@ class PCPFSparseCSISidecar:
         *,
         protocol_id: str,
         protocol_fingerprint: str,
+        manifest_version: int,
+        split_seed: int,
+        split_manifest: str | Path,
+        split_identity: Mapping[str, Any],
         roles: Mapping[str, Mapping[str, int]],
     ) -> dict[str, Any]:
         fingerprint = _required_sha256(protocol_fingerprint, "packed_cache_protocol_fingerprint")
+        manifest_version = _required_nonnegative_int(manifest_version, "packed_cache_manifest_version")
+        split_seed = _required_nonnegative_int(split_seed, "packed_cache_split_seed")
+        split_manifest = str(Path(split_manifest).resolve())
+        cache_split_identity = split_cache_identity(split_identity)
+        if (
+            cache_split_identity["split_protocol"] != str(protocol_id)
+            or int(cache_split_identity["split_seed"]) != split_seed
+        ):
+            raise ValueError("PCPF sparse CSI packed cache split identity conflicts with protocol arguments.")
         paths = sorted(self._memory_cache)
         if not paths or set(paths) != set(self._cache_keys):
             raise ValueError("PCPF sparse CSI packed cache export requires complete prefilled frames and cache keys.")
@@ -255,8 +307,12 @@ class PCPFSparseCSISidecar:
         metadata = {
             "schema_version": PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION,
             "status": "passed",
+            **cache_split_identity,
             "protocol_id": str(protocol_id),
             "protocol_fingerprint": fingerprint,
+            "manifest_version": manifest_version,
+            "split_seed": split_seed,
+            "split_manifest": split_manifest,
             "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
             "codebook_hash": self.codebook.hash,
             "codebook_file_sha256": self.codebook_file_sha256,
@@ -264,6 +320,7 @@ class PCPFSparseCSISidecar:
             "cache_spec_sha256": self.cache_spec_sha256,
             "entry_count": len(paths),
             "roles": normalized_roles,
+            "test_evaluated": False,
             "outer_test_accessed": False,
         }
         values = np.stack([self._memory_cache[channel_path] for channel_path in paths]).astype(
@@ -298,16 +355,31 @@ class PCPFSparseCSISidecar:
             "metadata": metadata,
         }
 
-    def _validate_packed_cache(self, metadata: Mapping[str, Any], protocol_fingerprint: str) -> None:
+    def _validate_packed_cache(
+        self,
+        metadata: Mapping[str, Any],
+        protocol_id: str,
+        protocol_fingerprint: str,
+        manifest_version: int,
+        split_seed: int,
+        split_manifest: str,
+        cache_split_identity: Mapping[str, Any],
+    ) -> None:
         expected = {
             "schema_version": PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION,
             "status": "passed",
+            **split_cache_identity(cache_split_identity),
+            "protocol_id": protocol_id,
             "protocol_fingerprint": protocol_fingerprint,
+            "manifest_version": manifest_version,
+            "split_seed": split_seed,
+            "split_manifest": split_manifest,
             "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
             "codebook_hash": self.codebook.hash,
             "codebook_file_sha256": self.codebook_file_sha256,
             "cache_root": str(self.cache.root.resolve()),
             "cache_spec_sha256": self.cache_spec_sha256,
+            "test_evaluated": False,
             "outer_test_accessed": False,
         }
         mismatches = {
@@ -364,6 +436,16 @@ def _required_sha256(value: Any, field: str) -> str:
     normalized = str(value or "").strip().lower()
     if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
         raise ValueError(f"PCPF sparse CSI {field} must be a 64-character hexadecimal digest.")
+    return normalized
+
+
+def _required_nonnegative_int(value: Any, field: str) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"PCPF sparse CSI {field} must be a non-negative integer.") from error
+    if normalized < 0:
+        raise ValueError(f"PCPF sparse CSI {field} must be a non-negative integer.")
     return normalized
 
 

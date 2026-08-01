@@ -32,6 +32,20 @@ FUSION_MODES = (
 )
 RISK_COMPONENT_NAMES = ("var", "proto", "temp", "conflict")
 PCPF_SPARSE_CSI_MODALITY = "csi"
+PROTOCOL_LINEAGE_KEYS = (
+    "mode",
+    "protocol_id",
+    "protocol_fingerprint",
+    "audit_id",
+    "audit_sha256",
+    "split_seed",
+    "train_role",
+    "validation_role",
+    "train_sample_count",
+    "validation_sample_count",
+    "train_sample_id_hash",
+    "validation_sample_id_hash",
+)
 _FORBIDDEN_INPUT_KEYS = frozenset(
     {
         "channel",
@@ -202,6 +216,9 @@ class PCPFTemporalRiskFusion(nn.Module):
         fusion: Mapping[str, Any] | None = None,
         prototype_topology_id: str = "cyclic_index_v1",
         prototype_topology_permutation: list[int] | tuple[int, ...] | None = None,
+        prototype_topology_descriptor_sha256: str = "",
+        prototype_topology_audit_path: str = "",
+        prototype_topology_audit_sha256: str = "",
         consume_missing_modality_metadata: bool = True,
         image_channels: int = 3,
         radar_channels: int = 2,
@@ -405,6 +422,45 @@ class PCPFTemporalRiskFusion(nn.Module):
         )
         self.prototype_topology_id = topology
         self.prototype_topology_permutation = list(prototype_topology_permutation) if prototype_topology_permutation is not None else None
+        self.prototype_topology_descriptor_sha256 = str(prototype_topology_descriptor_sha256).strip().lower()
+        self.prototype_topology_audit_path = str(prototype_topology_audit_path).strip()
+        self.prototype_topology_audit_sha256 = str(prototype_topology_audit_sha256).strip().lower()
+        physical_values = (
+            self.prototype_topology_descriptor_sha256,
+            self.prototype_topology_audit_path,
+            self.prototype_topology_audit_sha256,
+        )
+        if topology == "ula_dft_phase_cycle_v1":
+            if not _is_sha256(self.prototype_topology_descriptor_sha256) or not _is_sha256(self.prototype_topology_audit_sha256):
+                raise ValueError("ULA-DFT topology requires descriptor and audit SHA256 provenance.")
+            if not self.prototype_topology_audit_path:
+                raise ValueError("ULA-DFT topology requires an audit path.")
+            audit_path = Path(self.prototype_topology_audit_path)
+            if not audit_path.is_file():
+                raise ValueError(f"ULA-DFT topology audit does not exist: {audit_path}.")
+            audit_sha256 = hashlib.sha256(audit_path.read_bytes()).hexdigest()
+            if audit_sha256 != self.prototype_topology_audit_sha256:
+                raise ValueError("ULA-DFT topology audit SHA256 does not match the configured provenance.")
+            try:
+                audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"ULA-DFT topology audit is unreadable: {audit_path}.") from exc
+            descriptor = audit.get("descriptor") if isinstance(audit, Mapping) else None
+            if not isinstance(descriptor, Mapping):
+                raise ValueError("ULA-DFT topology audit is missing its descriptor.")
+            descriptor_sha256 = hashlib.sha256(
+                json.dumps(dict(descriptor), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if (
+                descriptor_sha256 != self.prototype_topology_descriptor_sha256
+                or audit.get("descriptor_sha256") != descriptor_sha256
+                or descriptor.get("topology_id") != "ula_dft_phase_cycle_v1"
+                or descriptor.get("codebook_type") != "ula_dft"
+                or int(descriptor.get("num_beams", -1)) != self.num_classes
+            ):
+                raise ValueError("ULA-DFT topology audit descriptor does not match the configured model.")
+        elif any(physical_values):
+            raise ValueError(f"Prototype topology {topology!r} does not accept physical audit provenance.")
         self.register_buffer("topology_positions", positions.to(dtype=torch.float32))
 
         self.temperature_min = _positive(fusion_cfg.get("temperature_min", 0.05), "fusion.temperature_min")
@@ -641,6 +697,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             "feature_concatenation_before_risk": False,
             "prototype_bank_count": 1,
             "prototype_topology_id": self.prototype_topology_id,
+            "prototype_topology": self.prototype_topology_metadata(),
             "temporal_pooling_type": "shared_temporal_transformer",
             "temporal_pooling_param_count": self.temporal_transformer.parameter_count,
             "encoder_configs": self.encoder_configs,
@@ -650,6 +707,15 @@ class PCPFTemporalRiskFusion(nn.Module):
             "risk_stats_fitted": bool(self.risk_stats_fitted.item()),
             "static_capability_fitted": bool(self.static_capability_fitted.item()),
             "train_confidence_fitted": bool((self.train_confidence_count > 0).all().item()),
+        }
+
+    def prototype_topology_metadata(self) -> dict[str, Any]:
+        return {
+            "id": self.prototype_topology_id,
+            "descriptor_sha256": self.prototype_topology_descriptor_sha256,
+            "audit_path": self.prototype_topology_audit_path,
+            "audit_sha256": self.prototype_topology_audit_sha256,
+            "formal_r0_r7_eligible": self.prototype_topology_id == "ula_dft_phase_cycle_v1",
         }
 
     def checkpoint_metadata(self) -> dict[str, Any]:
@@ -886,6 +952,30 @@ class PCPFTemporalRiskFusion(nn.Module):
             raise ValueError("Stage 3 refuses a bounded Stage 2 gate report.")
         if report.get("expert_fingerprint") != self._expert_fingerprint():
             raise ValueError("Stage 2 gate report expert fingerprint does not match the initialized model.")
+        if _topology_identity(report.get("prototype_topology")) != _topology_identity(self.prototype_topology_metadata()):
+            raise ValueError("Stage 2 gate report topology provenance does not match the initialized model.")
+        protocol = cfg.get("data_protocol")
+        report_protocol = report.get("data_protocol")
+        if not isinstance(protocol, Mapping) or not isinstance(report_protocol, Mapping):
+            raise ValueError("Stage 2 gate report is missing data protocol provenance.")
+        if any(report_protocol.get(key) != protocol.get(key) for key in PROTOCOL_LINEAGE_KEYS):
+            raise ValueError("Stage 2 gate report data protocol does not match Stage 3.")
+        if (
+            report.get("source_split") != protocol.get("validation_role")
+            or report.get("train_confidence_source_split") != protocol.get("train_role")
+            or int(report.get("experiment_seed", -1)) != int(cfg.get("experiment", {}).get("seed", -2))
+        ):
+            raise ValueError("Stage 2 gate report split or seed lineage does not match Stage 3.")
+        identity = report.get("validation_identity")
+        if not isinstance(identity, Mapping) or (
+            int(identity.get("sample_count", -1)) != int(protocol.get("validation_sample_count", -2))
+            or identity.get("protocol_sample_id_sha256") != protocol.get("validation_sample_id_hash")
+            or identity.get("bound_sample_id_sha256") != protocol.get("validation_sample_id_hash")
+        ):
+            raise ValueError("Stage 2 gate report validation identity does not match Stage 3.")
+        initialization = cfg.get("training", {}).get("initialization_checkpoint")
+        if not isinstance(initialization, Mapping) or report.get("stage2_checkpoint_sha256") != initialization.get("sha256"):
+            raise ValueError("Stage 2 gate report checkpoint does not match Stage 3 initialization.")
 
     def _expert_fingerprint(self) -> str:
         digest = hashlib.sha256()
@@ -929,7 +1019,6 @@ class PCPFTemporalRiskFusion(nn.Module):
                 if parameters and not any(parameter.requires_grad for parameter in parameters):
                     module.eval()
         return self
-
     def _configure_training_stage(self) -> None:
         for parameter in self.parameters():
             parameter.requires_grad_(False)
@@ -1173,6 +1262,16 @@ class PCPFTemporalRiskFusion(nn.Module):
         if not bool(mask.any(dim=(1, 2)).all().item()):
             raise ValueError("PCPF-T requires at least one available temporal cell per sample.")
         return mask
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _topology_identity(value: Any) -> tuple[str, str, str]:
+    if not isinstance(value, Mapping):
+        return "", "", ""
+    return tuple(str(value.get(key, "")) for key in ("id", "descriptor_sha256", "audit_sha256"))
 
 
 def _repeat_csi_index_values(

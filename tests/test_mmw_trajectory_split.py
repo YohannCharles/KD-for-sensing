@@ -1,126 +1,394 @@
 import json
+from pathlib import Path
 
 import pandas as pd
+import pytest
+
+from kd_sensing.config import load_config
+from kd_sensing.data.mmw import trajectory_protocol as protocol_module
 from kd_sensing.data.mmw.trajectory_protocol import (
-    AUDIT_IDENTITIES,
-    assign_trajectory_groups,
-    audit_trajectory_splits,
+    CACHE_IDENTITY_FIELDS,
+    EXPECTED_WEATHERS,
+    SPLIT_RATIOS,
+    SPLIT_ROLES,
+    TRAJECTORY_PROTOCOL_MODE,
+    assign_mmw_blocks_stratified,
+    bind_trajectory_config,
+    build_trajectory_protocol,
+    load_trajectory_protocol,
     protocol_dataset_domains,
-    reconstruct_trajectory_groups,
-    split_group_counts,
+    trajectory_manifest_path,
+    validate_mmw_id_block_split,
+    validate_split_cache_identity,
+    validate_trajectory_protocol,
 )
 
 
-def _row(
-    *,
-    node: str,
-    agent: str,
-    frame: int,
-    radar: str,
-    bs_gps: str,
-    group: str = "",
-    split: str = "",
+SCENES = tuple(f"scene_{index}" for index in range(5))
+CAVS = ("cav_1", "cav_2")
+BLOCK_SIZE = 8
+BASE_FRAMES = BLOCK_SIZE * 6
+HISTORY_SPAN = 5
+SAMPLE_SPAN = HISTORY_SPAN + 1
+
+
+def _label(scene_index: int, cav_index: int, base_index: int) -> int:
+    return (7 * (base_index // BLOCK_SIZE) + 3 * scene_index + cav_index) % 16
+
+
+def _write_source_indexes(dataset_root: Path) -> None:
+    weather_offsets = {"foggy": 1_000, "rainy": 3_000, "sunny": 5_000}
+    for weather in EXPECTED_WEATHERS:
+        for scene_index, scene in enumerate(SCENES):
+            sequence_rows = []
+            frame_rows = []
+            for cav_index, cav in enumerate(CAVS):
+                physical_start = weather_offsets[weather] + scene_index * 500 + cav_index * 100
+                source_sequence_start = cav_index * (BASE_FRAMES - SAMPLE_SPAN + 1)
+                for base_index in range(BASE_FRAMES):
+                    frame_id = physical_start + base_index
+                    frame_rows.append(
+                        {
+                            "agent": cav,
+                            "condition": weather,
+                            "sensor_scenario": scene,
+                            "frame_id": frame_id,
+                            "beam_label": _label(scene_index, cav_index, base_index),
+                            "sample_id": f"{weather}:{scene}:{cav}:{frame_id}",
+                        }
+                    )
+                for window_start in range(BASE_FRAMES - SAMPLE_SPAN + 1):
+                    sequence_rows.append(
+                        _source_row(
+                            weather,
+                            scene,
+                            scene_index,
+                            cav,
+                            cav_index,
+                            physical_start,
+                            source_sequence_start,
+                            window_start,
+                        )
+                    )
+            sequence_path = (
+                dataset_root
+                / weather
+                / "Prepared"
+                / scene
+                / "splits"
+                / "h5p1_strict_v2"
+                / "all_sequences.csv"
+            )
+            sequence_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(sequence_rows).to_csv(sequence_path, index=False)
+            frame_path = dataset_root / weather / "Prepared" / scene / "manifests" / "frame_manifest.csv"
+            frame_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(frame_rows).to_csv(frame_path, index=False)
+
+
+def _source_row(
+    weather: str,
+    scene: str,
+    scene_index: int,
+    cav: str,
+    cav_index: int,
+    physical_start: int,
+    source_sequence_start: int,
+    window_start: int,
 ) -> dict[str, object]:
-    domain = "sunny/scene"
-    return {
-        "domain_id": domain,
-        "condition": "sunny",
-        "sensor_scenario": "scene",
-        "raw_trajectory_id": node,
-        "trajectory_group_id": group,
-        "scenario_execution_id": f"{domain}:{node}",
-        "agent": agent,
-        "window_start_frame": frame,
-        "window_end_frame": frame + 5,
-        "source_row_sha256": f"row-{node}-{frame}",
-        "sample_id": f"sample-{node}-{frame}",
-        "target_sample_id": f"target-{node}-{frame}",
-        "history_frame_ids_json": json.dumps([frame + offset for offset in range(5)]),
-        "future_frame_ids_json": json.dumps([frame + 5]),
-        "camera1": f"camera/{node}/{frame}.png",
-        "lidar1": f"lidar/{node}/{frame}.npy",
-        "radar1": radar,
-        "gps1": f"gps/{node}/{frame}.yaml",
-        "bs_gps1": bs_gps,
-        "future_csi1": f"channel/{node}/{frame}.txt",
-        "future_beam_label1": frame % 64,
-        "split": split,
+    history = [physical_start + window_start + offset for offset in range(HISTORY_SPAN)]
+    future = [physical_start + window_start + HISTORY_SPAN]
+    row: dict[str, object] = {
+        "agent": cav,
+        "condition": weather,
+        "sensor_scenario": scene,
+        "contiguous_segment_id": f"{weather}:{scene}:{cav}:segment_0000",
+        "seq_index": source_sequence_start + window_start,
+        "sample_id": f"{weather}:{scene}:{cav}:{history[-1]}",
+        "target_sample_id": f"{weather}:{scene}:{cav}:{future[0]}",
+        "history_frame_ids_json": json.dumps(history),
+        "future_frame_ids_json": json.dumps(future),
+        "future_beam_label1": _label(scene_index, cav_index, window_start + HISTORY_SPAN),
     }
+    for offset, frame_id in enumerate(history, start=1):
+        root = f"Sensor_Data/{scene}/{cav}/{frame_id:06d}"
+        row[f"camera{offset}"] = f"{root}_camera0.png"
+        row[f"lidar{offset}"] = f"{root}.pcd"
+        row[f"gps{offset}"] = f"{root}.yaml"
+        row[f"csi{offset}"] = f"Channel_Data/{scene}/{cav}/{frame_id:06d}_paths.npz"
+        row[f"beam{offset}"] = f"Prepared/{scene}/beam_power/{cav}/{frame_id:06d}.txt"
+    return row
 
 
-def test_shared_rsu_resources_merge_cavs_into_one_trajectory_group() -> None:
-    frame = pd.DataFrame(
+@pytest.fixture(scope="module")
+def built_protocol(tmp_path_factory) -> tuple[Path, dict[str, object]]:
+    root = tmp_path_factory.mktemp("mmw-id-block")
+    dataset_root = root / "MMW"
+    output_root = root / "outputs"
+    _write_source_indexes(dataset_root)
+    protocol = build_trajectory_protocol(
+        output_root,
+        dataset_root=dataset_root,
+        split_seed=0,
+        block_size=BLOCK_SIZE,
+    )
+    return trajectory_manifest_path(output_root, 0), protocol
+
+
+def _all_records(protocol: dict[str, object]) -> pd.DataFrame:
+    return pd.concat(
         [
-            _row(node="cav1", agent="1", frame=10, radar="rsu/shared.npy", bs_gps="rsu/shared.yaml"),
-            _row(node="cav2", agent="2", frame=20, radar="rsu/shared.npy", bs_gps="rsu/shared.yaml"),
-        ]
+            pd.read_csv(domain[f"{role}_split"], na_values="").fillna("")
+            for domain in protocol["domains"]
+            for role in SPLIT_ROLES
+        ],
+        ignore_index=True,
     )
 
-    groups, annotated = reconstruct_trajectory_groups(frame)
 
-    assert len(groups) == 1
-    assert groups[0]["cav_ids"] == "1|2"
-    assert annotated["trajectory_group_id"].nunique() == 1
+def _blocks(protocol: dict[str, object]) -> list[dict[str, object]]:
+    return [block for role in SPLIT_ROLES for block in protocol[f"{role}_blocks"]]
 
 
-def test_group_count_rules_and_assignment_are_deterministic() -> None:
-    assert split_group_counts(50) == (40, 5, 5)
-    assert split_group_counts(15) == (12, 2, 1)
-    groups = [
-        {
-            "trajectory_group_id": f"tg_{index}",
-            "weather": ("sunny", "rainy", "foggy")[index % 3],
-            "scenario": f"scene_{index % 5}",
-            "window_count": 100 + index,
+def test_seed_zero_manifest_is_byte_identical_and_order_independent(tmp_path: Path, monkeypatch) -> None:
+    dataset_root = tmp_path / "MMW"
+    output_root = tmp_path / "outputs"
+    _write_source_indexes(dataset_root)
+    build_trajectory_protocol(output_root, dataset_root=dataset_root, split_seed=0, block_size=BLOCK_SIZE)
+    path = trajectory_manifest_path(output_root, 0)
+    first = path.read_bytes()
+    original_discover = protocol_module._discover_sources
+
+    def reversed_discover(root: Path):
+        sequences, frames = original_discover(root)
+        return list(reversed(sequences)), list(reversed(frames))
+
+    monkeypatch.setattr(protocol_module, "_discover_sources", reversed_discover)
+    build_trajectory_protocol(
+        output_root,
+        dataset_root=dataset_root,
+        split_seed=0,
+        block_size=BLOCK_SIZE,
+        regenerate=True,
+    )
+
+    assert path.read_bytes() == first
+
+
+def test_different_split_seeds_change_assignment_and_keep_hard_constraints(built_protocol) -> None:
+    _path, protocol = built_protocol
+    blocks = _blocks(protocol)
+    assignments = [assign_mmw_blocks_stratified(blocks, split_seed=seed)[0] for seed in (0, 1)]
+
+    assert assignments[0] != assignments[1]
+    for assignment in assignments:
+        counts = {role: list(assignment.values()).count(role) for role in SPLIT_ROLES}
+        assert counts["train"] > max(counts["validation"], counts["test"])
+        for scene in SCENES:
+            for cav in CAVS:
+                ids = [block["block_id"] for block in blocks if block["scene_id"] == scene and block["cav_id"] == cav]
+                assert {assignment[block_id] for block_id in ids} == set(SPLIT_ROLES)
+
+
+def test_block_base_weather_raw_frame_and_window_invariants_pass(built_protocol) -> None:
+    _path, protocol = built_protocol
+    audit = validate_mmw_id_block_split(protocol, _all_records(protocol))
+
+    assert audit["status"] == "passed"
+    assert all(audit["checks"].values())
+    assert all(value == 0 for value in audit["raw_frame_overlap_counts"].values())
+    assert audit["window_errors"] == []
+
+
+def test_every_split_covers_all_scenes_and_trajectories(built_protocol) -> None:
+    _path, protocol = built_protocol
+    for role in SPLIT_ROLES:
+        blocks = protocol[f"{role}_blocks"]
+        assert {block["scene_id"] for block in blocks} == set(SCENES)
+        assert {(block["scene_id"], block["cav_id"]) for block in blocks} == {
+            (scene, cav) for scene in SCENES for cav in CAVS
         }
-        for index in range(15)
+
+
+def test_split_ratios_are_close_and_stratification_beats_contiguous_baseline(built_protocol) -> None:
+    _path, protocol = built_protocol
+    statistics = protocol["statistics"]
+
+    for measure in ("blocks", "base_frames", "weather_samples", "windows"):
+        ratios = statistics["ratios"][measure]
+        assert abs(ratios["train_ratio"] - SPLIT_RATIOS["train"]) <= 0.05
+        assert abs(ratios["validation_ratio"] - SPLIT_RATIOS["validation"]) <= 0.05
+        assert abs(ratios["test_ratio"] - SPLIT_RATIOS["test"]) <= 0.05
+    assert statistics["stratified_not_worse_than_contiguous"] is True
+    assert statistics["label_tv_sum"] < statistics["simple_contiguous_label_tv_sum"]
+
+
+def test_weather_and_window_corruption_are_rejected(built_protocol) -> None:
+    _path, protocol = built_protocol
+    records = _all_records(protocol)
+    broken_window = records.copy()
+    broken_window.loc[0, "future_frame_ids_json"] = json.dumps([99_999])
+    with pytest.raises(ValueError, match="window_crossing_or_order"):
+        validate_mmw_id_block_split(protocol, broken_window)
+
+    broken_role = records.copy()
+    broken_role.loc[0, "split"] = "validation" if records.loc[0, "split"] == "train" else "train"
+    with pytest.raises(ValueError, match="record_role"):
+        validate_mmw_id_block_split(protocol, broken_role)
+
+
+def test_legacy_manifest_and_cache_are_rejected(built_protocol) -> None:
+    _path, protocol = built_protocol
+    with pytest.raises(ValueError, match="Legacy manifests must be regenerated"):
+        validate_trajectory_protocol(
+            {"protocol": "mmw_trajectory_disjoint", "mode": "mmw_trajectory_disjoint"}
+        )
+    with pytest.raises(ValueError, match="Legacy or stale"):
+        validate_split_cache_identity({}, protocol)
+    identity = protocol_module.split_cache_identity(protocol)
+    assert set(identity) == set(CACHE_IDENTITY_FIELDS)
+    validate_split_cache_identity(identity, protocol)
+
+
+def test_changed_source_requires_explicit_regeneration(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "MMW"
+    output_root = tmp_path / "outputs"
+    _write_source_indexes(dataset_root)
+    build_trajectory_protocol(output_root, dataset_root=dataset_root, split_seed=0, block_size=BLOCK_SIZE)
+    source = next(dataset_root.glob("*/Prepared/*/manifests/frame_manifest.csv"))
+    source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing or changed"):
+        build_trajectory_protocol(output_root, dataset_root=dataset_root, split_seed=0, block_size=BLOCK_SIZE)
+
+
+def test_binding_defaults_to_train_validation_without_loading_test(built_protocol, monkeypatch) -> None:
+    path, _protocol = built_protocol
+    observed_roles = []
+    original = protocol_module._load_materialized_splits
+
+    def observe_roles(protocol, *, roles=SPLIT_ROLES):
+        observed_roles.append(tuple(roles))
+        return original(protocol, roles=roles)
+
+    monkeypatch.setattr(protocol_module, "_load_materialized_splits", observe_roles)
+    cfg = {
+        "experiment": {"seed": 0, "train_seed": 0},
+        "runtime": {"evaluate_test_requested": False},
+        "data": {
+            "split_protocol": TRAJECTORY_PROTOCOL_MODE,
+            "split_seed": 0,
+            "block_size": BLOCK_SIZE,
+            "split_ratios": dict(SPLIT_RATIOS),
+            "dataset": {},
+        },
+        "training": {},
+    }
+
+    bind_trajectory_config(cfg, path)
+
+    assert observed_roles and all(roles == ("train", "validation") for roles in observed_roles)
+    assert cfg["training"]["final_test"] == {"enabled": False}
+    assert cfg["data_protocol"]["test_evaluated"] is False
+    assert all("test_csv_name" in domain for domain in protocol_dataset_domains(_protocol))
+
+
+def test_explicit_test_binding_loads_test_and_records_authorization(built_protocol, monkeypatch) -> None:
+    path, _protocol = built_protocol
+    observed_roles = []
+    original = protocol_module._load_materialized_splits
+
+    def observe_roles(protocol, *, roles=SPLIT_ROLES):
+        observed_roles.append(tuple(roles))
+        return original(protocol, roles=roles)
+
+    monkeypatch.setattr(protocol_module, "_load_materialized_splits", observe_roles)
+    cfg = {
+        "experiment": {"seed": 0, "train_seed": 0},
+        "runtime": {"evaluate_test_requested": True},
+        "data": {
+            "split_protocol": TRAJECTORY_PROTOCOL_MODE,
+            "split_seed": 0,
+            "block_size": BLOCK_SIZE,
+            "split_ratios": dict(SPLIT_RATIOS),
+            "dataset": {},
+        },
+        "training": {},
+    }
+
+    bind_trajectory_config(cfg, path)
+
+    assert observed_roles and all(roles == SPLIT_ROLES for roles in observed_roles)
+    assert cfg["training"]["final_test"] == {"enabled": True}
+    assert cfg["data_protocol"]["test_evaluated"] is True
+
+
+def test_split_seed_and_train_seed_are_independent(built_protocol) -> None:
+    path, protocol = built_protocol
+    fingerprints = []
+    for train_seed in (0, 17):
+        cfg = {
+            "experiment": {"seed": train_seed, "train_seed": train_seed},
+            "runtime": {"evaluate_test_requested": False},
+            "data": {
+                "split_protocol": TRAJECTORY_PROTOCOL_MODE,
+                "split_seed": 0,
+                "block_size": BLOCK_SIZE,
+                "split_ratios": dict(SPLIT_RATIOS),
+                "dataset": {},
+            },
+            "training": {},
+        }
+        bind_trajectory_config(cfg, path)
+        fingerprints.append(cfg["data_protocol"]["protocol_fingerprint"])
+        assert cfg["data_protocol"]["train_seed"] == train_seed
+
+    assert fingerprints == [protocol["protocol_fingerprint"]] * 2
+
+
+def test_too_few_blocks_and_weather_misalignment_fail_without_fallback(tmp_path: Path) -> None:
+    short_blocks = [
+        {
+            "block_id": f"scene_0::cav_1::{index}",
+            "scene_id": "scene_0",
+            "cav_id": "cav_1",
+            "block_start_base_index": index * 8,
+            "num_windows_estimated": 3,
+            "window_beam_histogram": [3] + [0] * 63,
+        }
+        for index in range(2)
     ]
-    first, _ = assign_trajectory_groups(groups)
-    second, _ = assign_trajectory_groups(groups)
-    assert first == second
-    assert {role: list(first.values()).count(role) for role in ("train", "validation", "test")} == {
-        "train": 12,
-        "validation": 2,
-        "test": 1,
-    }
+    with pytest.raises(ValueError, match="at least three blocks.*scene_0/cav_1=2"):
+        assign_mmw_blocks_stratified(short_blocks, split_seed=0)
+
+    dataset_root = tmp_path / "MMW"
+    _write_source_indexes(dataset_root)
+    frame_path = dataset_root / "rainy" / "Prepared" / SCENES[0] / "manifests" / "frame_manifest.csv"
+    frame = pd.read_csv(frame_path)
+    frame.loc[(frame["agent"] == CAVS[0]) & (frame.index == 0), "beam_label"] = 63
+    frame.to_csv(frame_path, index=False)
+    with pytest.raises(ValueError, match="weather copies disagree on beam labels"):
+        build_trajectory_protocol(
+            tmp_path / "outputs",
+            dataset_root=dataset_root,
+            split_seed=0,
+            block_size=BLOCK_SIZE,
+        )
 
 
-def test_pairwise_audit_covers_every_identity_and_detects_shared_resource() -> None:
-    frames = {
-        "train": pd.DataFrame([_row(node="a", agent="1", frame=0, radar="rsu/a.npy", bs_gps="rsu/a.yaml", group="ga")]),
-        "validation": pd.DataFrame([_row(node="b", agent="2", frame=20, radar="rsu/b.npy", bs_gps="rsu/b.yaml", group="gb")]),
-        "test": pd.DataFrame([_row(node="c", agent="3", frame=40, radar="rsu/c.npy", bs_gps="rsu/c.yaml", group="gc")]),
-    }
-    passed = audit_trajectory_splits(frames)
-    assert passed["status"] == "passed"
-    assert all(set(values) == set(AUDIT_IDENTITIES) for values in passed["pairwise_overlaps"].values())
+def test_canonical_config_uses_seed_zero_block_protocol() -> None:
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs/mmw/u0.yaml")
 
-    frames["validation"].loc[0, "radar1"] = frames["train"].loc[0, "radar1"]
-    failed = audit_trajectory_splits(frames)
-    assert failed["status"] == "failed"
-    assert failed["pairwise_overlaps"]["train_vs_validation"]["radar_resource"]["count"] == 1
+    assert cfg["data"]["split_protocol"] == TRAJECTORY_PROTOCOL_MODE
+    assert cfg["data"]["split_seed"] == cfg["experiment"]["train_seed"] == 0
+    assert cfg["data"]["block_size"] == 128
+    assert cfg["data"]["split_ratios"] == SPLIT_RATIOS
+    assert cfg["training"]["final_test"] == {"enabled": False}
 
 
-def test_test_csv_is_sealed_by_default() -> None:
-    protocol = {
-        "domains": [
-            {
-                "id": "sunny/train",
-                "condition": "sunny",
-                "scene": "train",
-                "data_root": "/data/sunny",
-                "train_split": "/splits/train.csv",
-            },
-            {
-                "id": "rainy/test",
-                "condition": "rainy",
-                "scene": "test",
-                "data_root": "/data/rainy",
-                "test_split": "/splits/test.csv",
-            },
-        ]
-    }
-    ordinary = protocol_dataset_domains(protocol)
-    authorized = protocol_dataset_domains(protocol, allow_test_evaluation=True)
-    assert not any("test_csv_name" in domain for domain in ordinary)
-    assert authorized[1]["test_csv_name"] == "/splits/test.csv"
+def test_manifest_reuse_validates_all_sources_and_splits(built_protocol) -> None:
+    path, protocol = built_protocol
+
+    loaded = load_trajectory_protocol(path)
+
+    assert loaded["protocol_fingerprint"] == protocol["protocol_fingerprint"]

@@ -44,7 +44,7 @@
 
 - [x] 7.1 为三个历史 active change 写入真实 closure note，并保存仓库外快照；不把未完成任务伪装为完成
 - [x] 7.2 从当前工作树移除已停止且孤立的 probabilistic prototype owner
-- [x] 7.3 保留并验证 U0、AMBER-Full、RMBP-MM、DeepSense6G、clean/trajectory protocol 与全部 cache 边界
+- [x] 7.3 保留并验证 U0、AMBER-Full、RMBP-MM、DeepSense6G、当前 trajectory protocol 与全部 cache 边界
 - [x] 7.4 更新 current specs、README、agent navigation、maintainer context 和 architecture boundary，使 PCPF-T 成为唯一 active research mainline
 - [x] 7.5 成组移除已停止且无保留路线反向依赖的 SMSL R5、CPSU、Router observability/conformal 与 BTMA closure owner，并删除根目录原始 PCPF 提示和汇报 PDF
 
@@ -52,15 +52,15 @@
 
 - [x] 8.1 将风险 normalization std floor 固定为 `0.01`，同步正式配置与模型默认值
 - [x] 8.2 增加退化 `U_var` preparation 后单优化步回归测试，并完成 focused/OpenSpec 验证
-- [x] 8.3 补齐 15-mask matrix 的 checkpoint、clean protocol、gate 与 normalization provenance，并增加聚焦回归测试
+- [x] 8.3 补齐 15-mask matrix 的 checkpoint、数据 protocol、gate 与 normalization provenance，并增加聚焦回归测试
 - [x] 8.4 让 A0--A3 control 在同一次 A4 forward 上应用各自 validation-best 参数，记录 control provenance 并完成 seed1 公平矩阵
 
 ## 9. 历史 sparse CSI 数据契约
 
-- [x] 9.1 审计 PCPF-T sparse-CSI、clean-inner/trajectory split、历史 channel 时间顺序、固定 2x2 selection、codebook/checkpoint identity，并记录 `docs/pcpf_sparse_csi/source_audit.md`
-- [x] 9.2 实现 clean-inner 样本自身五帧历史 channel 到 `[5,2,2]` complex sparse CSI 的确定性 sidecar/cache，写出 selection/codebook/frequency/history provenance
+- [x] 9.1 审计 PCPF-T sparse-CSI、旧协议污染风险、历史 channel 时间顺序、固定 2x2 selection、codebook/checkpoint identity，并记录 `docs/pcpf_sparse_csi/source_audit.md`
+- [x] 9.2 实现 trajectory 样本自身五帧历史 channel 到 `[5,2,2]` complex sparse CSI 的确定性 sidecar/cache，写出 selection/codebook/frequency/history provenance
 - [x] 9.3 让 SparsePilotEncoder 在真实 SNR 缺失时显式工作并输出 `snr_available=false`；禁止 AWGN、dropout、corruption 和伪造 SNR
-- [x] 9.4 将 sparse-CSI 正式数据绑定迁移到 `mmw_trajectory_disjoint_v1` 的 37,510/6,365 train/validation，复用 train-only GPS scaler并拒绝 outer test
+- [x] 9.4 将 sparse-CSI 数据绑定迁移到当时的 `mmw_trajectory_disjoint` seed manifest；该绑定现已由第 20 节的新协议替代
 - [x] 9.5 在训练前扫描 trajectory train/validation 补齐固定 2x2 CSI cache，保存协议、样本数、唯一 channel 数与 `outer_test_accessed=false` 清单
 
 ## 10. 五模态模型与初始化
@@ -70,7 +70,7 @@
 - [x] 10.3 删除四转五 checkpoint 迁移，trajectory sparse-CSI Stage 1 只允许 fresh start
 - [x] 10.4 实现确定性等频 31-subset 训练 schedule、逐 epoch mask 计数和相同缺失 mask 的五路传播
 - [x] 10.5 增加本地 sparse-CSI Stage 1/2/3、R0--R7 与 gate 配置，不扩大 canonical recipe 或公共 CLI
-- [x] 10.6 禁止用与 trajectory validation 重叠的 clean-inner checkpoint 初始化，允许 trajectory sparse-CSI Stage 1 fresh start，并对后续 checkpoint 保持同协议校验
+- [x] 10.6 禁止用任何旧 split checkpoint 初始化，允许 trajectory sparse-CSI Stage 1 fresh start，并对后续 checkpoint 保持同协议校验
 
 ## 11. 五模态评估与机制诊断
 
@@ -83,7 +83,7 @@
 - [x] 12.1 使用 `conda run -n kd_mm_beam pytest` 覆盖固定 CSI selection/复数/SNR 缺失、五模态 shape/mask/risk/weight、31-subset 等频和 fresh-start 约束
 - [x] 12.2 覆盖 time-order/split/resource 泄漏拒绝、禁止输入/噪声拒绝、四模态 checkpoint/forward 数值回归与 U0/CSI-TSPC 隔离
 - [x] 12.3 完成 synthetic 与真实 MMW 单 batch Stage 1/2/3 smoke，记录 shape、loss、梯度、mask 计数、NaN/Inf 和 GPU peak memory
-- [x] 12.4 在 trajectory 37,510/6,365 binding 上完成 fresh-start 五模态真实单 batch Stage 1/2/3 CUDA smoke，并核验同协议 checkpoint provenance
+- [x] 12.4 在当时绑定的 trajectory train/validation 上完成 fresh-start 五模态真实单 batch Stage 1/2/3 CUDA smoke，并核验同协议 checkpoint provenance
 
 ## 13. 主线源码收缩
 
@@ -98,3 +98,55 @@
 - [x] 14.2 在 resolver 中恢复 RGB/LiDAR/GPS 严格缓存绑定，将 sparse-CSI 默认 batch 调整为 64、workers 调整为 8
 - [x] 14.3 增加 packed cache、配置绑定和 fail-closed 回归测试，完成 focused、compile 与 strict OpenSpec 验证
 - [x] 14.4 重建 trajectory cache bundle，完成真实 CUDA batch 64 显存/吞吐 smoke，并在新目录 fresh start Stage 1
+
+## 15. trajectory 证据链纠偏与真实 R0
+
+- [x] 15.1 在 proposal 与 `mmw-trajectory-disjoint-protocol` delta 中声明 channel 默认仅用于审计，并将严格同样本历史 sparse CSI 定义为 PCPF-T 唯一 opt-in 例外；在 design 中收敛 topology 证据边界并完成 change strict validation
+- [x] 15.2 修正 validation/trajectory provenance：从绑定的 `data_protocol` 写出真实 train/validation role、protocol fingerprint、validation identity/count/order/seed 与 `outer_test_accessed=false`，并让 pooled validation、Stage 2 gate 和 R0--R7 matrix 拒绝 `splits.test` 或硬编码的旧 role
+- [x] 15.3 撤销旧 `mmw_trajectory_disjoint` 32,235/14,625 上的四模态真实 R0 长训练；该协议已失效且本轮明确禁止长训练，后续 R0 必须等待第 20 节新 manifest
+- [x] 15.4 落实经审计的 ULA-DFT topology descriptor：以稳定 ID/SHA256 绑定 tracked/resolved config、checkpoint、gate 与 matrix provenance，并在缺失或不匹配时失败关闭；当前 `cyclic_index_v1` 运行保持 `claim_ineligible` 且不得进入正式 R0--R7 或归档证据
+- [x] 15.5 增加 pooled validation、trajectory gate、真实 R0、sparse-CSI/protocol metadata 的 focused 回归测试，并运行相关 `conda run -n kd_mm_beam pytest`、`make verify-quick`、`make verify-cli-config` 与 `make verify-compile`
+- [x] 15.6 运行 `openspec validate --all --strict`、`make verify-full` 和 `conda run -n kd_mm_beam pytest -q`，核对工作树不包含本地数据、运行产物、日志或 checkpoint 后再评估归档
+
+## 16. trajectory 数据画像与改进证据
+
+- [x] 16.1 在 proposal、design 与 trajectory delta spec 中定义 train/validation-only dataset audit、diagnostic-only 字段、group-aware 统计和 ignored artifact 边界
+- [x] 16.2 实现 protocol/audit/hash fail-closed 的本地分析工具，覆盖组成、跨天气轨迹内容配对、标签、时序、几何、beam-power、四模态与 sparse-CSI 质量/shift
+- [x] 16.3 实现唯一资源去重、跨 split 配对签名重合、确定性时序签名和固定预算 trajectory-group/scenario-LOO/weather-LOO diagnostic probe，不使用 validation 选择分析配置
+- [x] 16.4 增加 sealed-test 不可读、hash/count 拒绝、circular transition、train-only 拟合、确定性输出与坏资源定位测试
+- [x] 16.5 对当时绑定的 trajectory split 全量运行，生成机器可读表、图表和引用证据的中文改进优先级报告，核验 `outer_test_accessed=false`；协议迁移后旧报告仅作历史开发记录
+- [x] 16.6 运行 focused tests、`openspec validate add-pcpf-temporal-risk-fusion --strict`、`make verify-quick` 与 `make verify-compile`
+
+## 17. 三阶段自动续跑
+
+- [x] 17.1 在 proposal、design 与 capability spec 中定义显式续跑、完整 checkpoint、独立进程和 Stage 2 gate 失败关闭契约
+- [x] 17.2 在 `tools/run_pcpf.py` 实现等待当前 Stage 1、解析/训练 Stage 2、运行无界 gate、通过后解析/训练 Stage 3 的最小本地编排
+- [x] 17.3 增加完成状态、epoch、checkpoint role/stage 和运行名推导的聚焦测试，并运行配置、CLI、compile 与 strict OpenSpec 验证
+
+## 18. MMW 唯一 trajectory-disjoint seed 0 协议
+
+- [x] 18.1 将 current/change specs 更新为 `(scene_id,cav_id)`、三天气绑定、surplus CAV 固定 train、默认 split seed 0 与 test 封存契约
+- [x] 18.2 替换旧资源连通 80/10/10 builder，实现当时的 11/2/3 协议；该版本现已由第 19 节的 11/5/0 协议替代
+- [x] 18.3 删除 clean-inner、group-safe/time-block、旧 split mode/ratio/seed CLI 与旁路脚本，canonical/PCPF 统一绑定唯一 protocol
+- [x] 18.4 分离 split seed 与 train seed，默认不构建 test，并将 protocol/manifest/seed/group counts 写入启动输出、配置快照、checkpoint 与结果 provenance
+- [x] 18.5 增加确定性、不同 seed、group/weather/scene 结构、异常数据、旧协议拒绝、窗口边界、默认 test 封存和 seed 独立测试
+- [x] 18.6 只生成并验证 seed 0 manifest/report，构建最小 train/validation loader，不运行其他 split seed、正式 test 或长训练
+- [x] 18.7 运行 focused tests、OpenSpec strict、CLI config、compile 与 quick 验证并核对源码/本地产物边界
+
+## 19. MMW 11/5/0 开发协议
+
+- [x] 19.1 更新 proposal、design、current/delta specs，明确每 scene 一个 validation held-out、11 train/5 validation/0 test 与 test 入口缺失
+- [x] 19.2 将 trajectory protocol、配置绑定、CLI、runner、evaluator 和分析器迁移为 train/validation-only，并删除旧 test 授权分支
+- [x] 19.3 更新 focused tests、README、维护文档与固定计数/provenance，确保旧 11/2/3 manifest 和缓存失败关闭
+- [x] 19.4 重新生成 seed 0 manifest/audit/report，并重建 train-only normalization、GPS 与 train/validation sparse-CSI cache/bundle
+- [x] 19.5 运行 focused tests、OpenSpec strict、CLI config、compile、quick/full 回归并核对本地产物边界
+
+## 20. MMW ID-stratified block 70/15/15 协议
+
+- [x] 20.1 更新 proposal、design、current/delta specs，定义 `mmw_id_stratified_block_v1`、verified weather mapping、128-base-frame block、70/15/15、默认 test 封存与旧协议迁移
+- [x] 20.2 基于 strict `seq_index` 和显式 frame 列表实现稳定基础样本映射、连续 block 构建、确定性标签平衡 assignment 与 block 内窗口 materialization
+- [x] 20.3 实现 manifest 复用/显式 regenerate、统一 leakage validator、JSON/Markdown 报告与简单连续 block baseline 分布对比
+- [x] 20.4 将 canonical/PCPF 配置、CLI、loader、日志、checkpoint/result provenance 和 split-specific cache identity 迁移到新协议，并默认不构建 test
+- [x] 20.5 删除旧 trajectory-disjoint 函数、协议字符串、配置/脚本入口、fallback 与 current capability；保留历史本地产物但拒绝加载
+- [x] 20.6 增加确定性、seed 独立、天气/block/base/window 泄漏、覆盖、比例、标签优化、旧 manifest/cache、train-only 统计、默认 test 封存和输入遍历顺序测试
+- [x] 20.7 只生成并验证 seed 0 manifest/report，构建 train/validation loader并运行 1--2 batch 模态/CSI identity smoke；训练/验证流程不构建 test loader，不运行其他 seed 或长训练

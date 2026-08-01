@@ -10,7 +10,12 @@ from kd_sensing.engine.run_metadata import dataset_run_metadata, prediction_setu
 def validate(model, dataloader, cfg: dict, criterion, device: torch.device, output_dir: str | Path | None = None) -> dict:
     metrics = dict(run_evaluation_pass(model, dataloader, cfg, criterion, device).metrics)
     dataset = getattr(dataloader, "dataset", None)
-    split_metadata = {getattr(dataset, "split", "test"): dataset_run_metadata(dataset)} if dataset is not None else None
+    if dataset is not None:
+        metadata = dataset_run_metadata(dataset)
+        split = metadata.get("split") or getattr(dataset, "split", None) or "test"
+        split_metadata = {split: metadata}
+    else:
+        split_metadata = None
     metrics["prediction_setup"] = prediction_setup_metadata(cfg, split_metadata=split_metadata)
     if output_dir is not None:
         target = Path(output_dir)

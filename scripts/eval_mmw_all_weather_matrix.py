@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate the Clean MMW validation matrix for U0 and retained baselines."""
+"""Evaluate the ID-stratified block MMW validation matrix."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from kd_sensing.config import load_config
-from kd_sensing.data.mmw.clean_protocol import validate_clean_config_protocol
+from kd_sensing.data.mmw.trajectory_protocol import validate_trajectory_config_protocol
 from kd_sensing.data.temporal_missing import (
     DEFAULT_TEMPORAL_MODALITIES,
     apply_modality_temporal_mask_to_batch,
@@ -49,17 +49,17 @@ ROOT = Path(__file__).resolve().parents[1]
 METHODS = ("U0", "amber_full", "rmbp_mm")
 RATES = (0.0, 0.2, 0.4, 0.6, 0.8)
 MASK_TYPES = ("modality_frame", "frame_level", "block")
-MASK_CACHE_VERSION = "clean_mmw_temporal_masks_v1"
+MASK_CACHE_VERSION = "mmw_trajectory_temporal_masks_v2"
 MASK_CACHE_SEED = 20260723
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Evaluate Clean MMW validation robustness for U0 and retained baselines.")
-    parser.add_argument("--root", default="outputs/mmw_clean_u0", help="Training output root created by the launcher.")
+    parser = argparse.ArgumentParser(description="Evaluate ID-stratified block MMW validation robustness.")
+    parser.add_argument("--root", default="outputs/mmw_trajectory_u0", help="Training output root created by the launcher.")
     parser.add_argument("--methods", default=",".join(METHODS))
-    parser.add_argument("--seeds", default="1")
+    parser.add_argument("--train-seeds", default="0")
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--mask-cache", default="outputs/mmw_clean_u0_eval_masks")
+    parser.add_argument("--mask-cache", default="outputs/mmw_trajectory_u0_eval_masks")
     parser.add_argument("--modality-frame-masks", type=int, default=16)
     parser.add_argument("--temporal-rates", default=",".join(str(rate) for rate in RATES))
     parser.add_argument("--temporal-mask-types", default=",".join(MASK_TYPES))
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         args.methods = _parse_methods(args.methods)
-        args.seeds = tuple(int(value) for value in _csv(args.seeds))
+        args.train_seeds = tuple(int(value) for value in _csv(args.train_seeds))
         args.temporal_rates = tuple(float(value) for value in _csv(args.temporal_rates))
         args.temporal_mask_types = tuple(_csv(args.temporal_mask_types))
         _validate_args(args)
@@ -91,11 +91,11 @@ def main(argv: list[str] | None = None) -> int:
 
     failures: list[dict[str, str]] = []
     for method in args.methods:
-        for seed in args.seeds:
+        for train_seed in args.train_seeds:
             try:
-                evaluate_method(method, root, output_dir, cache, args, seed=seed)
+                evaluate_method(method, root, output_dir, cache, args, train_seed=train_seed)
             except Exception as exc:
-                failures.append({"method": method, "seed": str(seed), "type": type(exc).__name__, "error": str(exc)})
+                failures.append({"method": method, "train_seed": str(train_seed), "type": type(exc).__name__, "error": str(exc)})
     if failures:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "failed_jobs.json").write_text(json.dumps(failures, indent=2) + "\n", encoding="utf-8")
@@ -110,23 +110,21 @@ def evaluate_method(
     cache: dict[float, dict[str, Any]],
     args: argparse.Namespace,
     *,
-    seed: int,
+    train_seed: int,
 ) -> None:
-    config_path, checkpoint = _seed_artifact_paths(root, method, seed)
+    config_path, checkpoint = _seed_artifact_paths(root, method, train_seed)
     if not config_path.is_file() or not checkpoint.is_file():
-        raise FileNotFoundError(f"{method}/seed{seed}: missing generated config or checkpoints/last.pth")
+        raise FileNotFoundError(f"{method}/train_seed{train_seed}: missing generated config or checkpoints/last.pth")
 
     cfg = load_config(config_path)
-    protocol_audit = validate_clean_config_protocol(cfg)
-    if protocol_audit is None:
-        raise ValueError(f"{method}/seed{seed}: the matrix only accepts Clean MMW configurations")
+    protocol_audit = validate_trajectory_config_protocol(cfg)
     checkpoint_metadata = load_checkpoint_metadata(checkpoint)
     validate_evaluation_gps_checkpoint_provenance(cfg, checkpoint_metadata)
     validate_evaluation_checkpoint_route(checkpoint_metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_metadata)
     normalization = load_normalization_artifacts(checkpoint_metadata)
     if config_uses_gps(cfg) and "gps_scaler" not in normalization:
-        raise ValueError(f"{method}/seed{seed}: checkpoint is missing its train-fit GPS normalization artifact")
+        raise ValueError(f"{method}/train_seed{train_seed}: checkpoint is missing its train-fit GPS normalization artifact")
 
     cfg.setdefault("temporal_missing", {}).update({"enabled": False, "mode": "none"})
     cfg.setdefault("training", {})["final_test"] = {"enabled": False}
@@ -136,17 +134,17 @@ def evaluate_method(
     try:
         validation_loader = dataloaders.get("validation")
         if validation_loader is None:
-            raise ValueError("Clean MMW evaluation requires an inner-validation loader")
+            raise ValueError("MMW trajectory evaluation requires a validation loader")
         components = list(getattr(validation_loader.dataset, "datasets", []))
         inventory = list(getattr(validation_loader.dataset, "domain_inventory", []))
         if not components or len(components) != len(inventory):
-            raise ValueError("Clean MMW validation dataset must expose aligned domain components and inventory")
+            raise ValueError("MMW validation dataset must expose aligned domain components and inventory")
 
-        set_seed(int(seed))
+        set_seed(int(train_seed))
         device = build_device(cfg)
         configure_cuda_performance_settings(cfg, device)
         model = build_model(cfg["model"]["primary"]).to(device)
-        load_model_state(checkpoint, model, role="Clean MMW validation matrix", map_location=device, strict=True)
+        load_model_state(checkpoint, model, role="MMW trajectory validation matrix", map_location=device, strict=True)
         model.eval()
 
         selected = list(zip(components, inventory))[int(args.domain_shard_index) :: int(args.domain_shard_count)]
@@ -154,11 +152,11 @@ def evaluate_method(
             selected = selected[: int(args.max_domains)]
         rows: list[dict[str, Any]] = []
         masks = _condition_masks(cache, args.skip_whole_modality)
-        provenance = _provenance(method, seed, checkpoint, checkpoint_metadata, protocol_audit, args, len(inventory), len(selected))
+        provenance = _provenance(method, train_seed, checkpoint, checkpoint_metadata, protocol_audit, args, len(inventory), len(selected))
         loader_cfg = cfg["data"]["dataloader"]
 
         for component, domain in selected:
-            loader = build_dataloader(component, loader_cfg, split="validation", experiment_seed=int(seed))
+            loader = build_dataloader(component, loader_cfg, split="validation", experiment_seed=int(train_seed))
             try:
                 metrics = _evaluate_masks(model, loader, cfg, device, [item for _label, item in masks], args.max_batches)
             finally:
@@ -166,7 +164,7 @@ def evaluate_method(
             sample_path = Path(str(domain.get("split_path", "")))
             base = {
                 "method": method,
-                "seed": int(seed),
+                "train_seed": int(train_seed),
                 "domain_id": str(domain.get("id", "")),
                 "condition": str(domain.get("condition", "")),
                 "scene": str(domain.get("scene", "")),
@@ -192,10 +190,10 @@ def evaluate_method(
                         **result,
                     }
                 )
-        target = output_dir / method / f"seed{seed}" / "metrics.csv"
+        target = output_dir / method / f"train_seed{train_seed}" / "metrics.csv"
         _write_csv(target, rows)
         (target.parent / "provenance.json").write_text(
-            json.dumps({"method": method, "seed": seed, "row_count": len(rows), **provenance}, indent=2) + "\n",
+            json.dumps({"method": method, "train_seed": train_seed, "row_count": len(rows), **provenance}, indent=2) + "\n",
             encoding="utf-8",
         )
     finally:
@@ -323,7 +321,7 @@ def _model_order_mask(model, item: dict[str, Any]) -> torch.Tensor:
     source = tuple(str(name) for name in item.get("modalities", DEFAULT_TEMPORAL_MODALITIES))
     target = tuple(str(name) for name in getattr(model, "modalities", source))
     if set(source) != set(DEFAULT_TEMPORAL_MODALITIES) or set(target) != set(DEFAULT_TEMPORAL_MODALITIES):
-        raise ValueError("Clean MMW matrix requires exactly image/radar/gps/lidar masks")
+        raise ValueError("MMW matrix requires exactly image/radar/gps/lidar masks")
     mask = torch.as_tensor(item["modality_temporal_mask"], dtype=torch.bool)
     indices = torch.tensor([source.index(name) for name in target], dtype=torch.long)
     return mask.index_select(-1, indices)
@@ -433,7 +431,7 @@ def _validate_temporal_cache_payload(payload: dict[str, Any], rate: float, histo
 
 def _provenance(
     method: str,
-    seed: int,
+    train_seed: int,
     checkpoint: Path,
     metadata: dict[str, Any] | None,
     audit: dict[str, Any],
@@ -446,10 +444,19 @@ def _provenance(
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": _sha256(checkpoint),
         "checkpoint_role": str((metadata or {}).get("checkpoint_role", "last")),
+        "split_protocol": str(audit["protocol"]),
         "protocol_id": str(audit["protocol_id"]),
+        "protocol_version": int(audit["protocol_version"]),
+        "split_protocol_version": int(audit["protocol_version"]),
         "protocol_fingerprint": str(audit["protocol_fingerprint"]),
-        "clean_split_audit_id": str(audit["audit_id"]),
-        "generalization_validity": "clean_train_validation_isolation_passed",
+        "split_audit_id": str(audit["audit_id"]),
+        "block_size": int(audit["block_size"]),
+        "split_manifest_hash": str(audit["split_manifest_hash"]),
+        "data_source_hash": str(audit["data_source_hash"]),
+        "window_config_hash": str(audit["window_config_hash"]),
+        "weather_binding": bool(audit["weather_binding"]),
+        "generalization_validity": "id_stratified_block_leakage_checks_passed",
+        "test_evaluated": False,
         "outer_test_accessed": False,
         "temporal_rates": ",".join(str(rate) for rate in args.temporal_rates),
         "temporal_mask_types": ",".join(args.temporal_mask_types),
@@ -458,7 +465,8 @@ def _provenance(
         "expected_domain_count": int(expected_domain_count),
         "selected_domain_count": int(selected_domain_count),
         "partial_request": bool(args.max_batches is not None or args.max_domains is not None),
-        "seed": int(seed),
+        "split_seed": int(audit["split_seed"]),
+        "train_seed": int(train_seed),
     }
 
 
@@ -470,16 +478,19 @@ def _parse_methods(value: str) -> tuple[str, ...]:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if not args.seeds or len(set(args.seeds)) != len(args.seeds) or any(seed <= 0 for seed in args.seeds):
-        raise ValueError("seeds must be unique positive integers")
+    if not args.train_seeds or len(set(args.train_seeds)) != len(args.train_seeds) or any(seed < 0 for seed in args.train_seeds):
+        raise ValueError("train seeds must be unique non-negative integers")
     if args.batch_size <= 0 or args.max_batches is not None and args.max_batches <= 0 or args.max_domains is not None and args.max_domains <= 0:
         raise ValueError("batch-size, max-batches, and max-domains must be positive")
     if args.domain_shard_count <= 0 or not 0 <= args.domain_shard_index < args.domain_shard_count:
         raise ValueError("domain shard requires count > 0 and 0 <= index < count")
 
 
-def _seed_artifact_paths(root: Path, method: str, seed: int) -> tuple[Path, Path]:
-    return root / "generated_configs" / f"{method}_seed{seed}.yaml", root / method / f"seed{seed}" / "checkpoints" / "last.pth"
+def _seed_artifact_paths(root: Path, method: str, train_seed: int) -> tuple[Path, Path]:
+    return (
+        root / "generated_configs" / f"{method}_train_seed{train_seed}.yaml",
+        root / method / f"train_seed{train_seed}" / "checkpoints" / "last.pth",
+    )
 
 
 def _clone_batch(value: Any) -> Any:

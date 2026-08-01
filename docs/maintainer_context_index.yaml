@@ -19,13 +19,13 @@ task_routes:
     context_path: docs/agent_context/data.md
     authority_paths:
       - openspec/specs/clean-data-integrity/spec.md
-      - openspec/specs/mmw-trajectory-disjoint-protocol/spec.md
+      - openspec/specs/mmw-id-stratified-block-protocol/spec.md
       - openspec/specs/repo-boundaries/spec.md
     owner_modules:
       - src/kd_sensing/data/
       - src/kd_sensing/engine/data_factory.py
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_clean_inner_protocol.py tests/test_mmw_trajectory_split.py tests/test_train_only_normalization.py tests/test_deepsense6g_dataset.py -q
+      - conda run -n kd_mm_beam pytest tests/test_mmw_trajectory_split.py tests/test_train_only_normalization.py tests/test_training_final_test_policy.py tests/test_deepsense6g_dataset.py -q
   - id: config
     context_path: docs/agent_context/configs.md
     authority_paths:

@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,8 @@ class CheckpointManager:
                 self.normalization_artifacts,
             ),
             "model_metadata": model_metadata,
+            "data_protocol": copy.deepcopy(self.cfg.get("data_protocol")),
+            "experiment_seed": int(self.cfg.get("experiment", {}).get("seed", 0)),
             **gps_checkpoint_provenance(self.cfg),
         }
         if selection is not None:
@@ -164,6 +167,8 @@ class CheckpointManager:
                 "task": self.cfg.get("experiment", {}).get("task"),
                 "enabled_modalities": list(self.cfg.get("model", {}).get("primary", {}).get("modalities", ())),
                 "model_metadata": model_metadata,
+                "data_protocol": copy.deepcopy(self.cfg.get("data_protocol")),
+                "experiment_seed": int(self.cfg.get("experiment", {}).get("seed", 0)),
                 **gps_checkpoint_provenance(self.cfg),
             },
         )

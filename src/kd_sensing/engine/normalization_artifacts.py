@@ -10,6 +10,11 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from kd_sensing.data.transform_ops.gps import load_gps_scaler
+from kd_sensing.data.mmw.trajectory_protocol import (
+    TRAJECTORY_PROTOCOL_MODE,
+    split_cache_identity,
+    validate_split_cache_identity,
+)
 from kd_sensing.engine.data_factory_groups import leaf_datasets_with_indices
 from kd_sensing.engine.data_factory_scalers import shared_dataset_attribute
 
@@ -69,16 +74,10 @@ def split_dependent_artifact_metadata(train_dataset: Any) -> dict[str, Any]:
     }
     if len(modes) > 1:
         raise ValueError(f"Pooled GPS datasets must use one gps_feature_mode, got {sorted(modes)}.")
-    source_paths = {Path(str(item["source_csv_path"])) for item in sources}
-    source_names = {path.name for path in source_paths}
-    if source_names == {"inner_train.csv"}:
-        source_split = "inner_train"
-    else:
-        source_split = "train"
     payload = {
         "schema_version": 1,
         "fit_split": "train",
-        "source_split": source_split,
+        "source_split": "train",
         "normalization_modalities": ["gps"],
         "gps_feature_mode": next(iter(modes), None),
         "effective_sample_count": sum(int(item["sample_count"]) for item in sources),
@@ -87,6 +86,13 @@ def split_dependent_artifact_metadata(train_dataset: Any) -> dict[str, Any]:
         "creation_time": datetime.now(timezone.utc).isoformat(),
         "source_components": sources,
     }
+    protocol = getattr(train_dataset, "data_protocol_identity", None)
+    if isinstance(protocol, dict):
+        payload.update(split_cache_identity(protocol))
+        payload.update(
+            split_manifest=protocol.get("split_manifest"),
+            protocol_fingerprint=protocol.get("protocol_fingerprint"),
+        )
     payload["normalization_fingerprint"] = _fingerprint(payload)
     return payload
 
@@ -102,13 +108,10 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
         if recorded != expected:
             raise ValueError(f"GPS normalization artifact feature mode {recorded!r} does not match evaluation config {expected!r}.")
     protocol = cfg.get("data_protocol")
-    if isinstance(protocol, dict) and protocol.get("mode") in {
-        "clean_inner_development",
-        "trajectory_disjoint_development",
-    }:
+    if isinstance(protocol, dict) and protocol.get("mode") == TRAJECTORY_PROTOCOL_MODE:
         report = json.loads(Path(str(protocol.get("audit_report", ""))).read_text(encoding="utf-8"))
         recorded = artifacts["metadata"]
-        expected_source_split = str(protocol.get("train_role", "inner_train"))
+        expected_source_split = str(protocol.get("train_role", "train"))
         if recorded.get("source_split") != expected_source_split:
             raise ValueError(
                 "MMW GPS normalization artifact source split does not match the protocol train role."
@@ -117,6 +120,21 @@ def validate_normalization_artifact_fingerprint(cfg: dict[str, Any], metadata: d
             raise ValueError("MMW GPS normalization artifact sample identity does not match the split audit.")
         if int(recorded.get("effective_sample_count", 0)) != int(report.get("train_sample_count", -1)):
             raise ValueError("MMW GPS normalization artifact sample count does not match the split audit.")
+        expected_identity = {
+            "split_protocol": protocol.get("protocol_id"),
+            "protocol_version": protocol.get("protocol_version"),
+            "split_seed": protocol.get("split_seed"),
+            "block_size": protocol.get("block_size"),
+            "split_manifest_hash": protocol.get("split_manifest_hash"),
+            "data_source_hash": protocol.get("data_source_hash"),
+            "window_config_hash": protocol.get("window_config_hash"),
+            "weather_binding": protocol.get("weather_binding"),
+            "split_manifest": protocol.get("split_manifest", protocol.get("path")),
+            "protocol_fingerprint": protocol.get("protocol_fingerprint"),
+        }
+        validate_split_cache_identity(recorded, protocol)
+        if any(recorded.get(key) != value for key, value in expected_identity.items()):
+            raise ValueError("MMW GPS normalization artifact does not match the bound split manifest identity.")
 
 
 def _shared_gps_scaler(dataset: Any) -> Any:
@@ -164,13 +182,12 @@ def _sample_id_hash(dataset: Any) -> str:
         rows = getattr(getattr(leaf, "samples", None), "rows", None)
         if not isinstance(rows, list):
             rows = _csv_rows(Path(str(getattr(leaf, "root_csv", ""))))
-        domain = str(getattr(leaf, "domain_id", ""))
         for index in indices:
             row = rows[int(index)] if int(index) < len(rows) else {}
             sample_id = str(row.get("sample_id", "")).strip()
             if not sample_id:
                 raise ValueError("GPS normalization provenance requires a sample_id for every train sample.")
-            values.append(f"{domain}:{sample_id}")
+            values.append(sample_id)
     return hashlib.sha256("\n".join(sorted(values)).encode("utf-8")).hexdigest()
 
 

@@ -6,6 +6,7 @@ from kd_sensing.engine.artifacts import ArtifactWriter
 from kd_sensing.engine.batch_step import BatchStepRunner
 from kd_sensing.engine.checkpointing import CheckpointManager, resolve_resume_checkpoint
 from kd_sensing.engine.data_factory import build_dataloaders, final_test_enabled
+from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 from kd_sensing.engine.debug_diagnostics import (
     build_startup_summary,
     print_startup_summary,
@@ -119,6 +120,7 @@ def train(cfg: dict) -> dict:
 
 def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     configure_torch_runtime_threads(cfg)
+    _print_mmw_split_binding(cfg)
     set_seed(cfg.get("experiment", {}).get("seed", 0))
     training_cfg = cfg.setdefault("training", {})
     if training_cfg.get("resume") is True and not cfg.get("output", {}).get("run_name"):
@@ -360,4 +362,21 @@ def _finalize_training_run(context: TrainingRunContext) -> dict:
         "throughput": context.throughput_metadata,
         "prediction_objective": context.objective_metadata,
         "startup_summary": context.startup_summary,
+        "data_protocol": dict(context.cfg.get("data_protocol", {})),
     }
+
+
+def _print_mmw_split_binding(cfg: dict) -> None:
+    protocol = cfg.get("data_protocol")
+    if not isinstance(protocol, dict) or protocol.get("mode") != TRAJECTORY_PROTOCOL_MODE:
+        return
+    print(f"MMW split protocol: {protocol['protocol_id']}", flush=True)
+    print(f"Protocol version: {int(protocol['protocol_version'])}", flush=True)
+    print(f"Split seed: {int(protocol['split_seed'])}", flush=True)
+    print(f"Train seed: {int(protocol.get('train_seed', cfg.get('experiment', {}).get('seed', 0)))}", flush=True)
+    print(f"Block size: {int(protocol['block_size'])}", flush=True)
+    print(f"Split manifest: {protocol.get('split_manifest', protocol.get('path'))}", flush=True)
+    print(f"Train windows: {int(protocol['train_sample_count'])}", flush=True)
+    print(f"Validation windows: {int(protocol['validation_sample_count'])}", flush=True)
+    print(f"Test loaded: {str(bool(protocol.get('evaluate_test_requested', False))).lower()}", flush=True)
+    print(f"Leakage validation: {protocol.get('leakage_validation', 'UNKNOWN')}", flush=True)

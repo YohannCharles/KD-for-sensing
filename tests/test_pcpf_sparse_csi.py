@@ -14,6 +14,7 @@ from kd_sensing.data.pcpf_sparse_csi import (
     PCPF_SPARSE_CSI_SELECTION_SHA256,
 )
 from kd_sensing.data.temporal_missing import apply_training_temporal_missing
+from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_extensions import EpochDiagnosticsAccumulator
 from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion
 from kd_sensing.models.sparse_pilot_encoder import SparsePilotEncoder
@@ -168,6 +169,19 @@ def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
         tmp_path / "packed.npz",
         protocol_id="trajectory-test",
         protocol_fingerprint="d" * 64,
+        manifest_version=2,
+        split_seed=0,
+        split_manifest=tmp_path / "seed_0.json",
+        split_identity={
+            "split_protocol": "trajectory-test",
+            "protocol_version": 1,
+            "split_seed": 0,
+            "block_size": 128,
+            "split_manifest_hash": "a" * 64,
+            "data_source_hash": "b" * 64,
+            "window_config_hash": "c" * 64,
+            "weather_binding": True,
+        },
         roles={
             "train": {"sample_count": 1, "unique_channel_count": 1},
             "validation": {"sample_count": 0, "unique_channel_count": 0},
@@ -177,7 +191,21 @@ def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
         **config,
         "packed_cache_path": bundle["path"],
         "packed_cache_sha256": bundle["sha256"],
+        "packed_cache_protocol_id": "trajectory-test",
         "packed_cache_protocol_fingerprint": "d" * 64,
+        "packed_cache_manifest_version": 2,
+        "packed_cache_split_seed": 0,
+        "packed_cache_split_manifest": str(tmp_path / "seed_0.json"),
+        "packed_cache_split_identity": {
+            "split_protocol": "trajectory-test",
+            "protocol_version": 1,
+            "split_seed": 0,
+            "block_size": 128,
+            "split_manifest_hash": "a" * 64,
+            "data_source_hash": "b" * 64,
+            "window_config_hash": "c" * 64,
+            "weather_binding": True,
+        },
     }
     channel_path.unlink()
     monkeypatch.setattr(
@@ -192,6 +220,8 @@ def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
         packed.load_history([tmp_path / "missing.npz"] * 5, history_frame_ids=range(1, 6))
     with pytest.raises(ValueError, match="packed cache SHA256 mismatch"):
         PCPFSparseCSISidecar({**packed_config, "packed_cache_sha256": "0" * 64})
+    with pytest.raises(ValueError, match="packed cache identity mismatch"):
+        PCPFSparseCSISidecar({**packed_config, "packed_cache_split_seed": 1})
 
 
 def test_five_modality_schedule_cycles_all_31_subsets_equally() -> None:
@@ -230,6 +260,22 @@ def test_five_modality_schedule_cycles_all_31_subsets_equally() -> None:
     assert "only_csi" in result["temporal_missing_metadata"]["condition_ids"]
     assert torch.count_nonzero(result["csi"][~masks[:, :, 4]]) == 0
     assert not bool(result["csi_pilot_mask"][~masks[:, :, 4]].any())
+
+
+def test_sparse_csi_prediction_metadata_reports_the_model_specific_fifth_modality() -> None:
+    cfg = {
+        "model": {
+            "primary": {
+                "type": "pcpf_temporal_risk_fusion",
+                "modalities": ["image", "radar", "gps", "lidar"],
+                "use_sparse_csi": True,
+            }
+        }
+    }
+
+    setup = prediction_setup_metadata(cfg)
+
+    assert setup["enabled_modalities"] == ["image", "radar", "gps", "lidar", "csi"]
 
 
 def test_default_four_modality_model_has_no_sparse_csi_state() -> None:

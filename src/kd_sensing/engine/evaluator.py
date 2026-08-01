@@ -66,7 +66,11 @@ def _evaluate_inner(cfg: dict, weights: str | None = None, output_dir: str | Non
     validate_evaluation_checkpoint_route(checkpoint_resolution.metadata)
     validate_normalization_artifact_fingerprint(cfg, checkpoint_resolution.metadata)
     mmw_protocol_audit = validate_mmw_config_protocol(cfg)
-    evaluation_split = "validation" if mmw_protocol_audit is not None else "test"
+    evaluation_split = (
+        "test"
+        if mmw_protocol_audit is not None and bool(cfg.get("runtime", {}).get("evaluate_test_requested", False))
+        else "validation" if mmw_protocol_audit is not None else "test"
+    )
     dataset_kwargs = load_normalization_artifacts(checkpoint_resolution.metadata)
     split_metadata = {}
     if checkpoint_resolution.metadata and checkpoint_resolution.metadata.get("split_metadata"):
@@ -191,7 +195,7 @@ def _evaluation_split_protocol_report(split_metadata: dict, split: str) -> dict:
                 "message": "Split metadata marks this evaluation split as not eligible for strict validation.",
                 "eligibility_reasons": reasons,
                 "fix_hint": sidecar.get("fix_hint")
-                or "Regenerate MMW splits with split_strategy=group_safe_time_block and a fresh strict split tag.",
+                or "Regenerate the bound mmw_id_stratified_block_v1 manifest and its split indexes.",
             }
         )
     return {

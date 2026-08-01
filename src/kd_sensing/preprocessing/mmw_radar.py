@@ -112,8 +112,7 @@ def materialize_mmw_radar_split_csv(
         raise ValueError(f"MMW split CSV must be under data_root {root}: {source}")
     if not source.exists():
         raise FileNotFoundError(
-            f"MMW split CSV is missing: {source}. Prepare sequence splits with "
-            "conda run -n kd_mm_beam kd-sensing-preprocess --action mmw_sequence_splits_from_manifest."
+            f"MMW split CSV is missing: {source}. Rebuild the canonical mmw_id_stratified_block_v1 manifest first."
         )
     target = Path(output_path) if output_path is not None else source.with_name(f"{source.stem}_with_radar{source.suffix}")
     if not target.is_absolute():
@@ -701,10 +700,9 @@ def _load_split_metadata_summary(path: Path) -> dict[str, Any]:
     return {
         key: payload.get(key)
         for key in (
-            "seed",
+            "protocol",
+            "manifest_version",
             "split_seed",
-            "train_ratio",
-            "split_tag",
             "seq_len",
             "num_pred",
             "pred_len",

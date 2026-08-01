@@ -89,6 +89,7 @@ def initialize_model_from_checkpoint(
                 f"Initialization checkpoint training stage mismatch for {path}: "
                 f"expected={expected_source_stage!r}, actual={actual_source_stage!r}."
             )
+    _validate_model_topology_lineage(model, source_model_metadata, path=path)
     source_state = payload.get("state_dict")
     if not isinstance(source_state, Mapping):
         raise CheckpointLoadError(f"Initialization checkpoint state_dict must be a mapping: {path}.")
@@ -146,6 +147,28 @@ def initialize_model_from_checkpoint(
         if isinstance(source_model_metadata, Mapping)
         else None,
     }
+
+
+def _validate_model_topology_lineage(
+    model: torch.nn.Module,
+    source_model_metadata: Any,
+    *,
+    path: Path,
+) -> None:
+    provider = getattr(model, "prototype_topology_metadata", None)
+    if not callable(provider):
+        return
+    target = provider()
+    if not isinstance(target, Mapping):
+        raise CheckpointLoadError("Target model prototype topology metadata must be a mapping.")
+    if not isinstance(source_model_metadata, Mapping):
+        raise CheckpointLoadError(f"Initialization checkpoint lacks prototype topology provenance: {path}.")
+    source = source_model_metadata.get("prototype_topology")
+    if not isinstance(source, Mapping):
+        source = {"id": source_model_metadata.get("prototype_topology_id")}
+    keys = ("id", "descriptor_sha256", "audit_sha256")
+    if tuple(str(source.get(key, "")) for key in keys) != tuple(str(target.get(key, "")) for key in keys):
+        raise CheckpointLoadError(f"Initialization checkpoint prototype topology does not match the target model: {path}.")
 
 
 def freeze_model_prefixes(model: torch.nn.Module, prefixes: tuple[str, ...]) -> None:

@@ -2,16 +2,16 @@
 
 ### Requirement: PCPF-T 默认四模态且可显式追加历史 sparse CSI
 
-系统 MUST 默认以 `image、radar、gps、lidar` canonical order 接受五帧历史并预测一个 64 类未来 beam。只有配置显式声明 `use_sparse_csi=true` 时，系统 MAY 在末尾追加同一五帧历史窗口的固定 2x2 sparse CSI 作为第五模态。模型、loss 和风险 target MUST NOT 读取当前/未来 CSI、未来 channel、path、beam power、历史 beam index、天气、场景、domain、corruption type 或 severity；风险估计前 MUST NOT 执行跨模态 attention 或 feature concat。全部当前开发结果 MUST 标记 `claim_ineligible=true`，outer test MUST 保持未访问。
+系统 MUST 默认以 `image、radar、gps、lidar` canonical order 接受五帧历史并预测一个 64 类未来 beam。只有配置显式声明 `use_sparse_csi=true` 时，系统 MAY 在末尾追加同一五帧历史窗口的固定 2x2 sparse CSI 作为第五模态。模型、loss 和风险 target MUST NOT 读取当前/未来 CSI、未来 channel、path、beam power、历史 beam index、天气、场景、domain、corruption type 或 severity；风险估计前 MUST NOT 执行跨模态 attention 或 feature concat。全部当前开发结果 MUST 标记 `claim_ineligible=true`，MMW test MUST 默认封存。
 
 #### Scenario: 构建 PCPF-T batch
 - **WHEN** runner 从合法 MMW train/validation batch 构建模型输入
 - **THEN** 默认输入 MUST 只包含四模态历史 tensor、`modality_temporal_mask` 与未来 beam label
 - **AND** 未显式启用 sparse CSI 时模型 MUST 不创建 CSI 参数或改变四模态 state dict/forward
 
-#### Scenario: 请求 outer test
-- **WHEN** PCPF-T 配置未获得新的显式 outer-test 授权
-- **THEN** runner MUST NOT 构建 outer-test loader
+#### Scenario: 请求 test
+- **WHEN** PCPF-T 开发配置请求 test role，或未显式授权 test evaluation
+- **THEN** runner MUST 在 dataset 创建前拒绝
 - **AND** 输出 metadata MUST 保持 `claim_ineligible=true` 与 `outer_test_accessed=false`
 
 ### Requirement: 共享 Temporal Transformer 必须正确屏蔽缺失帧
@@ -79,7 +79,7 @@
 
 ### Requirement: 风险监督和拟合状态必须只来自 train split
 
-四项 normalization mean/std 与 Stage 3 的 `mean_train_risk_m` MUST 只遍历 train dataset 拟合并作为 buffer 冻结；validation、historical development test 与 outer test MUST 不更新它们。`R_star_m` MUST 使用 detached deterministic unimodal probability 与当前 topology 的 normalized circular distance，Dmax MUST 来自 topology，且 unavailable 模态 MUST 排除。
+四项 normalization mean/std 与 Stage 3 的 `mean_train_risk_m` MUST 只遍历 train dataset 拟合并作为 buffer 冻结；validation/test MUST 不更新它们。`R_star_m` MUST 使用 detached deterministic unimodal probability 与当前 topology 的 normalized circular distance，Dmax MUST 来自 topology，且 unavailable 模态 MUST 排除。
 
 风险分量 empirical std 低于预注册 `0.01` normalization std floor 时 MUST 保存并使用 `0.01`，不得以 `1e-6` 机器精度 epsilon 缩放可训练风险分量。
 
@@ -136,6 +136,21 @@ Stage 2 loss MUST 为 masked Huber risk loss、只对 `|R_star_a-R_star_b|>rank_
 - **WHEN** Stage 3 配置指向 metadata.stage=`stage1_expert` 的 checkpoint
 - **THEN** initialization MUST 在 optimizer 或训练 step 前失败
 
+### Requirement: 显式三阶段续跑必须失败关闭
+
+系统 MUST 提供本地显式续跑动作，能够等待已启动的 Stage 1 正常完成，再依次运行 Stage 2、无界 Stage 2 gate 与 Stage 3。续跑 MUST 复用现有 resolver、共享 trainer 和 gate evaluator，并让训练阶段与 gate 分别运行于独立进程。每次进入下一步前 MUST 校验上一训练 run 状态为 `complete`、`last.pth` 已达到配置 epoch、stage-specific validation-best checkpoint 完整发布且训练 stage 匹配。各阶段 MUST 保持同一 protocol、audit、seed、物理 batch、worker 和 output lineage；outer test MUST 保持未访问。
+
+#### Scenario: 等待当前 Stage 1 后自动续跑
+- **WHEN** 用户显式对一个仍在运行的合法 Stage 1 resolved config 启动续跑动作
+- **THEN** 续跑器 MUST 等待该 run 正常完成并验证 Stage 1 validation-best，随后解析并运行 Stage 2
+- **AND** MUST 从 Stage 2 validation-best 运行无 batch 上限的只读 gate
+- **AND** 只有 gate 通过后才可绑定 gate JSON/SHA256、解析并运行 Stage 3
+
+#### Scenario: 任一前置步骤失败
+- **WHEN** run 状态失败或 stale、训练子进程非零退出、epoch 未完成、checkpoint publication/stage 不匹配或 Stage 2 gate 不通过
+- **THEN** 续跑器 MUST 立即非零退出并保留错误原因
+- **AND** MUST NOT 解析或启动依赖该失败步骤的下一阶段
+
 ### Requirement: 对照和消融必须共享同一专家证据
 
 系统 MUST 提供 Uniform、Static Prior、Direct Router control、CUAF-style `local_adaptation` 和 PCPF-T analytic mode，以及 no-var/no-proto/no-temp/no-conflict/no-static-prior/no-risk-supervision。A0--A4 MUST 绑定同一 Stage 1 checkpoint fingerprint、split、seed、optimizer budget 与 validation-loss selection；dynamic replacement MUST 缓存同一次 forward 的 unimodal logits，不能通过重跑 encoder 制造差异。
@@ -178,7 +193,7 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 
 ### Requirement: 历史 sparse CSI 必须固定、复数且可审计
 
-启用 sparse CSI 时，系统 MUST 对每个历史 frame 使用固定 pattern index `[0,1]` 与 frequency index `[0,15]`，得到 `[5,2,2]` complex tensor；mother grid MUST 为 `[5,32,16]`，每帧抽样率 MUST 为 `4/(32*16)=0.78125%`。正式路线 MUST 绑定 `mmw_trajectory_disjoint_v1` 的 37,510/6,365 train/validation，selection descriptor、selection SHA256、probe codebook logical/file SHA256、physical frequency offset、历史 frame id、channel path identity、protocol fingerprint 与 cache identity MUST 写入 resolved config 或 sidecar metadata。训练前 cache scan MUST 只遍历 train/validation 并记录 `outer_test_accessed=false`，并 MUST 发布由 protocol fingerprint、自身 SHA256 和原内容寻址 cache key 绑定的 packed `[N,2,2]` complex cache；正式 dataset MUST 严格命中该 bundle，不得在 worker 中回退到 source channel 计算。正式 resolver 还 MUST 绑定并严格校验 RGB/LiDAR 帧缓存和同一 trajectory protocol 的 GPS coordinate cache。生成路径 MUST 不加入 AWGN、pilot dropout、随机 corruption 或任何 current/future CSI。真实 SNR 不可得时 MUST 记录 `snr_available=false`，不得随机生成或用常数冒充。
+启用 sparse CSI 时，系统 MUST 对每个历史 frame 使用固定 pattern index `[0,1]` 与 frequency index `[0,15]`，得到 `[5,2,2]` complex tensor；mother grid MUST 为 `[5,32,16]`，每帧抽样率 MUST 为 `4/(32*16)=0.78125%`。正式路线 MUST 绑定当前 `mmw_id_stratified_block_v1` seed manifest 的实际 train/validation windows，selection descriptor、selection SHA256、probe codebook logical/file SHA256、physical frequency offset、历史 frame id、channel path identity、protocol/version、block size、manifest/source/window hash 与 cache identity MUST 写入 resolved config 或 sidecar metadata。训练前 cache scan MUST 只遍历 train/validation 并记录 `test_evaluated=false`，并 MUST 发布由完整 block protocol identity、自身 SHA256 和原内容寻址 cache key 绑定的 packed `[N,2,2]` complex cache；旧 split cache MUST 失败且要求重建。正式 dataset MUST 严格命中该 bundle，不得在 worker 中回退到 source channel 计算。正式 resolver 还 MUST 绑定并严格校验 RGB/LiDAR 帧缓存和同一 block protocol 的 GPS coordinate cache。生成路径 MUST 不加入 AWGN、pilot dropout、随机 corruption 或任何 current/future CSI。真实 SNR 不可得时 MUST 记录 `snr_available=false`，不得随机生成或用常数冒充。
 
 #### Scenario: 编码历史 sparse CSI
 - **WHEN** batch 提供 `[B,5,2,2]` complex pilot 与 `[B,5,2]` pattern id/frequency position
@@ -213,9 +228,25 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 - **THEN** 全部 31 个非空 bitmask MUST 由 global sample position 与 epoch seed 确定性轮转
 - **AND** 各 mask 样本数差 MUST 不超过一，epoch report MUST 写出逐 mask 计数
 
+### Requirement: 正式 topology 与评估证据必须阻止后验换标签
+
+正式 trajectory R0--R7 MUST 绑定已通过完整 domain、64-beam label、power replay 与有限数值检查的 `ula_dft_phase_cycle_v1` audit。resolved config、模型构造、Stage 2/3 initialization、validation-best checkpoint、gate 与 matrix MUST 绑定相同 descriptor SHA256、audit 文件 SHA256、protocol audit、split seed、train/validation identity 和 experiment seed；任一文件缺失、内容漂移或 identity 不匹配 MUST 在训练或报告前失败。`cyclic_index_v1` 运行 MUST 保持 `claim_ineligible=true`，且不得通过修改 config 或报告 metadata 后验升级。复用 observation evidence 时 MUST 额外匹配主 checkpoint SHA256、control checkpoint SHA256、topology、protocol 与 seed；所有 mask MUST 与 Full mask 使用相同样本和顺序。
+
+#### Scenario: 旧 cyclic checkpoint 搭配 formal config
+- **WHEN** initialization 或 evaluator 尝试把 `cyclic_index_v1` checkpoint 加载到声明 `ula_dft_phase_cycle_v1` 的模型
+- **THEN** 系统 MUST 在加载 state dict 或写出 formal provenance 前拒绝
+
+#### Scenario: 复用不同 checkpoint 的 observation cache
+- **WHEN** `--reuse-evidence` 指向由不同主 checkpoint、control checkpoint、protocol、topology 或 seed 生成的 cache
+- **THEN** evaluator MUST 拒绝复用且不得把 cache 重标为当前 checkpoint 证据
+
+#### Scenario: mask 样本配对漂移
+- **WHEN** 任一 validation mask 缺少、重排或混入不同于 Full mask 的样本 identity
+- **THEN** gate 或 matrix MUST 在聚合指标前拒绝报告
+
 ### Requirement: R0--R7 与 D0--D3 必须使用相同专家和配对样本
 
-系统 MUST 报告 R0 同一 `mmw_trajectory_disjoint_v1` 上重新训练的四模态 PCPF-T 参考、R1 五模态联合训练 checkpoint 强制 CSI 缺失、R2 五模态 uniform、R3 五模态 train-only static prior、R4 五模态 direct Router control、R5 五模态 `cuaf_local_adaptation`、R6 五模态当前 analytic PCPF 和 R7 同一联合 checkpoint 的 CSI-only。R0--R7 MUST 使用同一 6,365 条 trajectory validation identity、seed 与样本顺序；R1--R7 还 MUST 共享 mask、Stage 1 expert checkpoint、Stage 2 probability/risk checkpoint、unimodal logits 和 temperature calibration 基础。旧 clean-inner 四模态 seed1 结果 MAY 作为带 split 标签的背景展示，但 MUST NOT 作为 paired R0 或初始化 checkpoint。每个 run MUST 保存样本级 identity/group、label/prediction、每专家 logit/probability/真实 circular error/risk/risk component/static weight/dynamic weight、availability 与 CSI quality字段。
+系统 MUST 报告在同一 `mmw_id_stratified_block_v1` seed manifest 上重新训练的 R0 四模态 PCPF-T 参考、R1 五模态联合训练 checkpoint 强制 CSI 缺失、R2 五模态 uniform、R3 五模态 train-only static prior、R4 五模态 direct Router control、R5 五模态 `cuaf_local_adaptation`、R6 五模态当前 analytic PCPF 和 R7 同一联合 checkpoint 的 CSI-only。R0--R7 MUST 使用同一 validation identity、split seed、train seed、manifest/window hash 与样本顺序；R1--R7 还 MUST 共享 mask、Stage 1 expert checkpoint、Stage 2 probability/risk checkpoint、unimodal logits 和 temperature calibration 基础。旧 split 或 clean-inner 结果 MAY 作为带明确 legacy 标签的背景展示，但 MUST NOT 作为 paired R0 或初始化 checkpoint。每个 run MUST 保存样本级 identity/group、label/prediction、每专家 logit/probability/真实 circular error/risk/risk component/static weight/dynamic weight、availability 与 CSI quality字段。
 
 #### Scenario: 运行机制诊断
 - **WHEN** evaluator 完成五模态 31-mask validation

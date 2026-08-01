@@ -184,3 +184,38 @@ def test_initialization_rejects_required_prefix_or_shape_drift(tmp_path: Path) -
     missing_required = _training_config(checkpoint, digest, required_prefixes=["not_present"])
     with pytest.raises(CheckpointLoadError, match="required prefix"):
         initialize_model_from_checkpoint(_CandidateModel(expert_width=4), missing_required)
+
+
+def test_initialization_rejects_posthoc_prototype_topology_relabel(tmp_path: Path) -> None:
+    class TopologyModel(_SourceModel):
+        def __init__(self, topology: dict[str, str]) -> None:
+            super().__init__()
+            self.topology = topology
+
+        def prototype_topology_metadata(self) -> dict[str, str]:
+            return dict(self.topology)
+
+    cyclic = {"id": "cyclic_index_v1", "descriptor_sha256": "", "audit_sha256": ""}
+    formal = {
+        "id": "ula_dft_phase_cycle_v1",
+        "descriptor_sha256": "1" * 64,
+        "audit_sha256": "2" * 64,
+    }
+    source = TopologyModel(cyclic)
+    checkpoint, _ = publish_checkpoint(
+        {
+            "checkpoint_schema_version": 1,
+            "checkpoint_role": "last",
+            "state_dict": source.state_dict(),
+            "model_metadata": {
+                "prototype_topology_id": cyclic["id"],
+                "prototype_topology": cyclic,
+            },
+        },
+        tmp_path,
+        "last.pth",
+    )
+    digest, _ = checkpoint_file_digest(checkpoint)
+
+    with pytest.raises(CheckpointLoadError, match="prototype topology"):
+        initialize_model_from_checkpoint(TopologyModel(formal), _training_config(checkpoint, digest))

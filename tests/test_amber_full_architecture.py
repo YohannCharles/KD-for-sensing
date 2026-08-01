@@ -176,7 +176,7 @@ def test_amber_full_config_metadata_and_architecture_summary() -> None:
         assert primary["encoders"][modality]["pretrained"] is False
     assert isinstance(configured_model.representation_core, AmberFullAdaptiveMaskTransformerCore)
     assert primary["paper_metadata"]["reproduction_scope"] == "amber_full_local"
-    assert cfg["output"]["dir"].startswith("outputs/mmw_clean_u0")
+    assert cfg["output"]["dir"].startswith("outputs/mmw_trajectory_u0")
     assert metadata["reproduction_scope"] == "amber_full_local"
     assert metadata["representation_core"]["component_role"] == "representation_core"
     assert metadata["representation_core"]["cma_type"] == "class_query_cross_attention"

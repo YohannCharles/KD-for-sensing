@@ -1,33 +1,27 @@
 ---
 name: kd-update-claim
-description: Update research claims, paper tables, provenance notes, and claim-facing docs from local evidence without promoting draft or ignored artifacts.
-license: MIT
+description: 从已绑定的本地证据更新 KD-for-sensing 的研究 claim、表格、provenance 注记或 claim-facing 文档。用于核对实验结论与协议边界；不得把 ignored、开发中或 claim-ineligible 产物提升为正式结论。
 ---
 
-# kd-update-claim
+# KD Claim 更新
 
-Use this skill when updating `docs/result_claims_registry.md`, paper table notes, experiment protocols, claim provenance, or claim-facing summaries.
+## 上下文
 
-## Required context
+1. 读取 `AGENTS.md`、`docs/agent_navigation.md`、`docs/maintainer_context_index.yaml` 和与证据对应的 scoped context。
+2. 读取相关 current spec、active change、目标 claim 文档和生成该证据的 resolved config/report metadata。目标文档不存在时不得猜测旧路径或恢复已删除的 claim 系统。
+3. 新增 claim schema、paper export、指标定义或产物生命周期前，先建立或更新 OpenSpec change。
 
-1. Read `AGENTS.md`, `docs/agent_navigation.md`, `docs/maintainer_context_index.yaml`, and `docs/agent_context/claims.md`.
-2. Read `docs/result_claims_registry.md`, `docs/experiment_protocols.md`, and the relevant OpenSpec specs such as `openspec/specs/mainline-experiment-documentation/spec.md` and `openspec/specs/research-claim-harvester/spec.md`.
-3. If the claim requires a new workflow, config family, metric definition, or data contract, open or continue an OpenSpec change before updating code or docs.
+## 工作流
 
-## Workflow
+1. 核对 protocol id/fingerprint、split role、sample identity/order、seed、checkpoint/report SHA256、模型配置、指标定义和 `outer_test_accessed`。
+2. 将 smoke、mock、historical、bounded、candidate、validation-selected、缺少 provenance 或 `claim_ineligible=true` 的结果排除在正式 claim 外。
+3. 只从用户指定且可复算的本地证据更新现有 tracked 文档；不要根据 dashboard、日志摘要或单个未绑定 JSON 推断正式事实。
+4. claim 依赖协议或评估范围时，同时更新对应 OpenSpec artifact；范围变化先改 spec，再改结论。
+5. 本仓库没有 paper-export 公共 CLI。分析表、图和草稿留在 ignored `outputs/` 或 `logs/`，不得提交数据与 checkpoint。
 
-1. Check provenance: run id, config path, split/protocol, seed, checkpoint, metric definition, status, caveat, and blocked reason.
-2. Keep candidate-only, mock, smoke, historical, upper-bound, pending, and blocked rows out of reviewed main claims.
-3. Update claim docs and protocol docs together when the statement depends on parameter settings or evaluation scope.
-4. Do not infer current facts from ignored `outputs/`, `logs/`, dashboard JSON, or local ledger without explicit provenance.
-
-## Commands and artifacts
-
-- Run project Python commands through `conda run -n kd_mm_beam ...`.
-- Draft ledgers, paper exports, figures, reports, and analysis tables belong under ignored `outputs/` or `logs/`; real `dataset/` contents and checkpoint files are not source changes.
-- Useful validation:
+所有 Python 命令使用 `kd_mm_beam`。按改动范围运行聚焦测试，并至少校验：
 
 ```bash
-conda run -n kd_mm_beam kd-sensing-paper-export --input docs/result_claims_registry.md --output-dir outputs/paper_artifacts/current
+openspec validate --all --strict
 conda run -n kd_mm_beam pytest tests/test_architecture_boundaries.py -q
 ```

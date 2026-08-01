@@ -1,9 +1,18 @@
 experiment:
   task: fusion
   objective: beam
-  seed: 1
+  seed: 0
+  train_seed: 0
   device: auto
 data:
+  split_protocol: mmw_id_stratified_block_v1
+  split_seed: 0
+  block_size: 128
+  split_ratios:
+    train: 0.70
+    validation: 0.15
+    test: 0.15
+  split_manifest: outputs/splits/mmw_id_stratified_block_v1/seed_0.json
   dataset:
     type: mmw
     data_root: dataset/MMW/sunny
@@ -20,15 +29,15 @@ data:
     lidar_bev_size: [224, 224]
   dataloader:
     train_batch_size: 32
-    test_batch_size: 32
     validation_batch_size: 32
+    test_batch_size: 32
     num_workers: 4
     pin_memory: true
     persistent_workers: true
     prefetch_factor: 2
   domain_balanced_sampling:
     enabled: true
-    seed: 1
+    seed: 0
     replacement: true
 temporal_missing:
   enabled: true
@@ -64,6 +73,8 @@ training:
   lr: 0.0005
   weight_decay: 0.0001
   resume: false
+  final_test:
+    enabled: false
   amp:
     enabled: true
     dtype: float16
@@ -97,8 +108,8 @@ evaluation:
       - missing_gps_lidar
     prediction_index: last
 output:
-  dir: outputs/mmw_clean_u0
-  run_name: seed1
+  dir: outputs/mmw_trajectory_u0
+  run_name: seed0
   group_by_scene: false
   overwrite: false
   progress:

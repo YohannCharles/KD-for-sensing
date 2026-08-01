@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -9,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from kd_sensing.engine.evaluation_pass_runtime import metadata_rows_from_batch, prepare_evaluation_batch
+from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_ID
 from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
 from kd_sensing.evaluation.metrics import beam_classification_circular_summary
 from kd_sensing.losses.pcpf_temporal_risk import topology_risk_target
@@ -77,7 +79,18 @@ def collect_pcpf_observations(
         name: [] for name in ("uniform", "static_prior", "pcpf_analytic", *sorted(controls))
     }
     replacement_weights: dict[str, list[torch.Tensor]] = {key: [] for key in replacement_probability}
-    strings = {key: [] for key in ("weather", "domain", "pattern", "mask_group", "sample_id", "group_id")}
+    strings = {
+        key: []
+        for key in (
+            "weather",
+            "domain",
+            "pattern",
+            "mask_group",
+            "sample_id",
+            "protocol_sample_id",
+            "group_id",
+        )
+    }
     model.to(device).eval()
     model_cfg = cfg["model"]["primary"]
     task = cfg.get("experiment", {}).get("task", "fusion")
@@ -189,8 +202,16 @@ def collect_pcpf_observations(
                     strings["pattern"].append(str(pattern_name))
                     strings["mask_group"].append(_mask_group(str(pattern_name), pattern, len(modalities)))
                     sample_id = str(row.get("stable_sample_id") or row.get("source_sample_id") or row.get("sample_id") or "unknown")
+                    source_sample_id = str(row.get("source_sample_id") or row.get("sample_id") or "unknown")
+                    protocol_domain = f"{weather}/{scenario}"
+                    protocol_sample_id = (
+                        source_sample_id
+                        if source_sample_id.startswith(f"{protocol_domain}:")
+                        else f"{protocol_domain}:{source_sample_id}"
+                    )
                     group_id = str(row.get("trajectory_group_id") or row.get("contiguous_segment_id") or sample_id)
                     strings["sample_id"].append(sample_id)
+                    strings["protocol_sample_id"].append(protocol_sample_id)
                     strings["group_id"].append(group_id)
 
     if not tensor_chunks["labels"]:
@@ -233,6 +254,118 @@ def fit_train_confidence_p90(records: Mapping[str, Any]) -> tuple[torch.Tensor, 
     return torch.stack(quantiles), torch.tensor(counts, dtype=torch.long)
 
 
+def _protocol_roles(protocol: Mapping[str, Any]) -> tuple[str, str]:
+    protocol_id = str(protocol.get("protocol_id", "")).strip()
+    fingerprint = str(protocol.get("protocol_fingerprint", "")).strip().lower()
+    train_role = str(protocol.get("train_role", "")).strip()
+    validation_role = str(protocol.get("validation_role", "")).strip()
+    if protocol_id != TRAJECTORY_PROTOCOL_ID:
+        raise ValueError(f"PCPF evaluation requires protocol_id={TRAJECTORY_PROTOCOL_ID!r}.")
+    if not protocol_id or len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+        raise ValueError("PCPF evaluation requires protocol_id and a SHA256 protocol_fingerprint.")
+    if not train_role or not validation_role or train_role == validation_role:
+        raise ValueError("PCPF evaluation requires distinct train_role and validation_role values.")
+    if any("test" in role.lower() for role in (train_role, validation_role)):
+        raise ValueError("PCPF evaluation refuses train or validation lineage bound to a test role.")
+    return train_role, validation_role
+
+
+def _protocol_summary(protocol: Mapping[str, Any]) -> dict[str, Any]:
+    _protocol_roles(protocol)
+    keys = (
+        "mode",
+        "protocol_id",
+        "protocol_fingerprint",
+        "audit_id",
+        "audit_sha256",
+        "manifest_version",
+        "split_seed",
+        "split_manifest",
+        "train_seed",
+        "train_role",
+        "validation_role",
+        "train_sample_count",
+        "validation_sample_count",
+        "train_sample_id_hash",
+        "validation_sample_id_hash",
+        "train_group_count",
+        "validation_group_count",
+        "test_group_count",
+        "outer_test_enabled",
+    )
+    return {key: protocol.get(key) for key in keys if key in protocol}
+
+
+def _validation_identity(
+    records: Mapping[str, Any],
+    *,
+    source_split: str,
+    experiment_seed: int,
+    binding: Mapping[str, Any] | None,
+    require_complete: bool = True,
+) -> dict[str, Any]:
+    patterns = [str(value) for value in records.get("pattern", ())]
+    sample_ids = [str(value) for value in records.get("sample_id", ())]
+    protocol_sample_ids = [str(value) for value in records.get("protocol_sample_id", ())]
+    if not patterns or len(patterns) != len(sample_ids) or len(patterns) != len(protocol_sample_ids):
+        raise ValueError("PCPF validation identity requires sample ids for every observation.")
+    full_indices = [index for index, pattern in enumerate(patterns) if pattern == "full"]
+    if not full_indices:
+        raise ValueError("PCPF validation identity requires the Full mask.")
+    ordered = [sample_ids[index] for index in full_indices]
+    protocol_ids = [protocol_sample_ids[index] for index in full_indices]
+    if any(value in {"", "unknown"} or value.endswith(":unknown") for value in (*ordered, *protocol_ids)):
+        raise ValueError("PCPF validation identity contains an unknown sample id.")
+    if len(set(ordered)) != len(ordered) or len(set(protocol_ids)) != len(protocol_ids):
+        raise ValueError("PCPF validation identity contains duplicate samples in the Full mask.")
+    observed_patterns = list(dict.fromkeys(patterns))
+    paired_rows: list[str] = []
+    for pattern in observed_patterns:
+        indices = [index for index, value in enumerate(patterns) if value == pattern]
+        pattern_samples = [sample_ids[index] for index in indices]
+        pattern_protocol_ids = [protocol_sample_ids[index] for index in indices]
+        if pattern_samples != ordered or pattern_protocol_ids != protocol_ids:
+            raise ValueError(f"PCPF validation mask {pattern!r} is not paired to the Full-mask sample order.")
+        paired_rows.extend(
+            f"{pattern}\t{sample_id}\t{protocol_id}"
+            for sample_id, protocol_id in zip(pattern_samples, pattern_protocol_ids, strict=True)
+        )
+    observed_protocol_hash = _text_sha256(sorted(protocol_ids))
+    expected = dict(binding or {})
+    binding_complete: bool | None = None
+    expected_count = None
+    expected_hash = None
+    if expected:
+        expected_count = int(expected.get("sample_count", -1))
+        expected_hash = str(expected.get("sample_id_sha256", "")).strip().lower()
+        count_matches = expected_count == len(ordered)
+        hash_matches = expected_hash == observed_protocol_hash
+        binding_complete = count_matches and hash_matches
+        if require_complete and not count_matches:
+            raise ValueError(
+                f"PCPF validation sample count mismatch: expected={expected_count}, actual={len(ordered)}."
+            )
+        if require_complete and not hash_matches:
+            raise ValueError("PCPF validation sample identity hash does not match the bound protocol audit.")
+    return {
+        "source_split": str(source_split),
+        "experiment_seed": int(experiment_seed),
+        "sample_count": len(ordered),
+        "mask_count": len(observed_patterns),
+        "ordered_sample_id_sha256": _text_sha256(ordered),
+        "protocol_sample_id_sha256": observed_protocol_hash,
+        "paired_mask_sample_id_sha256": _text_sha256(paired_rows),
+        "bound_sample_count": expected_count,
+        "bound_sample_id_sha256": expected_hash,
+        "protocol_binding_complete": binding_complete,
+        "outer_test_accessed": False,
+    }
+
+
+def _text_sha256(values: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(values).encode("utf-8")).hexdigest()
+
+
 def build_stage2_gate_report(
     records: Mapping[str, Any],
     gate: Mapping[str, Any],
@@ -241,7 +374,19 @@ def build_stage2_gate_report(
     train_confidence_count: torch.Tensor,
     stage2_checkpoint_sha256: str,
     bounded_evaluation: bool,
+    data_protocol: Mapping[str, Any],
+    prototype_topology: Mapping[str, Any],
+    experiment_seed: int,
+    validation_identity_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    train_role, validation_role = _protocol_roles(data_protocol)
+    validation_identity = _validation_identity(
+        records,
+        source_split=validation_role,
+        experiment_seed=experiment_seed,
+        binding=validation_identity_binding,
+        require_complete=not bounded_evaluation,
+    )
     modalities = list(records["modalities"])
     available = torch.as_tensor(records["available"], dtype=torch.bool)
     predicted = torch.as_tensor(records["raw_risk"], dtype=torch.float32)
@@ -286,8 +431,12 @@ def build_stage2_gate_report(
         "schema_version": 1,
         "report_type": "pcpf_stage2_risk_observability_gate",
         "source_training_stage": "stage2_risk",
-        "source_split": "inner_validation",
-        "train_confidence_source_split": "inner_train",
+        "source_split": validation_role,
+        "train_confidence_source_split": train_role,
+        "data_protocol": _protocol_summary(data_protocol),
+        "prototype_topology": dict(prototype_topology),
+        "experiment_seed": int(experiment_seed),
+        "validation_identity": validation_identity,
         "stage2_checkpoint_sha256": str(stage2_checkpoint_sha256),
         "expert_fingerprint": str(records["expert_fingerprint"]),
         "bounded_evaluation": bool(bounded_evaluation),
@@ -323,13 +472,29 @@ def summarize_pcpf_matrix(
         raise ValueError(f"PCPF matrix provenance is missing: {', '.join(missing_provenance)}.")
     if any(not isinstance(provenance[key], Mapping) for key in required_provenance):
         raise ValueError("PCPF matrix checkpoint, data_protocol, and normalization provenance must be mappings.")
+    protocol = provenance["data_protocol"]
+    train_role, validation_role = _protocol_roles(protocol)
+    experiment_seed = int(provenance.get("experiment_seed", -1))
+    if experiment_seed < 0:
+        raise ValueError("PCPF matrix provenance requires a non-negative experiment_seed.")
+    validation_identity = _validation_identity(
+        records,
+        source_split=validation_role,
+        experiment_seed=experiment_seed,
+        binding=provenance.get("validation_identity_binding"),
+        require_complete=not bool(records["bounded_evaluation"]),
+    )
     count = int(torch.as_tensor(records["labels"]).numel())
     all_rows = torch.ones(count, dtype=torch.bool)
     pattern_reports = _group_matrix(records, "pattern", train_confidence_p90)
     result = {
         "schema_version": 1,
         "report_type": f"pcpf_{len(pattern_reports)}_mask_diagnostics",
-        "source_split": "inner_validation",
+        "modalities": list(records["modalities"]),
+        "source_split": validation_role,
+        "train_confidence_source_split": train_role,
+        "experiment_seed": experiment_seed,
+        "validation_identity": validation_identity,
         "training_stage": records["training_stage"],
         "expert_fingerprint": records["expert_fingerprint"],
         "bounded_evaluation": bool(records["bounded_evaluation"]),
@@ -360,10 +525,11 @@ def summarize_pcpf_matrix(
         records,
         train_confidence_p90=train_confidence_p90,
         bootstrap_config=config.get("bootstrap"),
+        source_split=validation_role,
     )
     result["mechanism_diagnostics"] = mechanism
     result["R0_R7"] = (
-        _r0_r7_summary(result, historical_reference=config.get("historical_reference_summary"))
+        _r0_r7_summary(result, trajectory_r0_reference=config.get("trajectory_r0_reference_summary"))
         if tuple(records["modalities"]) == PCPF_SPARSE_CSI_MODALITIES
         else {"status": "not_applicable_without_sparse_csi"}
     )
@@ -375,6 +541,7 @@ def build_pcpf_mechanism_diagnostics(
     *,
     train_confidence_p90: torch.Tensor,
     bootstrap_config: Mapping[str, Any] | None = None,
+    source_split: str,
 ) -> dict[str, Any]:
     if tuple(records["modalities"]) != PCPF_SPARSE_CSI_MODALITIES:
         return {"status": "not_applicable_without_sparse_csi"}
@@ -382,7 +549,7 @@ def build_pcpf_mechanism_diagnostics(
     dynamicity = _dynamicity_tests(records, bootstrap)
     return {
         "status": "computed",
-        "source_split": "inner_validation",
+        "source_split": source_split,
         "claim_ineligible": True,
         "group_key": "trajectory_group_id_or_contiguous_segment_id_or_stable_sample_id",
         "bootstrap": bootstrap | {"group_count": len(set(records["group_id"]))},
@@ -676,7 +843,7 @@ def _pattern_mask_from_name(pattern: str, modalities: list[str]) -> tuple[bool, 
 def _r0_r7_summary(
     report: Mapping[str, Any],
     *,
-    historical_reference: Mapping[str, Any] | None = None,
+    trajectory_r0_reference: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     overall = report["overall"]["replacement_metrics"]
     patterns = report["patterns"]
@@ -696,11 +863,22 @@ def _r0_r7_summary(
             "csi_absent_legacy15": aggregates["csi_absent_legacy15"][name],
         }
 
-    r0 = (
-        dict(historical_reference)
-        if isinstance(historical_reference, Mapping)
-        else {"status": "historical_reference_not_supplied", "requires_external_provenance": True}
-    )
+    if not isinstance(trajectory_r0_reference, Mapping) and report.get("bounded_evaluation") is True:
+        return {
+            "status": "bounded_evaluation_has_no_r0_comparison",
+            "promotion_eligible": False,
+        }
+    if not isinstance(trajectory_r0_reference, Mapping):
+        raise ValueError("The five-modality R0--R7 matrix requires a hashed trajectory R0 reference report.")
+    r0 = dict(trajectory_r0_reference)
+    reference_contract = r0.pop("comparison_contract", None)
+    current_contract = _r0_comparison_contract(report)
+    if not isinstance(reference_contract, Mapping):
+        raise ValueError("The trajectory R0 reference is missing its comparison contract.")
+    mismatches = sorted(key for key, value in current_contract.items() if reference_contract.get(key) != value)
+    if mismatches:
+        raise ValueError(f"Trajectory R0 comparison contract mismatch: {', '.join(mismatches)}.")
+    r0["comparison_contract"] = current_contract
 
     return {
         "R0_four_modality_pcpf": r0,
@@ -721,6 +899,53 @@ def _r0_r7_summary(
             "csi_only": _metric_slice(patterns["csi_only"]["replacement_metrics"]["pcpf_analytic"]),
         },
     }
+
+
+def _r0_comparison_contract(report: Mapping[str, Any]) -> dict[str, Any]:
+    if tuple(report.get("modalities", ())) != PCPF_SPARSE_CSI_MODALITIES:
+        raise ValueError("The current R0--R7 matrix must be the five-modality PCPF evaluation.")
+    protocol = report.get("provenance", {}).get("data_protocol", {})
+    if not isinstance(protocol, Mapping) or protocol.get("protocol_id") != TRAJECTORY_PROTOCOL_ID:
+        raise ValueError(f"R0--R7 requires data_protocol.protocol_id={TRAJECTORY_PROTOCOL_ID!r}.")
+    if not str(protocol.get("audit_id", "")).strip() or not _is_sha256(protocol.get("audit_sha256")):
+        raise ValueError("R0--R7 requires a bound trajectory protocol audit.")
+    train_role, validation_role = _protocol_roles(protocol)
+    identity = report.get("validation_identity")
+    if not isinstance(identity, Mapping):
+        raise ValueError("R0--R7 requires validation identity provenance.")
+    budget = report.get("provenance", {}).get("comparison_budget", {})
+    if not isinstance(budget, Mapping) or len(str(budget.get("sha256", ""))) != 64:
+        raise ValueError("R0--R7 requires a hashed comparison budget descriptor.")
+    topology = report.get("provenance", {}).get("prototype_topology", {})
+    if (
+        not isinstance(topology, Mapping)
+        or topology.get("id") != "ula_dft_phase_cycle_v1"
+        or topology.get("formal_r0_r7_eligible") is not True
+        or not _is_sha256(topology.get("descriptor_sha256"))
+        or not _is_sha256(topology.get("audit_sha256"))
+    ):
+        raise ValueError("R0--R7 requires an audited ULA-DFT topology descriptor.")
+    return {
+        "protocol_id": str(protocol["protocol_id"]),
+        "protocol_fingerprint": str(protocol["protocol_fingerprint"]),
+        "protocol_audit_id": str(protocol["audit_id"]),
+        "protocol_audit_sha256": str(protocol["audit_sha256"]),
+        "train_role": train_role,
+        "validation_role": validation_role,
+        "experiment_seed": int(report.get("experiment_seed", -1)),
+        "validation_sample_count": int(identity.get("sample_count", -1)),
+        "validation_ordered_sample_id_sha256": str(identity.get("ordered_sample_id_sha256", "")),
+        "validation_protocol_sample_id_sha256": str(identity.get("protocol_sample_id_sha256", "")),
+        "comparison_budget_sha256": str(budget["sha256"]),
+        "prototype_topology_id": str(topology["id"]),
+        "prototype_topology_descriptor_sha256": str(topology["descriptor_sha256"]),
+        "prototype_topology_audit_sha256": str(topology["audit_sha256"]),
+    }
+
+
+def _is_sha256(value: Any) -> bool:
+    normalized = str(value).strip().lower()
+    return len(normalized) == 64 and all(char in "0123456789abcdef" for char in normalized)
 
 
 def _metric_slice(metrics: Mapping[str, Any]) -> dict[str, Any]:

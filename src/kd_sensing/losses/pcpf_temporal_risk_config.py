@@ -96,7 +96,7 @@ def _prototype_topology(value: Any) -> dict[str, Any]:
         raw = dict(value)
     else:
         raise ValueError("prototype_topology must be a string or mapping.")
-    unknown = sorted(set(raw) - {"id", "permutation", "descriptor_sha256", "audit_path"})
+    unknown = sorted(set(raw) - {"id", "permutation", "descriptor_sha256", "audit_path", "audit_sha256"})
     if unknown:
         raise ValueError(f"prototype_topology contains unsupported fields: {unknown}.")
     topology_id = str(raw.get("id", "")).strip().lower()
@@ -115,18 +115,22 @@ def _prototype_topology(value: Any) -> dict[str, Any]:
         permutation = None
     descriptor_sha256 = str(raw.get("descriptor_sha256", "")).strip().lower()
     audit_path = str(raw.get("audit_path", "")).strip()
+    audit_sha256 = str(raw.get("audit_sha256", "")).strip().lower()
     if topology_id == "ula_dft_phase_cycle_v1":
         if len(descriptor_sha256) != 64 or any(char not in "0123456789abcdef" for char in descriptor_sha256):
             raise ValueError("ula_dft_phase_cycle_v1 requires a valid descriptor_sha256.")
         if not audit_path:
             raise ValueError("ula_dft_phase_cycle_v1 requires prototype_topology.audit_path.")
-    elif descriptor_sha256 or audit_path:
+        if len(audit_sha256) != 64 or any(char not in "0123456789abcdef" for char in audit_sha256):
+            raise ValueError("ula_dft_phase_cycle_v1 requires a valid audit_sha256.")
+    elif descriptor_sha256 or audit_path or audit_sha256:
         raise ValueError(f"prototype topology {topology_id!r} does not accept physical audit fields.")
     return {
         "id": topology_id,
         "permutation": permutation,
         "descriptor_sha256": descriptor_sha256,
         "audit_path": audit_path,
+        "audit_sha256": audit_sha256,
     }
 
 

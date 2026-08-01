@@ -10,7 +10,8 @@ DEEPSENSE6G_SCENES = {31, 32, 33, 34}
 
 
 def validate_loaded_config(cfg: dict[str, Any]) -> None:
-    data = cfg.get("data", {}).get("dataset", {})
+    data_section = cfg.get("data", {})
+    data = data_section.get("dataset", {})
     model = cfg.get("model", {}).get("primary", {})
     if cfg.get("preprocessing"):
         return
@@ -36,6 +37,23 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Retained radar inputs require fft_tuple [64, *, 128] and clipped_range=128.")
     if str(model.get("type", "")) == "pcpf_temporal_risk_fusion":
         _validate_pcpf_config(cfg, model, data)
+    if dataset_type == "mmw":
+        if data_section.get("split_protocol") != "mmw_id_stratified_block_v1":
+            raise ValueError("MMW data.split_protocol must be 'mmw_id_stratified_block_v1'.")
+        if int(data_section.get("split_seed", -1)) < 0:
+            raise ValueError("MMW data.split_seed must be a non-negative integer.")
+        if int(data_section.get("block_size", 0)) != 128:
+            raise ValueError("MMW data.block_size must be 128 for the canonical protocol.")
+        if data_section.get("split_ratios") != {"train": 0.70, "validation": 0.15, "test": 0.15}:
+            raise ValueError("MMW data.split_ratios must be the canonical 70/15/15 mapping.")
+        retired_names = {"split_mode", "split_strategy", "train_ratio", "val_ratio", "test_ratio"}
+        retired_split_fields = sorted((set(data_section) | set(data)) & retired_names)
+        if retired_split_fields:
+            raise ValueError(f"Retired MMW split fields are not supported: {retired_split_fields}.")
+        experiment = cfg.get("experiment", {})
+        train_seed = int(experiment.get("train_seed", experiment.get("seed", 0)))
+        if train_seed != int(experiment.get("seed", train_seed)):
+            raise ValueError("experiment.train_seed and experiment.seed must match; split_seed is configured separately.")
     if dataset_type == "deepsense6g":
         domains = data.get("domains")
         if domains:

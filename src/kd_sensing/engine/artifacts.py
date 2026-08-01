@@ -106,6 +106,7 @@ class ArtifactWriter:
         runtime_scope = runtime_scope_metadata_from_config(self.cfg)
         train_log = {
             **history,
+            "data_protocol": deepcopy(self.cfg.get("data_protocol", {})),
             "epoch_logs": epoch_logs,
             "startup_summary": startup_summary,
             "final_test_metrics": final_test_metrics,

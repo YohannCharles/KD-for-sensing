@@ -1,3 +1,42 @@
-[features]
-codex_hooks = true
+# ============================================================
+# 主 Agent：GPT-5.6 Sol
+# ============================================================
 
+model = "gpt-5.6-sol"
+
+# 主 Agent 使用 Max 推理强度
+model_reasoning_effort = "max"
+
+
+# ============================================================
+# 功能开关
+# ============================================================
+
+[features]
+
+# 启用生命周期 Hooks
+# codex_hooks 是旧别名，当前应使用 hooks
+hooks = true
+
+# 启用多 Agent 协作工具
+multi_agent = true
+
+
+# ============================================================
+# 子 Agent
+# ============================================================
+
+[agents]
+
+# 启用多 Agent
+enabled = true
+
+# 最多并行运行 6 个子 Agent
+# 不包含主 Agent，因此最多是 1 个 Sol + 6 个 Luna
+max_concurrent_threads_per_session = 6
+
+# 子 Agent 默认使用 GPT-5.6 Luna
+default_subagent_model = "gpt-5.6-luna"
+
+# Luna 的统一默认推理强度
+default_subagent_reasoning_effort = "high"

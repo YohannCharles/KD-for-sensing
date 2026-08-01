@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
 from kd_sensing.data.mmw.protocol import validate_mmw_config_protocol
+from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 from kd_sensing.engine.data_factory_scalers import (
     fit_gps_scaler,
     gps_scaler_kwargs,
@@ -69,7 +70,7 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
     dataset_cfg = cfg.get("data", {}).get("dataset", {})
     domains = dataset_cfg.get("domains") if isinstance(dataset_cfg, dict) else None
     if isinstance(domains, list) and domains:
-        if cfg.get("data_protocol", {}).get("mode") == "trajectory_disjoint_development":
+        if cfg.get("data_protocol", {}).get("mode") == TRAJECTORY_PROTOCOL_MODE:
             return any(isinstance(domain, dict) and bool(domain.get("val_csv_name")) for domain in domains)
         return all(isinstance(domain, dict) and bool(domain.get("val_csv_name")) for domain in domains)
     return bool(dataset_cfg.get("val_csv_name"))
@@ -77,14 +78,20 @@ def has_validation_csv(cfg: dict[str, Any]) -> bool:
 
 def final_test_enabled(cfg: dict[str, Any]) -> bool:
     final_test = cfg.get("training", {}).get("final_test")
+    dataset_type = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
     if final_test is None:
-        return True
-    if isinstance(final_test, bool):
+        enabled = dataset_type != "mmw"
+    elif isinstance(final_test, bool):
         enabled = final_test
     elif not isinstance(final_test, dict):
         raise ValueError("training.final_test must be a mapping or boolean.")
     else:
         enabled = bool(final_test.get("enabled", True))
+    if dataset_type == "mmw":
+        requested = bool(cfg.get("runtime", {}).get("evaluate_test_requested", False))
+        if enabled != requested:
+            raise ValueError("MMW test loading requires the explicit --evaluate-test runtime authorization.")
+        return requested
     return enabled
 
 
@@ -134,7 +141,7 @@ def build_dataloaders(
     )
     dataset_type = str(cfg.get("data", {}).get("dataset", {}).get("type", "")).strip().lower()
     if dataset_type == "mmw" and validation_dataset is None:
-        raise ValueError("Clean MMW training requires an inner-validation DataLoader.")
+        raise ValueError("MMW trajectory training requires a validation DataLoader.")
     dataloaders = {
         "train": build_dataloader(
             train_dataset,
@@ -162,7 +169,8 @@ def build_dataloaders(
     if protocol_audit is not None:
         identity = _mmw_protocol_identity(protocol_audit, cfg)
         for loader in dataloaders.values():
-            loader.clean_protocol_identity = dict(identity)
+            loader.data_protocol_identity = dict(identity)
+            loader.dataset.data_protocol_identity = dict(identity)
     return dataloaders
 
 
@@ -321,7 +329,7 @@ def _build_pooled_domain_dataset(cfg: dict[str, Any], split: str, **dataset_kwar
         if domain_id in seen:
             raise ValueError(f"Duplicate pooled domain id: {domain_id}.")
         seen.add(domain_id)
-    if cfg.get("data_protocol", {}).get("mode") == "trajectory_disjoint_development":
+    if cfg.get("data_protocol", {}).get("mode") == TRAJECTORY_PROTOCOL_MODE:
         csv_key = {"train": "train_csv_name", "validation": "val_csv_name", "test": "test_csv_name"}[split]
         domains = [domain for domain in domains if bool(domain.get(csv_key))]
         if not domains:
@@ -384,6 +392,16 @@ def _mmw_protocol_identity(audit: dict[str, Any], cfg: dict[str, Any]) -> dict[s
     protocol_path = Path(str(section["path"])).resolve()
     report_path = Path(str(section["audit_report"])).resolve()
     return {
+        "split_protocol": str(section["protocol_id"]),
+        "protocol_version": int(section["protocol_version"]),
+        "split_protocol_version": int(section["protocol_version"]),
+        "split_seed": int(section["split_seed"]),
+        "block_size": int(section["block_size"]),
+        "split_manifest": str(section.get("split_manifest", section["path"])),
+        "split_manifest_hash": str(section["split_manifest_hash"]),
+        "data_source_hash": str(section["data_source_hash"]),
+        "window_config_hash": str(section["window_config_hash"]),
+        "weather_binding": bool(section["weather_binding"]),
         "protocol_id": str(section["protocol_id"]),
         "protocol_fingerprint": audit["protocol_fingerprint"],
         "protocol_file_sha256": hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
@@ -391,9 +409,19 @@ def _mmw_protocol_identity(audit: dict[str, Any], cfg: dict[str, Any]) -> dict[s
         "audit_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
         "train_sample_id_hash": audit["train_sample_id_hash"],
         "validation_sample_id_hash": audit["validation_sample_id_hash"],
+        "test_sample_id_hash": audit["test_sample_id_hash"],
         "train_sample_count": int(audit["train_sample_count"]),
         "validation_sample_count": int(audit["validation_sample_count"]),
-        "outer_test_accessed": False,
+        "test_sample_count": int(audit["test_sample_count"]),
+        "train_block_count": int(audit["block_counts"]["train"]),
+        "validation_block_count": int(audit["block_counts"]["validation"]),
+        "test_block_count": int(audit["block_counts"]["test"]),
+        "train_trajectory_count": int(audit["trajectory_counts"]["train"]),
+        "validation_trajectory_count": int(audit["trajectory_counts"]["validation"]),
+        "test_trajectory_count": int(audit["trajectory_counts"]["test"]),
+        "train_seed": int(cfg.get("experiment", {}).get("train_seed", cfg.get("experiment", {}).get("seed", 0))),
+        "test_evaluated": bool(section.get("test_evaluated", False)),
+        "outer_test_accessed": bool(section.get("test_evaluated", False)),
     }
 
 

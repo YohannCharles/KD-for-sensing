@@ -13,7 +13,6 @@ data:
   dataloader:
     train_batch_size: 64
     validation_batch_size: 64
-    test_batch_size: 64
     num_workers: 8
     pin_memory: true
     persistent_workers: true
@@ -44,6 +43,19 @@ evaluation:
     patterns: [all_nonempty]
     prediction_index: last
   pcpf_diagnostics:
+    comparison_budget:
+      id: pcpf_trajectory_r0_r7_budget_v1
+      stage_epochs:
+        stage1_expert: 40
+        stage2_risk: 20
+        stage3_fusion: 10
+      stage_learning_rates:
+        stage1_expert: 0.0005
+        stage2_risk: 0.0005
+        stage3_fusion: 0.0001
+      train_batch_size: 64
+      validation_batch_size: 64
+      scheduler: none
     bootstrap:
       seed: 1
       resamples: 10000

@@ -2,7 +2,7 @@
 
 ### Requirement: PCPF-T 可拟合风险状态只能来自绑定协议的 train role
 
-PCPF-T 的风险分量 mean/std、静态能力先验、`mean_train_risk`、温度、解析融合参数和 checkpoint selection MUST 只使用绑定 protocol 的 train role 与只读 validation role。sparse-CSI 正式路线 MUST 绑定 `mmw_trajectory_disjoint_v1` 的 37,510 个 train window 与 6,365 个 validation window；所有可拟合统计 MUST 仅遍历 train，validation MUST 不更新模型、统计、阈值或 gate，2,985 个 sealed test window MUST 不被构建或读取。
+PCPF-T 的风险分量 mean/std、静态能力先验、`mean_train_risk`、温度、解析融合参数和 checkpoint selection MUST 只使用所绑定 `mmw_id_stratified_block_v1` seed manifest 的 train role 与只读 validation role。所有可拟合统计 MUST 仅遍历 manifest 声明的 train windows，validation/test MUST 不更新模型、统计、阈值、prototype、memory bank 或 gate；默认运行 MUST 记录 `test_evaluated=false`。
 
 #### Scenario: 准备 Stage 2 或 Stage 3
 
@@ -12,13 +12,13 @@ PCPF-T 的风险分量 mean/std、静态能力先验、`mean_train_risk`、温�
 
 ### Requirement: 历史 development evaluation 必须显式降级声明
 
-PCPF-T MAY 对已在历史开发中使用的 development split 做只读诊断，但配置和全部报告 MUST 固定记录 `claim_ineligible: true`。outer test、confirmation、trainval 或 merged split MUST 不得被构建、读取或用于调参、gate、融合和模型选择。
+PCPF-T MAY 对 validation 做只读诊断，但配置和全部开发报告 MUST 固定记录 `claim_ineligible: true`。test 只能由独立显式最终评估读取；confirmation、trainval、merged split 或 test-driven gate/融合/模型选择 MUST 被拒绝。
 
-#### Scenario: 评估 historical development split
+#### Scenario: 评估 validation 或显式 test
 
-- **WHEN** resolved config 将 split 标记为 historical development
+- **WHEN** resolved config 运行开发 validation 或显式最终 test
 - **THEN** evaluator MUST 保持只读并输出 `claim_ineligible: true`
-- **AND** 任何 outer-test 请求 MUST 在 dataset 创建前失败
+- **AND** 未显式授权的 test 请求 MUST 在 dataset 创建前失败
 
 ### Requirement: PCPF-T 输入必须保持历史 sensing-only
 

@@ -1,4 +1,5 @@
 import ast
+import importlib.metadata
 import tomllib
 from pathlib import Path
 
@@ -10,7 +11,6 @@ PUBLIC_SCRIPTS = {
     "kd-sensing-preprocess": "kd_sensing.cli.preprocess:main",
 }
 RETAINED_SCRIPTS = {
-    "audit_clean_inner_protocol.py",
     "eval_mmw_all_weather_matrix.py",
     "launch_mmw_all_weather_matrix.py",
     "summarize_mmw_all_weather_matrix.py",
@@ -18,6 +18,22 @@ RETAINED_SCRIPTS = {
 }
 RETAINED_CLI_MODULES = {"__init__.py", "common.py", "evaluate.py", "preprocess.py", "train.py"}
 PROTECTED_SYSTEM_PATHS = ("/root/.container_env", "/etc/profile", "/etc/environment", "/etc/ssh/sshd_config")
+RETIRED_SKILL_REFERENCES = {
+    "docs/agent_context/claims.md",
+    "docs/agent_context/diagnostics.md",
+    "docs/agent_context/openspec.md",
+    "kd-sensing-jepa-gps-shortcut-benchmark",
+    "kd-sensing-jepa-visual-analysis",
+    "kd-sensing-paper-export",
+    "kd-sensing-project-surface-doctor",
+    "kd-sensing-runs",
+    "openspec/specs/canonical-config-resolution/spec.md",
+    "openspec/specs/component-registry/spec.md",
+    "openspec/specs/mainline-experiment-documentation/spec.md",
+    "openspec/specs/model-architecture-extension-contract/spec.md",
+    "openspec/specs/modular-sequence-model/spec.md",
+    "openspec/specs/research-claim-harvester/spec.md",
+}
 RETIRED_OWNERS = {
     "configs/mmw/t2.yaml",
     "configs/mmw/s1.yaml",
@@ -56,7 +72,28 @@ def test_public_cli_targets_exist():
         assert function_name in {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
-def test_cli_and_script_trees_only_keep_clean_u0_baseline_owners():
+def test_installed_editable_cli_surface_matches_pyproject():
+    distribution = importlib.metadata.distribution("kd-sensing")
+    installed_scripts = {
+        entry.name: entry.value
+        for entry in distribution.entry_points
+        if entry.group == "console_scripts" and entry.name.startswith("kd-sensing-")
+    }
+
+    assert installed_scripts == PUBLIC_SCRIPTS
+
+
+def test_project_skills_do_not_reference_retired_context_or_cli_surfaces():
+    skill_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / ".codex" / "skills").glob("*/SKILL.md"))
+        if path.parent.name.startswith("kd-")
+    )
+
+    assert all(reference not in skill_text for reference in RETIRED_SKILL_REFERENCES)
+
+
+def test_cli_and_script_trees_only_keep_retained_mmw_workflow_owners():
     cli_modules = {path.name for path in (SRC / "kd_sensing/cli").glob("*.py")}
     scripts = {
         path.relative_to(ROOT / "scripts").as_posix()
@@ -85,7 +122,7 @@ def test_openspec_current_context_is_scoped_to_pcpf_mainline() -> None:
 
     assert specs == {
         "clean-data-integrity",
-        "mmw-trajectory-disjoint-protocol",
+        "mmw-id-stratified-block-protocol",
         "repo-boundaries",
         "u0-mainline",
     }

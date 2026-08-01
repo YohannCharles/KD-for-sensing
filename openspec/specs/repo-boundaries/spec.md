@@ -8,7 +8,7 @@
 
 ### Requirement: current OpenSpec 必须保持最小
 
-`openspec/specs/` MUST 只保留 `clean-data-integrity`、`mmw-trajectory-disjoint-protocol`、`u0-mainline` 与 `repo-boundaries`。完成或停止的 change MUST 从工作树移除；历史由 Git 和仓库外快照追溯，不得保留 `openspec/changes/archive/`。PCPF-T 实施期间 MUST 是唯一 active change。
+`openspec/specs/` MUST 只保留 `clean-data-integrity`、`mmw-id-stratified-block-protocol`、`u0-mainline` 与 `repo-boundaries`。完成或停止的 change MUST 从工作树移除；历史由 Git 和仓库外快照追溯，不得保留 `openspec/changes/archive/`。PCPF-T 实施期间 MUST 是唯一 active change。
 
 #### Scenario: 枚举 current OpenSpec
 

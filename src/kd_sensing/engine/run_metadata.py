@@ -102,9 +102,9 @@ def dataloaders_run_metadata(dataloaders: dict[str, DataLoader]) -> dict[str, An
         generator_metadata = getattr(loader, "generator_metadata", None)
         if isinstance(generator_metadata, dict):
             metadata["dataloader_generator"] = dict(generator_metadata)
-        protocol_identity = getattr(loader, "clean_protocol_identity", None)
+        protocol_identity = getattr(loader, "data_protocol_identity", None)
         if isinstance(protocol_identity, dict):
-            metadata["clean_protocol"] = dict(protocol_identity)
+            metadata["data_protocol"] = dict(protocol_identity)
         if split == "train":
             sampler_metadata = getattr(getattr(loader, "sampler", None), "domain_balanced_metadata", None)
             if isinstance(sampler_metadata, dict):
@@ -124,12 +124,18 @@ def prediction_setup_metadata(
     seq_len = int(dataset_cfg.get("seq_len", model_cfg.get("seq_length", 0)) or 0)
     num_pred = int(dataset_cfg.get("num_pred", model_cfg.get("num_pred", 0)) or 0)
     temporal_cfg = cfg.get("temporal_missing", {})
+    enabled_modalities = list(resolve_enabled_modalities(cfg))
+    if (
+        str(primary_cfg.get("type", "")).strip().lower() == "pcpf_temporal_risk_fusion"
+        and bool(primary_cfg.get("use_sparse_csi", False))
+    ):
+        enabled_modalities.append("csi")
     metadata = {
         "dataset_type": str(dataset_cfg.get("type", "")).strip().lower(),
         "scene": dataset_cfg.get("scene"),
         "seq_len": seq_len,
         "num_pred": num_pred,
-        "enabled_modalities": list(resolve_enabled_modalities(cfg)),
+        "enabled_modalities": enabled_modalities,
         "objective": "beam",
         "task": cfg.get("experiment", {}).get("task", "fusion"),
         "model": primary_cfg.get("type"),

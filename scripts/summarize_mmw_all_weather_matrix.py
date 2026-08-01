@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize Clean MMW U0 and retained baseline evaluation rows."""
+"""Summarize ID-stratified block MMW evaluation rows."""
 
 from __future__ import annotations
 
@@ -13,9 +13,19 @@ from typing import Any, Iterable
 
 
 RETAINED_METHODS = ("U0", "amber_full", "rmbp_mm")
+PROTOCOL_IDENTITY_KEYS = (
+    "split_protocol",
+    "protocol_version",
+    "split_seed",
+    "block_size",
+    "split_manifest_hash",
+    "data_source_hash",
+    "window_config_hash",
+    "weather_binding",
+)
 DEFAULT_GROUP_BY = (
     "method",
-    "seed",
+    "train_seed",
     "eval_family",
     "pattern",
     "missing_rate",
@@ -23,7 +33,7 @@ DEFAULT_GROUP_BY = (
     "metric_profile",
 )
 PAIR_KEYS = (
-    "seed",
+    "train_seed",
     "domain_id",
     "eval_family",
     "pattern",
@@ -36,7 +46,7 @@ PAIR_KEYS = (
 )
 NON_METRIC_FIELDS = {
     "method",
-    "seed",
+    "train_seed",
     "domain_id",
     "condition",
     "scene",
@@ -53,11 +63,12 @@ NON_METRIC_FIELDS = {
     "sample_count",
     "expected_sample_count",
     "expected_domain_count",
+    *PROTOCOL_IDENTITY_KEYS,
 }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Summarize Clean MMW U0, AMBER, and RMBP evaluation CSV rows.")
+    parser = argparse.ArgumentParser(description="Summarize ID-stratified block MMW evaluation rows.")
     parser.add_argument("--rows-csv", "--input", dest="rows_csv", action="append", required=True, help="Input evaluation rows CSV. Repeatable.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--group-by", default=",".join(DEFAULT_GROUP_BY), help="Comma-separated rollup columns.")
@@ -78,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.paired_deltas:
         _write_csv(output_dir / "paired_deltas.csv", paired, fallback_columns=("method", "baseline", *PAIR_KEYS))
     summary = {
+        "protocol_identity": {key: rows[0][key] for key in PROTOCOL_IDENTITY_KEYS},
         "methods": sorted({row["method"] for row in rows}),
         "input_rows": len(rows),
         "rollup_rows": len(rollups),
@@ -98,6 +110,16 @@ def _validate_rows(rows: list[dict[str, str]]) -> None:
     missing = [index for index, row in enumerate(rows, start=2) if not row.get("method", "").strip()]
     if missing:
         raise ValueError(f"Rows are missing method values at CSV lines: {missing}")
+    incomplete = [
+        index
+        for index, row in enumerate(rows, start=2)
+        if any(not str(row.get(key, "")).strip() for key in PROTOCOL_IDENTITY_KEYS)
+    ]
+    if incomplete:
+        raise ValueError(f"Rows are missing complete MMW protocol identity at CSV lines: {incomplete}")
+    identities = {tuple(row[key] for key in PROTOCOL_IDENTITY_KEYS) for row in rows}
+    if len(identities) != 1:
+        raise ValueError("Refusing to aggregate rows from different MMW protocol, seed, manifest, source, or window identities.")
 
 
 def _rollups(rows: list[dict[str, str]], group_by: tuple[str, ...]) -> list[dict[str, Any]]:

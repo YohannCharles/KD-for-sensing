@@ -51,6 +51,23 @@ def test_build_dataloaders_respects_final_test_policy(monkeypatch, final_test, e
     assert sorted(dataloaders) == sorted(expected_splits)
 
 
+def test_mmw_defaults_to_no_final_test() -> None:
+    assert data_factory.final_test_enabled({"data": {"dataset": {"type": "mmw"}}, "training": {}}) is False
+
+
+def test_mmw_test_requires_explicit_runtime_authorization() -> None:
+    cfg = {
+        "data": {"dataset": {"type": "mmw"}},
+        "training": {"final_test": {"enabled": True}},
+        "runtime": {"evaluate_test_requested": False},
+    }
+    with pytest.raises(ValueError, match="explicit --evaluate-test"):
+        data_factory.final_test_enabled(cfg)
+
+    cfg["runtime"]["evaluate_test_requested"] = True
+    assert data_factory.final_test_enabled(cfg) is True
+
+
 def _finalize_context(tmp_path, *, final_test: object | None, dataloaders: dict) -> SimpleNamespace:
     return SimpleNamespace(
         cfg={"training": {} if final_test is None else {"final_test": final_test}},

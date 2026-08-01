@@ -1,6 +1,6 @@
 import argparse
 
-from kd_sensing.cli.common import load_cli_config, parse_cli_args, print_result
+from kd_sensing.cli.common import bind_cli_mmw_protocol, load_cli_config, parse_cli_args, print_result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -8,6 +8,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", required=True, help="Path to a YAML config file.")
     parser.add_argument("--resume", help="Resume from an explicit checkpoint path.")
     parser.add_argument("--auto-resume", action="store_true", help="Resume from checkpoints/last.pth.")
+    parser.add_argument("--split-seed", type=int, help="MMW trajectory split seed; defaults to the config value (0).")
+    parser.add_argument("--train-seed", type=int, help="Model initialization, shuffling, and dropout seed.")
+    parser.add_argument("--evaluate-test", action="store_true", help="Explicitly load and evaluate the sealed MMW test split.")
     parser.add_argument("--num-workers", type=int, help="Set DataLoader workers.")
     parser.add_argument("--prefetch-factor", type=int, help="Set DataLoader prefetch factor.")
     parser.add_argument("--persistent-workers", action="store_true")
@@ -24,6 +27,7 @@ def run(argv: list[str] | None = None) -> dict:
 
     cfg = load_cli_config(args, unknown, parser=parser)
     _apply_runtime_args(cfg, args)
+    bind_cli_mmw_protocol(cfg, split_seed=args.split_seed)
     cfg.setdefault("runtime", {})["cli_config_path"] = args.config
     from kd_sensing.engine.trainer import train
 
@@ -35,6 +39,11 @@ def run(argv: list[str] | None = None) -> dict:
 def _apply_runtime_args(cfg: dict, args: argparse.Namespace) -> None:
     training = cfg.setdefault("training", {})
     loader = cfg.setdefault("data", {}).setdefault("dataloader", {})
+    cfg.setdefault("runtime", {})["evaluate_test_requested"] = bool(args.evaluate_test)
+    if args.train_seed is not None:
+        if int(args.train_seed) < 0:
+            raise ValueError("--train-seed must be non-negative.")
+        cfg.setdefault("experiment", {}).update(seed=int(args.train_seed), train_seed=int(args.train_seed))
     if args.resume and args.auto_resume:
         raise ValueError("Use either --resume PATH or --auto-resume, not both.")
     if args.resume:
