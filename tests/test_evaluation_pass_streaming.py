@@ -75,3 +75,31 @@ def test_evaluation_pass_streams_by_default_and_captures_only_on_request(monkeyp
     for key in ("val_loss", "val_acc", "val_atop3", "val_adba"):
         assert streamed.metrics[key] == pytest.approx(captured.metrics[key])
         assert streamed.metrics[key] == pytest.approx(legacy[key])
+
+
+def test_evaluation_pass_rejects_non_finite_logits_and_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_lightweight_step(monkeypatch)
+    model = torch.nn.Identity()
+    batch = {
+        "logits": torch.tensor([[[float("nan"), 1.0, 0.0, 0.0]]]),
+        "labels": torch.tensor([[1]]),
+    }
+
+    with pytest.raises(FloatingPointError, match="batch 0.*prediction logits"):
+        evaluation_pass.run_evaluation_pass(
+            model,
+            [batch],
+            _config(),
+            lambda logits, labels: F.cross_entropy(logits, labels),
+            torch.device("cpu"),
+        )
+
+    batch["logits"] = torch.tensor([[[4.0, 1.0, 0.0, 0.0]]])
+    with pytest.raises(FloatingPointError, match="batch 0.*validation loss"):
+        evaluation_pass.run_evaluation_pass(
+            model,
+            [batch],
+            _config(),
+            lambda _logits, _labels: torch.tensor(float("nan")),
+            torch.device("cpu"),
+        )

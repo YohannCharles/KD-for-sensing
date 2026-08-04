@@ -22,6 +22,13 @@ PCPF_SENSING_MODALITIES = ("image", "radar", "gps", "lidar")
 PCPF_SPARSE_CSI_MODALITIES = (*PCPF_SENSING_MODALITIES, "csi")
 
 
+def _protocol_sample_id(metadata: Mapping[str, Any]) -> str:
+    value = metadata.get("source_sample_id") or metadata.get("sample_id")
+    if value in (None, ""):
+        raise ValueError("PCPF evaluation metadata is missing its audited protocol sample identity.")
+    return str(value)
+
+
 def collect_pcpf_observations(
     model: Any,
     dataloader: Any,
@@ -202,13 +209,7 @@ def collect_pcpf_observations(
                     strings["pattern"].append(str(pattern_name))
                     strings["mask_group"].append(_mask_group(str(pattern_name), pattern, len(modalities)))
                     sample_id = str(row.get("stable_sample_id") or row.get("source_sample_id") or row.get("sample_id") or "unknown")
-                    source_sample_id = str(row.get("source_sample_id") or row.get("sample_id") or "unknown")
-                    protocol_domain = f"{weather}/{scenario}"
-                    protocol_sample_id = (
-                        source_sample_id
-                        if source_sample_id.startswith(f"{protocol_domain}:")
-                        else f"{protocol_domain}:{source_sample_id}"
-                    )
+                    protocol_sample_id = _protocol_sample_id(row)
                     group_id = str(row.get("trajectory_group_id") or row.get("contiguous_segment_id") or sample_id)
                     strings["sample_id"].append(sample_id)
                     strings["protocol_sample_id"].append(protocol_sample_id)
@@ -275,11 +276,18 @@ def _protocol_summary(protocol: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
         "mode",
         "protocol_id",
+        "protocol_version",
+        "assignment_algorithm",
         "protocol_fingerprint",
         "audit_id",
         "audit_sha256",
         "manifest_version",
         "split_seed",
+        "block_size",
+        "split_manifest_hash",
+        "data_source_hash",
+        "window_config_hash",
+        "weather_binding",
         "split_manifest",
         "train_seed",
         "train_role",
@@ -288,6 +296,9 @@ def _protocol_summary(protocol: Mapping[str, Any]) -> dict[str, Any]:
         "validation_sample_count",
         "train_sample_id_hash",
         "validation_sample_id_hash",
+        "train_block_count",
+        "validation_block_count",
+        "test_block_count",
         "train_group_count",
         "validation_group_count",
         "test_group_count",

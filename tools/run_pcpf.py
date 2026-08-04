@@ -36,7 +36,7 @@ from kd_sensing.data.mmw.trajectory_protocol import (
     validate_split_cache_identity,
 )
 from kd_sensing.data.pcpf_sparse_csi import PCPFSparseCSISidecar
-from kd_sensing.data.temporal_missing import apply_training_temporal_missing
+from kd_sensing.data.temporal_missing import PCPF_SPARSE_CSI_MODALITIES, apply_training_temporal_missing
 from kd_sensing.data.transform_ops.gps import load_gps_coordinate_cache, read_gps_latlon
 from kd_sensing.data.transform_ops.lidar import parameterized_lidar_cache_dir, validate_lidar_cache_metadata
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
@@ -98,6 +98,7 @@ PROTOCOL_LINEAGE_KEYS = (
     "protocol_id",
     "protocol_version",
     "manifest_version",
+    "assignment_algorithm",
     "protocol_fingerprint",
     "audit_id",
     "audit_sha256",
@@ -144,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     resolve.add_argument("--batch-size", type=int)
     resolve.add_argument("--num-workers", type=int)
     resolve.add_argument("--train-seed", type=int)
+    resolve.add_argument("--single-modality", choices=PCPF_SPARSE_CSI_MODALITIES)
     resolve.add_argument("--smoke", action="store_true")
 
     preflight = subparsers.add_parser("preflight")
@@ -173,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     real.add_argument("--device", default="auto")
     real.add_argument("--stage1-template")
     real.add_argument("--stage1-checkpoint")
+    real.add_argument("--topology-audit")
+    real.add_argument("--batch-size", type=int)
 
     args = parser.parse_args(argv)
     if args.action == "prepare-trajectory":
@@ -199,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             num_workers=args.num_workers,
             split_seed=args.split_seed,
             train_seed=args.train_seed,
+            single_modality=args.single_modality,
             smoke=args.smoke,
             template=Path(args.template) if args.template else None,
             topology_audit=Path(args.topology_audit) if args.topology_audit else None,
@@ -241,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         device_name=args.device,
         stage1_template=Path(args.stage1_template) if args.stage1_template else None,
         stage1_checkpoint=Path(args.stage1_checkpoint) if args.stage1_checkpoint else None,
+        topology_audit=Path(args.topology_audit) if args.topology_audit else None,
+        batch_size=args.batch_size,
         split_seed=args.split_seed,
     )
     print(json.dumps(report, indent=2))
@@ -366,6 +373,7 @@ def _protocol_binding(
         "protocol_version": int(protocol["protocol_version"]),
         "split_protocol_version": int(protocol["protocol_version"]),
         "manifest_version": protocol["manifest_version"],
+        "assignment_algorithm": protocol["assignment_algorithm"],
         "protocol_fingerprint": protocol["protocol_fingerprint"],
         "audit_id": audit["audit_id"],
         "audit_sha256": audit_sha256,
@@ -488,6 +496,7 @@ def resolve_config(
     batch_size: int | None,
     num_workers: int | None,
     smoke: bool,
+    single_modality: str | None = None,
     template: Path | None = None,
     split_seed: int = TRAJECTORY_SPLIT_SEED,
     train_seed: int | None = None,
@@ -506,6 +515,7 @@ def resolve_config(
     _apply_train_seed(cfg, train_seed)
     cfg.setdefault("runtime", {})["evaluate_test_requested"] = False
     _resolve_sparse_csi_paths(cfg)
+    fixed_modality = _configure_single_modality_diagnostic(cfg, stage=stage, modality=single_modality)
     configured_stage = cfg.get("model", {}).get("primary", {}).get("training_stage")
     if configured_stage != STAGE_NAMES[stage]:
         raise ValueError(f"Template {template_path} selects {configured_stage!r}, but --stage {stage} requires {STAGE_NAMES[stage]!r}.")
@@ -601,6 +611,9 @@ def resolve_config(
         "outer_test_accessed": False,
         "frame_cache_binding": frame_cache_binding,
         "sparse_csi_cache_binding": sparse_cache_binding,
+        "single_modality_diagnostic": (
+            {"enabled": True, "fixed_modality": fixed_modality} if fixed_modality is not None else None
+        ),
     }
     output = output.resolve()
     dump_config(cfg, output)
@@ -617,6 +630,37 @@ def resolve_config(
         encoding="utf-8",
     )
     return resolved
+
+
+def _configure_single_modality_diagnostic(
+    cfg: dict[str, Any],
+    *,
+    stage: str,
+    modality: str | None,
+) -> str | None:
+    if modality is None:
+        return None
+    fixed_modality = str(modality).strip().lower()
+    if stage != "stage1":
+        raise ValueError("--single-modality is restricted to fresh-start Stage 1 diagnostics.")
+    primary = cfg.get("model", {}).get("primary", {})
+    configured = tuple(str(item) for item in primary.get("modalities", PCPF_SPARSE_CSI_MODALITIES[:-1]))
+    available = (*configured, "csi") if bool(primary.get("use_sparse_csi", False)) else configured
+    if fixed_modality not in available:
+        raise ValueError(f"--single-modality must be one of {list(available)}, got {fixed_modality!r}.")
+
+    temporal = cfg.setdefault("temporal_missing", {})
+    for key in ("schedule_id", "panel_size", "condition_counts", "subset_balance", "token_balance"):
+        temporal.pop(key, None)
+    temporal.update(enabled=True, mode="fixed_single_modality", fixed_modality=fixed_modality)
+    cfg.setdefault("evaluation", {}).setdefault("missing_patterns", {})["enabled"] = False
+    cfg.setdefault("experiment", {})["single_modality_diagnostic"] = {
+        "enabled": True,
+        "fixed_modality": fixed_modality,
+        "stage1_only": True,
+        "claim_ineligible": True,
+    }
+    return fixed_modality
 
 
 def preflight_config(path: Path, device: torch.device) -> dict[str, Any]:
@@ -1259,6 +1303,8 @@ def real_one_batch_smoke(
     device_name: str,
     stage1_template: Path | None = None,
     stage1_checkpoint: Path | None = None,
+    topology_audit: Path | None = None,
+    batch_size: int | None = None,
     split_seed: int = TRAJECTORY_SPLIT_SEED,
 ) -> dict[str, Any]:
     output_dir = output_dir.resolve()
@@ -1275,11 +1321,12 @@ def real_one_batch_smoke(
         output=stage1_path,
         output_root=output_dir,
         run_name="real_one_batch_stage1",
-        batch_size=1,
+        batch_size=batch_size,
         num_workers=0,
         smoke=True,
         template=stage1_template,
         split_seed=split_seed,
+        topology_audit=topology_audit,
     )
     normalization_metadata = {"normalization_artifacts": stage1_cfg.get("data", {}).get("normalization_artifacts") or {}}
     validate_normalization_artifact_fingerprint(stage1_cfg, normalization_metadata)
@@ -1318,11 +1365,12 @@ def real_one_batch_smoke(
             output=stage2_path,
             output_root=output_dir,
             run_name="real_one_batch_stage2",
-            batch_size=1,
+            batch_size=batch_size,
             num_workers=0,
             smoke=True,
             template=(stage1_template.parent / "stage2.yaml") if stage1_template is not None else None,
             split_seed=split_seed,
+            topology_audit=topology_audit,
         )
         stage2_model = build_model(stage2_cfg["model"]["primary"]).to(device)
         initialize_model_from_checkpoint(stage2_model, stage2_cfg["training"], map_location="cpu")
@@ -1842,6 +1890,7 @@ def _validate_trajectory_audit(audit_path: Path, protocol: Mapping[str, Any]) ->
         supplied.get("protocol") != TRAJECTORY_PROTOCOL_MODE
         or int(supplied.get("protocol_version", -1)) != int(protocol["protocol_version"])
         or int(supplied.get("manifest_version", -1)) != TRAJECTORY_MANIFEST_VERSION
+        or supplied.get("assignment_algorithm") != protocol["assignment_algorithm"]
         or int(supplied.get("split_seed", -1)) != int(protocol["split_seed"])
         or supplied.get("protocol_fingerprint") != protocol["protocol_fingerprint"]
         or supplied.get("split_manifest_hash") != protocol["split_manifest_hash"]
@@ -2083,6 +2132,7 @@ def _resolved_summary(cfg: dict[str, Any], output: Path) -> dict[str, Any]:
         "training_stage": cfg["model"]["primary"]["training_stage"],
         "protocol_fingerprint": cfg["data_protocol"]["protocol_fingerprint"],
         "prototype_topology": _configured_topology(cfg),
+        "single_modality": cfg.get("temporal_missing", {}).get("fixed_modality"),
         "outer_test_enabled": False,
         "claim_ineligible": True,
     }

@@ -27,6 +27,8 @@ import torch
 from tqdm import tqdm
 
 from kd_sensing.data.mmw.trajectory_protocol import (
+    ASSIGNMENT_ALGORITHM,
+    DEFAULT_BLOCK_SIZE,
     TRAJECTORY_MANIFEST_VERSION,
     TRAJECTORY_PROTOCOL_ID,
     TRAJECTORY_PROTOCOL_MODE,
@@ -58,8 +60,8 @@ PROTOCOL_ID = TRAJECTORY_PROTOCOL_ID
 AUDIT_ID = "mmw_id_stratified_block_audit_v1"
 EXPECTED_DOMAIN_COUNT = 15
 EXPECTED_CANDIDATE_COUNT = 46_860
-EXPECTED_DEVELOPMENT_COUNTS = {"train": 31_602, "validation": 6_723}
-EXPECTED_TEST_COUNT = 6_855
+EXPECTED_DEVELOPMENT_COUNTS = {"train": 27_666, "validation": 5_931}
+EXPECTED_TEST_COUNT = 6_003
 ROLES = ("train", "validation")
 NUM_BEAMS = 64
 SEQUENCE_LENGTH = 5
@@ -423,6 +425,8 @@ def load_development_frames(protocol_path: Path, audit_path: Path) -> tuple[dict
         protocol.get("mode") != TRAJECTORY_PROTOCOL_MODE
         or int(protocol.get("protocol_version", -1)) != TRAJECTORY_PROTOCOL_VERSION
         or int(protocol.get("manifest_version", -1)) != TRAJECTORY_MANIFEST_VERSION
+        or protocol.get("assignment_algorithm") != ASSIGNMENT_ALGORITHM
+        or int(protocol.get("block_size", -1)) != DEFAULT_BLOCK_SIZE
         or int(protocol.get("split_seed", -1)) != TRAJECTORY_SPLIT_SEED
         or protocol.get("train_role") != "train"
         or protocol.get("validation_role") != "validation"
@@ -435,6 +439,7 @@ def load_development_frames(protocol_path: Path, audit_path: Path) -> tuple[dict
         or audit.get("protocol") != PROTOCOL_ID
         or int(audit.get("protocol_version", -1)) != TRAJECTORY_PROTOCOL_VERSION
         or int(audit.get("manifest_version", -1)) != TRAJECTORY_MANIFEST_VERSION
+        or audit.get("assignment_algorithm") != ASSIGNMENT_ALGORITHM
         or int(audit.get("split_seed", -1)) != TRAJECTORY_SPLIT_SEED
         or audit.get("protocol_fingerprint") != fingerprint
         or audit.get("split_manifest_hash") != protocol_sha256
@@ -555,6 +560,7 @@ def load_development_frames(protocol_path: Path, audit_path: Path) -> tuple[dict
         "protocol_mode": str(protocol["mode"]),
         "protocol_version": int(protocol["protocol_version"]),
         "manifest_version": int(protocol["manifest_version"]),
+        "assignment_algorithm": str(protocol["assignment_algorithm"]),
         "protocol_fingerprint": fingerprint,
         "protocol_manifest_path": str(protocol_path),
         "protocol_manifest_sha256": protocol_sha256,
@@ -590,8 +596,10 @@ def _require_formal_analysis_binding(binding: Mapping[str, Any]) -> None:
         "protocol_mode": TRAJECTORY_PROTOCOL_MODE,
         "protocol_version": TRAJECTORY_PROTOCOL_VERSION,
         "manifest_version": TRAJECTORY_MANIFEST_VERSION,
+        "assignment_algorithm": ASSIGNMENT_ALGORITHM,
         "audit_id": AUDIT_ID,
         "split_seed": TRAJECTORY_SPLIT_SEED,
+        "block_size": DEFAULT_BLOCK_SIZE,
         "domain_count": EXPECTED_DOMAIN_COUNT,
         "candidate_window_count": EXPECTED_CANDIDATE_COUNT,
         "train_sample_count": EXPECTED_DEVELOPMENT_COUNTS["train"],

@@ -18,7 +18,7 @@
 
 ### Requirement: 连续基础时间 block 必须先于最终窗口 materialization
 
-系统 MUST 按每条 `(scene_id,cav_id)` 的 `base_frame_index` 升序切成不重叠连续 block；默认 `block_size=128`，尾部不足 128 个基础时间点时保留为不可拆分 block。系统 MUST 在 block assignment 完成后，只 materialize 历史与目标全部位于同一 block 的窗口；跨 block 候选窗口 MUST 丢弃，不得 padding、复制邻接 split 数据或跨 block 取帧。`block_size` MUST 按基础时间点计数，而非天气展开样本或窗口数。
+系统 MUST 按每条 `(scene_id,cav_id)` 的 `base_frame_index` 升序切成不重叠连续 block；默认 `block_size=32`，尾部不足 32 个基础时间点时保留为不可拆分 block。系统 MUST 在 block assignment 完成后，只 materialize 历史与目标全部位于同一 block 的窗口；跨 block 候选窗口 MUST 丢弃，不得 padding、复制邻接 split 数据或跨 block 取帧。`block_size` MUST 按基础时间点计数，而非天气展开样本或窗口数。
 
 #### Scenario: 窗口跨越 block 边界
 
@@ -28,7 +28,7 @@
 
 ### Requirement: block assignment 必须满足 70/15/15 与标签平衡
 
-系统 MUST 以完整 block 为最小单位分配 train、validation、test，目标比例固定为 `0.70/0.15/0.15`。分配 MUST 使用只由 `split_seed` 控制的局部 RNG，并优化总基础样本或预计窗口比例、各 split 与全量 beam 分布差异、每 trajectory 比例、每 scene 比例及 validation/test 高频 beam 在 train 缺失惩罚。标签误差 MUST 包含 TV、JSD 或 L1，不得只用 Pearson correlation。每条 trajectory 和每个 scene 在三个 split 中 MUST 均有 block；train MUST 为最大 split，validation/test MUST 非空。同 seed、同数据与任意输入遍历顺序 MUST 得到完全相同 manifest。
+系统 MUST 以完整 block 为最小单位分配 train、validation、test，目标比例固定为 `0.70/0.15/0.15`。分配 MUST 使用只由 `split_seed` 控制的局部 RNG，并优化总基础样本或预计窗口比例、各 split 与全量 beam 分布差异、每 trajectory 比例和每 scene 比例。标签目标 MUST 同时包含全局、按 scene/domain 及按 `(scene_id,cav_id)` trajectory 的 train--validation 与 train--test TV，并惩罚 validation/test beam 质量在对应 scene 或 trajectory 的 train 中缺失；不得只优化全局 histogram，也不得只用 Pearson correlation。每条 trajectory 和每个 scene 在三个 split 中 MUST 均有 block；train MUST 为最大 split，validation/test MUST 非空。同 seed、同数据与任意输入遍历顺序 MUST 得到完全相同 manifest。
 
 #### Scenario: 纯连续 70/15/15 标签偏移更大
 
@@ -42,9 +42,15 @@
 - **THEN** 构建 MUST 报告具体 scene/CAV 与 block 数并失败
 - **AND** MUST NOT 回退到 trajectory held-out、窗口随机或逐样本分层
 
+#### Scenario: 全局标签接近但 domain 内标签错位
+
+- **WHEN** 一个 assignment 的全局 train--validation TV 较低，但任一 scene/domain 或 trajectory 的条件 TV、held-out 未覆盖 beam 质量更差
+- **THEN** assignment objective MUST 披露并惩罚该条件失配
+- **AND** report MUST 分别输出 scene/domain 与 trajectory 的 macro、worst 和未覆盖质量，不得用全局指标掩盖
+
 ### Requirement: manifest 必须完整绑定来源、窗口和 split 身份
 
-canonical manifest MUST 位于 `splits/mmw_id_stratified_block_v1/seed_<N>.json`，记录 dataset、protocol/version、split seed、70/15/15 ratios、block size、trajectory/base key、weather binding、data source hash、window config/hash、三个 split 的 block、每 block 的范围、基础样本数、天气数、beam histogram、预计/实际窗口数与统计。已存在 manifest 只有在 protocol/version/seed/block size/source hash/window hash/weather mapping、split CSV hash 和全部 leakage invariant 一致时才能复用；不一致 MUST 明确要求显式 regenerate，禁止静默覆盖。
+canonical manifest MUST 位于 `splits/mmw_id_stratified_block_v1/seed_<N>.json`，使用 manifest schema version `2`，并记录 dataset、protocol/version、assignment algorithm、split seed、70/15/15 ratios、block size、trajectory/base key、weather binding、data source hash、window config/hash、三个 split 的 block、每 block 的范围、基础样本数、天气数、beam histogram、预计/实际窗口数与统计。已存在 manifest 只有在 manifest/protocol/assignment version、seed、block size、source hash、window hash、weather mapping、split CSV hash 和全部 leakage invariant 一致时才能复用；不一致 MUST 明确要求显式 regenerate，禁止静默覆盖。
 
 #### Scenario: 旧 manifest 或 cache 被请求
 
@@ -63,7 +69,7 @@ MMW token、CSI split index、sample/window index、modality feature、prototype
 
 ### Requirement: loader 前必须统一验证全部泄漏与覆盖 invariant
 
-`validate_mmw_id_block_split` MUST 检查 block 集合、base sample、天气副本和窗口引用原始 frame 在 train/validation/test 间无交集；每个窗口不跨 block；三个 split 均覆盖全部 scene 与 trajectory。trajectory overlap MUST 标记为允许且是协议目标；base-frame、block、window-frame 与 weather-copy overlap MUST 为零。验证还 MUST 输出各 split 64 类 histogram、TV、JSD、Pearson/Spearman、unseen beam、最大比例差，以及按 block、base frame、天气样本和最终窗口计数的比例。失败 MUST 在 loader 前终止。
+`validate_mmw_id_block_split` MUST 检查 block 集合、base sample、天气副本和窗口引用原始 frame 在 train/validation/test 间无交集；每个窗口不跨 block；三个 split 均覆盖全部 scene 与 trajectory。trajectory overlap MUST 标记为允许且是协议目标；base-frame、block、window-frame 与 weather-copy overlap MUST 为零。验证还 MUST 输出各 split 64 类 histogram、TV、JSD、Pearson/Spearman、unseen beam、最大比例差，按 scene/domain 与 trajectory 的条件 TV/未覆盖 beam 质量，以及按 block、base frame、天气样本和最终窗口计数的比例。失败 MUST 在 loader 前终止。
 
 #### Scenario: 同一基础帧的天气副本跨 split
 

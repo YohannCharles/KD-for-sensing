@@ -45,6 +45,7 @@ PROTOCOL_LINEAGE_KEYS = (
     "protocol_version",
     "split_protocol_version",
     "manifest_version",
+    "assignment_algorithm",
     "protocol_fingerprint",
     "audit_id",
     "audit_sha256",

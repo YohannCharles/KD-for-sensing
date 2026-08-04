@@ -7,11 +7,14 @@ import pytest
 from kd_sensing.config import load_config
 from kd_sensing.data.mmw import trajectory_protocol as protocol_module
 from kd_sensing.data.mmw.trajectory_protocol import (
+    ASSIGNMENT_ALGORITHM,
     CACHE_IDENTITY_FIELDS,
+    DEFAULT_BLOCK_SIZE,
     EXPECTED_WEATHERS,
     SPLIT_RATIOS,
     SPLIT_ROLES,
     TRAJECTORY_PROTOCOL_MODE,
+    TRAJECTORY_MANIFEST_VERSION,
     assign_mmw_blocks_stratified,
     bind_trajectory_config,
     build_trajectory_protocol,
@@ -221,6 +224,56 @@ def test_split_ratios_are_close_and_stratification_beats_contiguous_baseline(bui
         assert abs(ratios["test_ratio"] - SPLIT_RATIOS["test"]) <= 0.05
     assert statistics["stratified_not_worse_than_contiguous"] is True
     assert statistics["label_tv_sum"] < statistics["simple_contiguous_label_tv_sum"]
+    assert statistics["conditional_label_distribution"]["per_domain"]["group_count"] == len(EXPECTED_WEATHERS) * len(SCENES)
+    assert statistics["conditional_label_distribution"]["per_scene"]["group_count"] == len(SCENES)
+    assert statistics["conditional_label_distribution"]["per_trajectory"]["group_count"] == len(SCENES) * len(CAVS)
+    assert protocol["manifest_version"] == TRAJECTORY_MANIFEST_VERSION
+    assert protocol["assignment_algorithm"] == ASSIGNMENT_ALGORITHM
+
+
+def test_assignment_objective_detects_conditional_shift_hidden_by_global_histogram() -> None:
+    blocks = []
+    for scene, cav in (("scene_a", "cav_1"), ("scene_b", "cav_1")):
+        for index, label in enumerate((0, 0, 0, 1, 1, 1)):
+            histogram = [0] * 64
+            histogram[label] = 10
+            blocks.append(
+                {
+                    "block_id": f"{scene}::{cav}::{index}",
+                    "scene_id": scene,
+                    "cav_id": cav,
+                    "block_start_base_index": index * 8,
+                    "num_windows_estimated": 10,
+                    "window_beam_histogram": histogram,
+                }
+            )
+
+    def assignment(scene_a_roles, scene_b_roles):
+        return {
+            f"{scene}::cav_1::{index}": role
+            for scene, roles in (("scene_a", scene_a_roles), ("scene_b", scene_b_roles))
+            for index, role in enumerate(roles)
+        }
+
+    balanced = assignment(
+        ("train", "train", "validation", "train", "train", "test"),
+        ("train", "train", "test", "train", "train", "validation"),
+    )
+    shifted = assignment(
+        ("train", "train", "train", "train", "validation", "test"),
+        ("train", "validation", "test", "train", "train", "train"),
+    )
+
+    balanced_score = protocol_module._assignment_objective(blocks, balanced)
+    shifted_score = protocol_module._assignment_objective(blocks, shifted)
+
+    assert balanced_score["label_distribution_error"] == pytest.approx(
+        shifted_score["label_distribution_error"]
+    )
+    assert balanced_score["per_trajectory_label_distribution_error"] < shifted_score[
+        "per_trajectory_label_distribution_error"
+    ]
+    assert balanced_score["objective"] < shifted_score["objective"]
 
 
 def test_weather_and_window_corruption_are_rejected(built_protocol) -> None:
@@ -243,6 +296,14 @@ def test_legacy_manifest_and_cache_are_rejected(built_protocol) -> None:
         validate_trajectory_protocol(
             {"protocol": "mmw_trajectory_disjoint", "mode": "mmw_trajectory_disjoint"}
         )
+    stale_manifest = dict(protocol)
+    stale_manifest["manifest_version"] = TRAJECTORY_MANIFEST_VERSION - 1
+    with pytest.raises(ValueError, match="manifest version mismatch"):
+        validate_trajectory_protocol(stale_manifest, verify_sources=False)
+    stale_assignment = dict(protocol)
+    stale_assignment["assignment_algorithm"] = "deterministic_multistart_greedy_swap_v1"
+    with pytest.raises(ValueError, match="assignment algorithm mismatch"):
+        validate_trajectory_protocol(stale_assignment, verify_sources=False)
     with pytest.raises(ValueError, match="Legacy or stale"):
         validate_split_cache_identity({}, protocol)
     identity = protocol_module.split_cache_identity(protocol)
@@ -381,7 +442,7 @@ def test_canonical_config_uses_seed_zero_block_protocol() -> None:
 
     assert cfg["data"]["split_protocol"] == TRAJECTORY_PROTOCOL_MODE
     assert cfg["data"]["split_seed"] == cfg["experiment"]["train_seed"] == 0
-    assert cfg["data"]["block_size"] == 128
+    assert cfg["data"]["block_size"] == DEFAULT_BLOCK_SIZE == 32
     assert cfg["data"]["split_ratios"] == SPLIT_RATIOS
     assert cfg["training"]["final_test"] == {"enabled": False}
 

@@ -71,7 +71,7 @@ def run_evaluation_pass(
     state = _EvaluationState()
 
     with torch.no_grad():
-        for raw_batch in dataloader:
+        for batch_index, raw_batch in enumerate(dataloader):
             if batch_transform is not None:
                 raw_batch = batch_transform(raw_batch)
             batch = prepare_evaluation_batch(raw_batch)
@@ -108,6 +108,10 @@ def run_evaluation_pass(
                         beam_total_loss=beam_loss,
                         beam_task_loss=beam_loss,
                     ).total
+            if not bool(torch.isfinite(step.logits).all().item()):
+                raise FloatingPointError(f"Evaluation batch {batch_index} produced non-finite prediction logits.")
+            if not bool(torch.isfinite(loss).all().item()):
+                raise FloatingPointError(f"Evaluation batch {batch_index} produced a non-finite validation loss.")
             _accumulate_beam_metrics(state, step.logits.detach(), labels, cfg)
             weighted_loss = loss.detach() * observations.to(dtype=loss.dtype)
             state.loss_sum = weighted_loss if state.loss_sum is None else state.loss_sum + weighted_loss

@@ -6,13 +6,15 @@
 
 - 新增注册模型 `pcpf_temporal_risk_fusion`：复用四个当前 encoder 与唯一 `BeamPrototypeBank`，在风险估计前仅执行逐模态共享 Temporal Transformer，不进行跨模态 attention 或特征拼接。
 - 新增 topology-aware 单模态监督、概率嵌入、四项解析风险、train-only 归一化/静态能力先验和 `a_m * exp(-risk_m / tau)` 概率级融合。
+- 新增拓扑原型监督与动态融合的预注册 2x2 因果消融：保持同一共享 prototype head 和 hard CE，仅关闭 topology soft CE 与 prototype-alignment loss 构造反事实；在 train seed 1/2/3 上分别比较 Static Prior 和 analytic PCPF，隔离原型监督主效应、动态融合条件效应及交互项。
 - 新增 `stage1_expert`、`stage2_risk`、`stage3_fusion` 的冻结、初始化 checkpoint、metadata、validation-best 与 fail-closed 契约。
 - 新增本地研究配置、stage launcher、15-mask/天气/domain/校准/权重/风险诊断和 uniform、static prior、direct Router、CUAF-style `local_adaptation` 对照；不复制通用 trainer。
 - 新增显式、失败关闭的本地三阶段续跑动作：等待已有 Stage 1 正常完成后，依次解析并运行 Stage 2、无界 validation gate 与 Stage 3；任一进程、checkpoint、协议或 gate 校验失败时立即停止。
 - 新增 opt-in 历史 sparse CSI 第五专家：仅从样本自身 `csi1..csi5` channel 引用确定性生成固定 TSPC 2x2 pilot，保留复数信息，不加入 AWGN、dropout、corruption 或虚构 SNR；默认四模态构造、state dict 和数值路径不变。
 - 新增五模态全部 31 个非空子集的等频训练 schedule、公平 R0--R7 矩阵、D0--D3 机制诊断与按独立分组 bootstrap。
+- 新增固定单模态 Stage 1 能力诊断：在同一 ID-block train/validation、seed 与训练预算下分别 fresh-start 训练 image/radar/GPS/LiDAR/CSI，训练和逐 epoch validation 始终只开放指定模态，不进入 Stage 2/3 或融合评估。
 - 新增 trajectory train/validation 数据画像工具：绑定唯一协议、split seed 与审计身份，只读 manifest 声明的开发样本，系统分析 split 代表性、跨天气同 scene/CAV/序号的轨迹内容重合、标签长尾、时序冗余、几何/beam-power 模糊度、四模态与 sparse-CSI 质量/漂移，并用固定预算 diagnostic probe 为后续改进排序提供证据。
-- 将 MMW 划分统一为 `mmw_id_stratified_block_v1`：trajectory key 固定为 `(scene_id,cav_id)`，三天气通过 verified `seq_index` 基础时间映射绑定；每条轨迹先按 128 个基础时间点切 block，再以确定性标签平衡目标分配 70/15/15，最后只 materialize block 内完整窗口。5 个 scene 与全部 CAV 在三个 split 中均覆盖，trajectory overlap 是设计目标，block/base/weather/window-frame overlap 必须为零。
+- 将 MMW 划分统一为 `mmw_id_stratified_block_v1`：trajectory key 固定为 `(scene_id,cav_id)`，三天气通过 verified `seq_index` 基础时间映射绑定；每条轨迹先按 32 个基础时间点切 block，再以同时约束全局、scene/domain 与 trajectory beam 分布及 train 条件覆盖的确定性目标分配 70/15/15，最后只 materialize block 内完整窗口。5 个 scene 与全部 CAV 在三个 split 中均覆盖，trajectory overlap 是设计目标，block/base/weather/window-frame overlap 必须为零。
 - canonical manifest 固定为 `splits/mmw_id_stratified_block_v1/seed_0.json`，报告固定写入 `outputs/split_reports/`；旧 `mmw_trajectory_disjoint`、11/2/3、11/5/0、clean-inner、80/10/10、group-safe/window split 与其 split-specific cache/checkpoint 不得继续作为当前运行输入。
 - sparse-CSI 正式开发路线固定绑定当前 seed manifest 的实际 train/validation windows并复用 train-only GPS scaler；原始内容寻址 CSI cache可保留，但 split-specific index/bundle 必须按新 manifest 重建。默认不加载 test，只有显式 `--evaluate-test` 才允许只读最终评估。
 - 全部当前开发结果标记 `claim_ineligible: true`；开发选择只允许绑定且隔离的 train/validation。除 opt-in 历史 sparse CSI 外，禁止 test、当前/未来 CSI、未来 channel、path/beam-power、历史 beam、天气/场景标签进入模型或风险目标。

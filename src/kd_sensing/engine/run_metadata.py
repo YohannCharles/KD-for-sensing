@@ -142,6 +142,7 @@ def prediction_setup_metadata(
         "temporal_missing": {
             "enabled": bool(temporal_cfg.get("enabled", False)),
             "mode": temporal_cfg.get("mode", "none"),
+            "fixed_modality": temporal_cfg.get("fixed_modality"),
         },
         "train_csv_name": dataset_cfg.get("train_csv_name"),
         "val_csv_name": dataset_cfg.get("val_csv_name"),

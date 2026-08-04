@@ -7,7 +7,7 @@ experiment:
 data:
   split_protocol: mmw_id_stratified_block_v1
   split_seed: 0
-  block_size: 128
+  block_size: 32
   split_ratios:
     train: 0.70
     validation: 0.15

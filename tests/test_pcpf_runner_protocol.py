@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
+import tools.run_pcpf as run_pcpf
+from kd_sensing.data.mmw.trajectory_protocol import (
+    ASSIGNMENT_ALGORITHM,
+    DEFAULT_BLOCK_SIZE,
+    TRAJECTORY_MANIFEST_VERSION,
+    TRAJECTORY_PROTOCOL_MODE,
+)
 from kd_sensing.utils.checkpoint import publish_checkpoint
 from tools.run_pcpf import (
     _apply_train_seed,
@@ -13,6 +19,7 @@ from tools.run_pcpf import (
     _checkpoint_experiment_seed,
     _checkpoint_protocol_fingerprint,
     _completed_stage_checkpoint,
+    _configure_single_modality_diagnostic,
     _configured_topology,
     _load_template,
     _next_stage_run_name,
@@ -25,17 +32,63 @@ from tools.run_pcpf import (
 TRAJECTORY_FINGERPRINT = "d" * 64
 
 
+def test_one_batch_smoke_cli_forwards_topology_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(run_pcpf, "real_one_batch_smoke", lambda *args, **kwargs: captured.update(kwargs) or {})
+    topology_audit = tmp_path / "topology.json"
+
+    assert run_pcpf.main(
+        ["one-batch-smoke", "--topology-audit", str(topology_audit), "--batch-size", "64"]
+    ) == 0
+    assert captured["topology_audit"] == topology_audit
+    assert captured["batch_size"] == 64
+
+
+def test_single_modality_diagnostic_is_stage1_only_and_disables_mask_matrix() -> None:
+    cfg = {
+        "experiment": {},
+        "model": {
+            "primary": {
+                "modalities": ["image", "radar", "gps", "lidar"],
+                "use_sparse_csi": True,
+            }
+        },
+        "temporal_missing": {
+            "enabled": True,
+            "mode": "balanced_pattern_schedule",
+            "schedule_id": "pcpf_five_modality_all_subsets_v1",
+            "panel_size": 31,
+        },
+        "evaluation": {"missing_patterns": {"enabled": True, "patterns": ["all_nonempty"]}},
+    }
+
+    assert _configure_single_modality_diagnostic(cfg, stage="stage1", modality="csi") == "csi"
+    assert cfg["temporal_missing"] == {
+        "enabled": True,
+        "mode": "fixed_single_modality",
+        "fixed_modality": "csi",
+    }
+    assert cfg["evaluation"]["missing_patterns"]["enabled"] is False
+    assert cfg["experiment"]["single_modality_diagnostic"]["stage1_only"] is True
+
+    with pytest.raises(ValueError, match="fresh-start Stage 1"):
+        _configure_single_modality_diagnostic(cfg, stage="stage2", modality="image")
+    with pytest.raises(ValueError, match="must be one of"):
+        _configure_single_modality_diagnostic(cfg, stage="stage1", modality="audio")
+
+
 def _protocol() -> dict[str, object]:
     return {
         "mode": TRAJECTORY_PROTOCOL_MODE,
         "protocol_id": TRAJECTORY_PROTOCOL_MODE,
         "protocol_version": 1,
-        "manifest_version": 1,
+        "manifest_version": TRAJECTORY_MANIFEST_VERSION,
+        "assignment_algorithm": ASSIGNMENT_ALGORITHM,
         "protocol_fingerprint": TRAJECTORY_FINGERPRINT,
         "split_manifest_hash": "b" * 64,
         "data_source_hash": "c" * 64,
         "window_config_hash": "e" * 64,
-        "block_size": 128,
+        "block_size": DEFAULT_BLOCK_SIZE,
         "weather_binding": True,
         "audit_id": "mmw_id_stratified_block_audit_v1",
         "audit_sha256": "a" * 64,
@@ -59,9 +112,10 @@ def _audit() -> dict[str, object]:
         "test_evaluated": False,
         "protocol": TRAJECTORY_PROTOCOL_MODE,
         "protocol_version": 1,
-        "manifest_version": 1,
+        "manifest_version": TRAJECTORY_MANIFEST_VERSION,
+        "assignment_algorithm": ASSIGNMENT_ALGORITHM,
         "split_seed": 0,
-        "block_size": 128,
+        "block_size": DEFAULT_BLOCK_SIZE,
         "split_manifest_hash": "b" * 64,
         "data_source_hash": "c" * 64,
         "window_config_hash": "e" * 64,
@@ -117,6 +171,25 @@ def test_sparse_trajectory_stage1_template_is_fresh_start() -> None:
     assert cfg["data"]["dataloader"]["train_batch_size"] == 64
     assert cfg["data"]["dataloader"]["validation_batch_size"] == 64
     assert cfg["data"]["dataloader"]["num_workers"] == 8
+
+
+def test_topology_loss_off_template_only_disables_topology_supervision() -> None:
+    root = Path(__file__).resolve().parents[1]
+    baseline = _load_template(root / "tools/configs/pcpf/sparse_csi/stage1.yaml")
+    ablation = _load_template(root / "tools/configs/pcpf/sparse_csi/stage1_no_topology_loss.yaml")
+    baseline_loss = baseline["loss"]["pcpf_temporal_risk"]
+    ablation_loss = ablation["loss"]["pcpf_temporal_risk"]
+
+    assert ablation_loss["unimodal_soft_weight"] == 0.0
+    assert ablation_loss["use_beam_prototype_alignment"] is False
+    assert ablation_loss["lambda_proto"] == 0.0
+    assert ablation_loss["lambda_modality_proto"] == 0.0
+    for key in ("lambda_fused_hard", "lambda_unimodal", "unimodal_hard_weight", "fused_soft_weight"):
+        assert ablation_loss[key] == baseline_loss[key]
+    assert ablation_loss["prototype_topology"] == baseline_loss["prototype_topology"]
+    assert ablation["model"] == baseline["model"]
+    assert ablation["temporal_missing"] == baseline["temporal_missing"]
+    assert ablation["training"] == baseline["training"]
 
 
 def test_trajectory_r0_templates_are_four_modality_and_share_sparse_budget() -> None:

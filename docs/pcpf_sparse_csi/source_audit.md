@@ -1,20 +1,20 @@
 # PCPF-T 稀疏 CSI 源码与数据审计
 
-审计更新日期：2026-08-01。sparse-CSI 开发路线现固定绑定 `mmw_id_stratified_block_v1` seed 0：train/validation/test 为 90/19/19 blocks、31,602/6,723/6,855 windows，三个 split 均覆盖全部 5 个场景和 16 条 trajectory。开发 loader 与 sparse-CSI bundle 只包含 train/validation，test 保持封存；全部开发产物继续固定 `claim_ineligible=true`。
+审计更新日期：2026-08-02。sparse-CSI 开发路线现固定绑定 `mmw_id_stratified_block_v1` seed 0 manifest v2：train/validation/test 为 350/75/75 blocks、27,666/5,931/6,003 windows，三个 split 均覆盖全部 5 个场景和 16 条 trajectory。开发 loader 与 sparse-CSI bundle 只包含 train/validation，test 保持封存；全部开发产物继续固定 `claim_ineligible=true`。
 
 ## 结论与训练门禁
 
 ID-block protocol 与 split audit 门禁通过：trajectory overlap 是设计目标；block、base frame、天气副本、窗口引用原始 frame 的跨 split 重叠均为 0，窗口不跨 block。manifest fingerprint 为 `e630414f70d6260f14b5b8bd5b4f586eceb3fa627c37d7ed49c09967df3e30de`，manifest SHA256 为 `856b9ca4627e71e0f311eb5908eb4ea62cf1f91b5ef8b772bd9e863c3caeb833`。正式 PCPF loader 默认只能读取 manifest 中的 train/validation domain CSV。
 
-五模态实现只从当前 block CSV 行的 `csi1..csi5` 历史引用确定性生成稀疏观测。运行时继续逐行校验：所有 channel 文件存在；五个 channel 文件名与 `history_frame_ids_json` 逐项一致；历史 frame 连续递增且最后历史帧严格早于第一个 future frame。训练前必须扫描 31,602/6,723 个 train/validation 样本并写出完整八项 split identity 与 `test_evaluated=false` 的 cache manifest；任何 identity/hash、coverage 或 packed-cache SHA256 不一致都必须在创建 optimizer 前失败。
+五模态实现只从当前 block CSV 行的 `csi1..csi5` 历史引用确定性生成稀疏观测。运行时继续逐行校验：所有 channel 文件存在；五个 channel 文件名与 `history_frame_ids_json` 逐项一致；历史 frame 连续递增且最后历史帧严格早于第一个 future frame。训练前必须扫描 27,666/5,931 个 train/validation 样本并写出完整八项 split identity 与 `test_evaluated=false` 的 cache manifest；任何 identity/hash、coverage 或 packed-cache SHA256 不一致都必须在创建 optimizer 前失败。
 
 所有旧 clean-inner、资源连通 80/10/10 与 `mmw_trajectory_disjoint_v1` cache/checkpoint 都属于已退休历史输入，不能用于当前 trajectory 初始化或 paired comparison。trajectory sparse-CSI Stage 1 固定 fresh start，不提供四到五模态 checkpoint 迁移。
 
-当前 cache scan 已通过：31,602 个 train window 覆盖 32,682 个唯一历史 channel，6,723 个 validation window 覆盖 6,951 个唯一历史 channel，二者交集为 0。原始内容寻址 cache 保留 47,052 项且无需新增；新 split-specific packed bundle 含 39,633 项，SHA256 为 `c3de6e97cbff49fb647646174f266d044b7fc982b416e4cb6250abd6144bd707`。本地 ignored 清单 `outputs/pcpf_sparse_csi_router_v1/cache/trajectory_cache_manifest.json` 记录 schema 4、完整 block identity 和 `test_evaluated=false`。这些缓存完整性事实不构成模型效果 claim。
+当前 cache scan 已通过：27,666 个 train window 覆盖 31,866 个唯一历史 channel，5,931 个 validation window 覆盖 6,831 个唯一历史 channel，二者交集为 0。原始内容寻址 cache 保留 47,052 项且无需新增；新 split-specific packed bundle 含 38,697 项，SHA256 为 `12a0650a8b55f59c9fe20c8fa1f3e8df83b0f107571e13addd58fb2508a85a09`。本地 ignored 清单 `outputs/pcpf_sparse_csi_router_v1/cache/trajectory_cache_manifest.json` 记录 schema 4、完整 block identity 和 `test_evaluated=false`。这些缓存完整性事实不构成模型效果 claim。
 
 ## Mother CSI 与时序语义
 
-- 当前 seed 0 train/validation cache scan 分别覆盖 31,602/6,723 个样本；每个样本从五帧历史 channel 生成固定 `[5,2,2]` complex sparse observation。
+- 当前 seed 0 train/validation cache scan 分别覆盖 27,666/5,931 个样本；每个样本从五帧历史 channel 生成固定 `[5,2,2]` complex sparse observation。
 - `candidate_history[:,i]` 由同一样本第 `i` 个历史 `csi` path 的 `a: complex64 [1,1,16,1,64,L,1]` 和 `tau: float32 [1,1,1,L]` 生成。32 是固定 Tx/Rx probe pattern 数，16 是固定母频率位置数；它不是未来 channel，也不是 beam-power 特征。
 - 当前 trajectory PCPF 输入帧为 `t-4..t`，标签 `future_beam_label1` 为 `t+1`。`resolve_input_channel_refs` 要求五个 history frame 连续递增、每个 channel 文件 frame id 与 history id 相同，并要求 `last_input_frame < target_frame`。
 - Prepared CSV 含 `future_csi1`，但 `create_samples` 不把该列保留到 dataset row；`MMWDataset(include_channel_history_refs=true)` 只解析 `csi1..csi5`。新 CSI owner 不得接收 `future_csi*`、`future_beam*`、当前/未来 beam power 或历史 beam index。
@@ -55,7 +55,7 @@ Recovery record、prepared CSV 和 channel NPZ 中均没有真实 SNR 字段。�
 | Stage2 risk | 20 | `5e-4` | 20 / 0.72446114 | `65fbd39a5df4e5537169e29dd88e6ce73d9e9cd9770d1ca04af2e3acb7bb35fd` |
 | Stage3 fusion | 10 | `1e-4` | 10 / 1.88972914 | `61c3039f3a659e69da2533cfd6ba32ad0a7bf7f3430f51419e73ebc7cbb86db5` |
 
-当前 ID-block 五模态 Stage1 全部模型参数必须 fresh start，并使用 seed 0 train-only GPS scaler（effective sample count 31,602，sample identity hash 与 split audit 一致）。Stage2/3 只接受新五模态前一阶段、同一 block protocol identity、split seed 和 train seed 的 validation-best checkpoint。
+当前 ID-block 五模态 Stage1 全部模型参数必须 fresh start，并使用 seed 0 train-only GPS scaler（effective sample count 27,666，sample identity hash 与 split audit 一致）。Stage2/3 只接受新五模态前一阶段、同一 block protocol identity、split seed 和 train seed 的 validation-best checkpoint。
 
 ## 数据流与冻结预期
 

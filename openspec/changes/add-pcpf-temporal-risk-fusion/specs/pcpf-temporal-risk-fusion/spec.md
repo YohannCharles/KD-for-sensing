@@ -257,3 +257,35 @@ PCPF parser MUST 拒绝未知字段、负 loss/risk 系数、非正 temperature�
 - **WHEN** evaluator 汇总主结果与 paired 差值
 - **THEN** bootstrap MUST 以审计通过的独立 group key 重采样，并记录 seed、次数和 group 数
 - **AND** 不得把同一 trajectory/window 的帧视为独立样本
+
+### Requirement: 单模态能力诊断必须隔离联合训练与融合
+
+系统 MUST 允许 PCPF sparse-CSI Stage 1 以 `fixed_single_modality` 分别 fresh-start 训练 image、radar、GPS、LiDAR 与 CSI。五条诊断 MUST 绑定相同 `mmw_id_stratified_block_v1` split seed、train seed、训练预算、物理 batch、worker、topology 和 validation-loss checkpoint selection；训练与 validation MUST 始终只开放指定模态。该模式 MUST 禁止 Stage 2/3、关闭 missing-pattern matrix、保持 `claim_ineligible=true`、`test_evaluated=false`，且不得把结果解释为融合提升。
+
+#### Scenario: 训练并验证一个 only 模态
+- **WHEN** Stage 1 resolved config 选择一个合法 `fixed_single_modality`
+- **THEN** 每个训练 batch MUST 只保留该模态的真实有效历史 cell，逐 epoch validation MUST 使用同一 modality mask
+- **AND** 若任一样本的指定模态整段不可用，运行 MUST 失败且不得回退到其他模态
+
+#### Scenario: 在后续阶段请求 only 模态
+- **WHEN** resolver 尝试为 Stage 2 或 Stage 3 配置 `fixed_single_modality`
+- **THEN** resolver MUST 在生成可训练配置前拒绝
+
+### Requirement: 拓扑原型监督与动态融合必须使用嵌套 2x2 消融
+
+系统 MUST 将创新点一限定为 Stage 1 的邻近 beam topology soft CE 与 fused/modality prototype-alignment supervision。无创新点一的反事实 MUST 保留相同的单一 64-beam `BeamPrototypeBank`、共享 prototype logits、fused/unimodal hard CE、模型容量和推理路径，只关闭 topology soft CE 与 prototype-alignment loss；不得以删除 prototype bank、改变 head、禁用 `U_proto` 风险分量或复用其他 ablation 冒充该反事实。
+
+#### Scenario: 解析无拓扑原型监督的 Stage 1
+- **WHEN** topology-loss-off Stage 1 template 被解析
+- **THEN** `unimodal_soft_weight`、`lambda_proto` 与 `lambda_modality_proto` MUST 为零，`use_beam_prototype_alignment` MUST 为 false
+- **AND** fused/unimodal hard CE、prototype topology identity、共享 prototype bank、五模态输入、31-subset schedule 与训练预算 MUST 与 topology-loss-on 分支一致
+
+#### Scenario: 构造每个 train seed 的四个 cell
+- **WHEN** train seed 1、2 或 3 的 Stage 1/2 专家链完成并通过 gate
+- **THEN** evaluator MUST 形成 E0=`topology off + static`、E1=`topology on + static`、E2=`topology off + dynamic`、E3=`topology on + dynamic`
+- **AND** 同一 topology 分支的 Static 与 Dynamic MUST 共享 Stage 1/2 checkpoint fingerprint，四个 cell MUST 共享 split seed、validation identity、样本顺序、mask、训练预算与指标实现
+
+#### Scenario: 汇总两个创新点与交互项
+- **WHEN** 三个预注册 train seed 的 E0--E3 validation evidence 完整
+- **THEN** 报告 MUST 同时给出 E1-E0、E3-E1、E2-E0 和 `(E3-E1)-(E2-E0)`，并保留逐 seed 结果
+- **AND** 跨 topology 分支 MUST 只按相同 sample/group identity 配对，不得声称共享 expert fingerprint；test MUST 保持未访问且结果 MUST 保持 `claim_ineligible=true`

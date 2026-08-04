@@ -22,9 +22,10 @@ from kd_sensing.preprocessing.mmw_radar import augment_mmw_sequence_resource_col
 TRAJECTORY_PROTOCOL_MODE = "mmw_id_stratified_block_v1"
 TRAJECTORY_PROTOCOL_ID = TRAJECTORY_PROTOCOL_MODE
 TRAJECTORY_PROTOCOL_VERSION = 1
-TRAJECTORY_MANIFEST_VERSION = 1
+TRAJECTORY_MANIFEST_VERSION = 2
 TRAJECTORY_SPLIT_SEED = 0
-DEFAULT_BLOCK_SIZE = 128
+DEFAULT_BLOCK_SIZE = 32
+ASSIGNMENT_ALGORITHM = "deterministic_multistart_conditional_greedy_swap_v2"
 EXPECTED_SCENE_COUNT = 5
 EXPECTED_WEATHERS = ("foggy", "rainy", "sunny")
 SPLIT_ROLES = ("train", "validation", "test")
@@ -46,6 +47,10 @@ _ASSIGNMENT_WEIGHTS = {
     "trajectory": 2.0,
     "scene": 1.0,
     "coverage": 20.0,
+    "trajectory_label": 24.0,
+    "scene_label": 12.0,
+    "trajectory_coverage": 80.0,
+    "scene_coverage": 40.0,
 }
 _RESOURCE_PATTERNS = {
     "camera": re.compile(r"^camera\d+$"),
@@ -189,6 +194,7 @@ def build_trajectory_protocol(
         "protocol_id": TRAJECTORY_PROTOCOL_ID,
         "protocol_version": TRAJECTORY_PROTOCOL_VERSION,
         "manifest_version": TRAJECTORY_MANIFEST_VERSION,
+        "assignment_algorithm": ASSIGNMENT_ALGORITHM,
         "split_seed": seed,
         "ratios": dict(SPLIT_RATIOS),
         "block_size": size,
@@ -239,6 +245,7 @@ def build_trajectory_protocol(
         protocol=TRAJECTORY_PROTOCOL_ID,
         protocol_version=TRAJECTORY_PROTOCOL_VERSION,
         manifest_version=TRAJECTORY_MANIFEST_VERSION,
+        assignment_algorithm=ASSIGNMENT_ALGORITHM,
         split_seed=seed,
         block_size=size,
         protocol_fingerprint=payload["protocol_fingerprint"],
@@ -258,6 +265,8 @@ def build_trajectory_protocol(
             "sha256": audit["split_manifest_hash"],
             "protocol": TRAJECTORY_PROTOCOL_ID,
             "protocol_version": TRAJECTORY_PROTOCOL_VERSION,
+            "manifest_version": TRAJECTORY_MANIFEST_VERSION,
+            "assignment_algorithm": ASSIGNMENT_ALGORITHM,
             "split_seed": seed,
             "block_size": size,
             "data_source_hash": data_source_hash,
@@ -276,7 +285,7 @@ def assign_mmw_blocks_stratified(
     blocks: Sequence[Mapping[str, Any]],
     *,
     split_seed: int = TRAJECTORY_SPLIT_SEED,
-    restarts: int = 12,
+    restarts: int = 8,
 ) -> tuple[dict[str, str], dict[str, Any]]:
     """Assign whole blocks with fixed per-trajectory coverage and deterministic local search."""
 
@@ -325,7 +334,7 @@ def assign_mmw_blocks_stratified(
     components = scorer.evaluate(best_assignment)
     baseline_components = scorer.evaluate(baseline)
     summary = {
-        "algorithm": "deterministic_multistart_greedy_swap_v1",
+        "algorithm": ASSIGNMENT_ALGORITHM,
         "weights": dict(_ASSIGNMENT_WEIGHTS),
         "restarts": max(1, int(restarts)),
         "objective": components,
@@ -434,6 +443,11 @@ def validate_mmw_id_block_split(manifest: Mapping[str, Any], records: pd.DataFra
         failures.append(f"window_counts:{dict(record_counts)}:expected={expected_counts}")
 
     metrics = _label_distribution_statistics(records)
+    conditional_metrics = {
+        "per_domain": _conditional_label_distribution_statistics(records, ("weather", "scene_id")),
+        "per_scene": _conditional_label_distribution_statistics(records, ("scene_id",)),
+        "per_trajectory": _conditional_label_distribution_statistics(records, ("scene_id", "cav_id")),
+    }
     ratios = _split_ratio_statistics(all_blocks, records)
     checks = {
         "block_overlap": not any("block_overlap" in value for value in failures),
@@ -466,6 +480,7 @@ def validate_mmw_id_block_split(manifest: Mapping[str, Any], records: pd.DataFra
         "raw_frame_overlap_counts": raw_overlap_counts,
         "window_errors": window_errors,
         "label_distribution": metrics,
+        "conditional_label_distribution": conditional_metrics,
         "ratios": ratios,
     }
     if failures:
@@ -515,6 +530,10 @@ def validate_trajectory_protocol(
         raise ValueError(
             f"MMW ID block manifest version mismatch; expected {TRAJECTORY_MANIFEST_VERSION}, "
             f"got {payload.get('manifest_version')!r}. Regenerate the split."
+        )
+    if payload.get("assignment_algorithm") != ASSIGNMENT_ALGORITHM:
+        raise ValueError(
+            f"MMW ID block assignment algorithm mismatch; expected {ASSIGNMENT_ALGORITHM!r}. Regenerate the split."
         )
     if payload.get("trajectory_key") != ["scene_id", "cav_id"]:
         raise ValueError("MMW manifest trajectory_key must be ['scene_id', 'cav_id'].")
@@ -571,6 +590,7 @@ def validate_trajectory_config_protocol(cfg: Mapping[str, Any]) -> dict[str, Any
         "protocol_id",
         "protocol_version",
         "manifest_version",
+        "assignment_algorithm",
         "protocol_fingerprint",
         "split_manifest_hash",
         "split_seed",
@@ -604,6 +624,7 @@ def validate_trajectory_config_protocol(cfg: Mapping[str, Any]) -> dict[str, Any
     if (
         audit.get("status") != "passed"
         or audit.get("protocol") != TRAJECTORY_PROTOCOL_ID
+        or audit.get("assignment_algorithm") != protocol["assignment_algorithm"]
         or audit.get("protocol_fingerprint") != protocol["protocol_fingerprint"]
         or audit.get("split_manifest_hash") != protocol["split_manifest_hash"]
         or int(audit.get("split_seed", -1)) != int(protocol["split_seed"])
@@ -639,6 +660,7 @@ def bind_trajectory_config(cfg: dict[str, Any], manifest_path: str | Path) -> di
     if (
         audit.get("status") != "passed"
         or audit.get("protocol") != TRAJECTORY_PROTOCOL_ID
+        or audit.get("assignment_algorithm") != protocol["assignment_algorithm"]
         or audit.get("protocol_fingerprint") != protocol["protocol_fingerprint"]
         or audit.get("split_manifest_hash") != protocol["split_manifest_hash"]
         or audit.get("test_evaluated") is not False
@@ -668,6 +690,7 @@ def bind_trajectory_config(cfg: dict[str, Any], manifest_path: str | Path) -> di
         "protocol_version": protocol["protocol_version"],
         "split_protocol_version": protocol["protocol_version"],
         "manifest_version": protocol["manifest_version"],
+        "assignment_algorithm": protocol["assignment_algorithm"],
         "protocol_fingerprint": protocol["protocol_fingerprint"],
         "audit_id": audit["audit_id"],
         "audit_sha256": _sha256_file(audit_path),
@@ -1067,13 +1090,25 @@ def _balanced_trajectory_quotas(
     total_blocks = sum(len(values) for _, values in trajectory_items)
     for _key, values in trajectory_items:
         block_count = len(values)
+        options = _quota_options(block_count)
+        option_errors = {
+            tuple(option[role] for role in SPLIT_ROLES): sum(
+                abs(option[role] / block_count - SPLIT_RATIOS[role]) for role in SPLIT_ROLES
+            )
+            for option in options
+        }
+        best_local_error = min(option_errors.values())
+        competitive_options = [
+            option
+            for option in options
+            if option_errors[tuple(option[role] for role in SPLIT_ROLES)]
+            <= best_local_error + 2.0 / block_count + 1e-12
+        ]
         next_states: dict[tuple[int, int], tuple[float, list[dict[str, int]]]] = {}
         for (_train_total, _validation_total), (cost, selected) in states.items():
-            for option in _quota_options(block_count):
+            for option in competitive_options:
                 state = (_train_total + option["train"], _validation_total + option["validation"])
-                local_error = sum(
-                    abs(option[role] / block_count - SPLIT_RATIOS[role]) for role in SPLIT_ROLES
-                )
+                local_error = option_errors[tuple(option[role] for role in SPLIT_ROLES)]
                 candidate = (cost + local_error, [*selected, option])
                 existing = next_states.get(state)
                 if existing is None or (candidate[0], _quota_tie_key(candidate[1], split_seed)) < (
@@ -1216,6 +1251,10 @@ class _AssignmentScorer:
         label_error = tv_to_global + pairwise_tv
         trajectory_error = self._group_ratio_error(roles, self.trajectory_groups)
         scene_error = self._group_ratio_error(roles, self.scene_groups)
+        trajectory_label_error, trajectory_coverage_penalty = self._group_label_error(
+            roles, self.trajectory_groups
+        )
+        scene_label_error, scene_coverage_penalty = self._group_label_error(roles, self.scene_groups)
         train_missing = role_histograms[0] <= 0
         held_out = role_histograms[1] + role_histograms[2]
         coverage_penalty = float(held_out[train_missing].sum() / max(float(held_out.sum()), 1.0))
@@ -1225,6 +1264,10 @@ class _AssignmentScorer:
             + _ASSIGNMENT_WEIGHTS["trajectory"] * trajectory_error
             + _ASSIGNMENT_WEIGHTS["scene"] * scene_error
             + _ASSIGNMENT_WEIGHTS["coverage"] * coverage_penalty
+            + _ASSIGNMENT_WEIGHTS["trajectory_label"] * trajectory_label_error
+            + _ASSIGNMENT_WEIGHTS["scene_label"] * scene_label_error
+            + _ASSIGNMENT_WEIGHTS["trajectory_coverage"] * trajectory_coverage_penalty
+            + _ASSIGNMENT_WEIGHTS["scene_coverage"] * scene_coverage_penalty
         )
         return {
             "objective": float(objective),
@@ -1233,7 +1276,33 @@ class _AssignmentScorer:
             "per_trajectory_ratio_error": float(trajectory_error),
             "per_scene_ratio_error": float(scene_error),
             "beam_coverage_penalty": float(coverage_penalty),
+            "per_trajectory_label_distribution_error": float(trajectory_label_error),
+            "per_scene_label_distribution_error": float(scene_label_error),
+            "per_trajectory_beam_coverage_penalty": float(trajectory_coverage_penalty),
+            "per_scene_beam_coverage_penalty": float(scene_coverage_penalty),
         }
+
+    def _group_label_error(self, roles: np.ndarray, groups: Sequence[np.ndarray]) -> tuple[float, float]:
+        distribution_errors = []
+        missing_mass = 0.0
+        held_out_mass = 0.0
+        for indexes in groups:
+            histograms = np.zeros((len(SPLIT_ROLES), 64), dtype=np.float64)
+            for role_index in range(len(SPLIT_ROLES)):
+                histograms[role_index] = self.histograms[indexes[roles[indexes] == role_index]].sum(axis=0)
+            train_probability = _probabilities(histograms[_ROLE_INDEX["train"]])
+            distribution_errors.append(
+                _tv(train_probability, _probabilities(histograms[_ROLE_INDEX["validation"]]))
+                + _tv(train_probability, _probabilities(histograms[_ROLE_INDEX["test"]]))
+            )
+            train_missing = histograms[_ROLE_INDEX["train"]] <= 0
+            held_out = histograms[_ROLE_INDEX["validation"]] + histograms[_ROLE_INDEX["test"]]
+            missing_mass += float(held_out[train_missing].sum())
+            held_out_mass += float(held_out.sum())
+        return (
+            float(np.mean(distribution_errors)) if distribution_errors else math.inf,
+            missing_mass / max(held_out_mass, 1.0),
+        )
 
     def _group_ratio_error(self, roles: np.ndarray, groups: Sequence[np.ndarray]) -> float:
         errors = []
@@ -1364,6 +1433,11 @@ def _statistics(
     dropped_boundary_windows: int,
 ) -> dict[str, Any]:
     optimized = _label_distribution_statistics(records)
+    optimized_conditional = {
+        "per_domain": _conditional_label_distribution_statistics(records, ("weather", "scene_id")),
+        "per_scene": _conditional_label_distribution_statistics(records, ("scene_id",)),
+        "per_trajectory": _conditional_label_distribution_statistics(records, ("scene_id", "cav_id")),
+    }
     quotas = {
         (str(item["scene_id"]), str(item["cav_id"])): {
             role: int(item[role]) for role in SPLIT_ROLES
@@ -1374,6 +1448,15 @@ def _statistics(
     baseline_records = records.copy()
     baseline_records["split"] = baseline_records["block_id"].map(baseline_assignment)
     baseline = _label_distribution_statistics(baseline_records)
+    baseline_conditional = {
+        "per_domain": _conditional_label_distribution_statistics(
+            baseline_records, ("weather", "scene_id")
+        ),
+        "per_scene": _conditional_label_distribution_statistics(baseline_records, ("scene_id",)),
+        "per_trajectory": _conditional_label_distribution_statistics(
+            baseline_records, ("scene_id", "cav_id")
+        ),
+    }
     ratios = _split_ratio_statistics(blocks, records)
     per_scene = []
     for scene, part in records.groupby("scene_id", sort=True):
@@ -1394,13 +1477,28 @@ def _statistics(
         )
     optimized_score = optimized["train_validation"]["tv"] + optimized["train_test"]["tv"]
     baseline_score = baseline["train_validation"]["tv"] + baseline["train_test"]["tv"]
+    optimized_conditional_score = sum(
+        values["train_validation_macro"]["tv"] + values["train_test_macro"]["tv"]
+        for values in optimized_conditional.values()
+    )
+    baseline_conditional_score = sum(
+        values["train_validation_macro"]["tv"] + values["train_test_macro"]["tv"]
+        for values in baseline_conditional.values()
+    )
     return {
         "ratios": ratios,
         "label_distribution": optimized,
         "simple_contiguous_baseline": baseline,
+        "conditional_label_distribution": optimized_conditional,
+        "simple_contiguous_conditional_baseline": baseline_conditional,
         "label_tv_sum": optimized_score,
         "simple_contiguous_label_tv_sum": baseline_score,
         "stratified_not_worse_than_contiguous": optimized_score <= baseline_score + 1e-12,
+        "conditional_label_tv_sum": optimized_conditional_score,
+        "simple_contiguous_conditional_label_tv_sum": baseline_conditional_score,
+        "conditional_stratified_not_worse_than_contiguous": (
+            optimized_conditional_score <= baseline_conditional_score + 1e-12
+        ),
         "dropped_boundary_windows": int(dropped_boundary_windows),
         "assignment": dict(assignment_summary),
         "per_scene": per_scene,
@@ -1465,6 +1563,68 @@ def _label_distribution_statistics(records: pd.DataFrame) -> dict[str, Any]:
         "largest_proportion_differences": sorted(
             max_differences, key=lambda item: (-item["max_proportion_difference"], item["beam"])
         )[:10],
+    }
+
+
+def _conditional_label_distribution_statistics(
+    records: pd.DataFrame,
+    key_fields: tuple[str, ...],
+) -> dict[str, Any]:
+    group_key: str | list[str] = key_fields[0] if len(key_fields) == 1 else list(key_fields)
+    groups = []
+    validation_missing_mass = 0
+    validation_mass = 0
+    test_missing_mass = 0
+    test_mass = 0
+    for raw_key, part in records.groupby(group_key, sort=True):
+        key = raw_key if isinstance(raw_key, tuple) else (raw_key,)
+        metrics = _label_distribution_statistics(part)
+        train_histogram = np.asarray(metrics["histograms"]["train"], dtype=np.int64)
+        validation_histogram = np.asarray(metrics["histograms"]["validation"], dtype=np.int64)
+        test_histogram = np.asarray(metrics["histograms"]["test"], dtype=np.int64)
+        train_missing = train_histogram <= 0
+        validation_missing = int(validation_histogram[train_missing].sum())
+        test_missing = int(test_histogram[train_missing].sum())
+        validation_count = int(validation_histogram.sum())
+        test_count = int(test_histogram.sum())
+        validation_missing_mass += validation_missing
+        validation_mass += validation_count
+        test_missing_mass += test_missing
+        test_mass += test_count
+        groups.append(
+            {
+                **{field: str(value) for field, value in zip(key_fields, key)},
+                "train_validation": metrics["train_validation"],
+                "train_test": metrics["train_test"],
+                "validation_beams_not_in_train": [
+                    int(value) for value in metrics["validation_beams_not_in_train"]
+                ],
+                "test_beams_not_in_train": [int(value) for value in metrics["test_beams_not_in_train"]],
+                "validation_unseen_beam_mass": validation_missing / max(validation_count, 1),
+                "test_unseen_beam_mass": test_missing / max(test_count, 1),
+            }
+        )
+    metric_names = ("tv", "jsd", "pearson", "spearman")
+    pair_names = ("train_validation", "train_test")
+    macros = {
+        f"{pair}_macro": {
+            metric: float(np.mean([group[pair][metric] for group in groups])) if groups else math.inf
+            for metric in metric_names
+        }
+        for pair in pair_names
+    }
+    worst = max(groups, key=lambda item: item["train_validation"]["tv"], default=None)
+    return {
+        "group_key": list(key_fields),
+        "group_count": len(groups),
+        **macros,
+        "train_validation_worst_tv": float(worst["train_validation"]["tv"]) if worst else math.inf,
+        "train_validation_worst_group": (
+            {field: worst[field] for field in key_fields} if worst else {}
+        ),
+        "validation_unseen_beam_mass": validation_missing_mass / max(validation_mass, 1),
+        "test_unseen_beam_mass": test_missing_mass / max(test_mass, 1),
+        "groups": groups,
     }
 
 
@@ -1562,11 +1722,15 @@ def _write_report(payload: Mapping[str, Any], audit: Mapping[str, Any], report_p
     ratios = statistics["ratios"]
     labels = statistics["label_distribution"]
     baseline = statistics["simple_contiguous_baseline"]
+    conditional = statistics["conditional_label_distribution"]
+    conditional_baseline = statistics["simple_contiguous_conditional_baseline"]
     lines = [
         "# MMW ID-Stratified Block Split Report",
         "",
         f"- Protocol: `{payload['protocol']}`",
         f"- Protocol version: `{payload['protocol_version']}`",
+        f"- Manifest version: `{payload['manifest_version']}`",
+        f"- Assignment algorithm: `{payload['assignment_algorithm']}`",
         f"- Split seed: `{payload['split_seed']}`",
         f"- Block size: `{payload['block_size']}` base frames",
         f"- Data source hash: `{payload['data_source_hash']}`",
@@ -1624,6 +1788,28 @@ def _write_report(payload: Mapping[str, Any], audit: Mapping[str, Any], report_p
             f"- Validation histogram: `{labels['histograms']['validation']}`",
             f"- Test histogram: `{labels['histograms']['test']}`",
             f"- Largest proportion differences: `{labels['largest_proportion_differences']}`",
+            "",
+            "## Conditional Label Distribution",
+            "",
+            f"- 15-domain train-validation macro TV: {conditional['per_domain']['train_validation_macro']['tv']:.6f}",
+            f"- 15-domain train-validation worst TV: {conditional['per_domain']['train_validation_worst_tv']:.6f} "
+            f"at `{conditional['per_domain']['train_validation_worst_group']}`",
+            f"- 15-domain validation unseen beam mass: {conditional['per_domain']['validation_unseen_beam_mass']:.6f}",
+            f"- Scene/domain train-validation macro TV: {conditional['per_scene']['train_validation_macro']['tv']:.6f}",
+            f"- Scene/domain train-validation worst TV: {conditional['per_scene']['train_validation_worst_tv']:.6f} "
+            f"at `{conditional['per_scene']['train_validation_worst_group']}`",
+            f"- Scene/domain validation unseen beam mass: {conditional['per_scene']['validation_unseen_beam_mass']:.6f}",
+            f"- Trajectory train-validation macro TV: {conditional['per_trajectory']['train_validation_macro']['tv']:.6f}",
+            f"- Trajectory train-validation worst TV: {conditional['per_trajectory']['train_validation_worst_tv']:.6f} "
+            f"at `{conditional['per_trajectory']['train_validation_worst_group']}`",
+            f"- Trajectory validation unseen beam mass: {conditional['per_trajectory']['validation_unseen_beam_mass']:.6f}",
+            f"- Simple contiguous scene/domain train-validation macro TV: "
+            f"{conditional_baseline['per_scene']['train_validation_macro']['tv']:.6f}",
+            f"- Simple contiguous trajectory train-validation macro TV: "
+            f"{conditional_baseline['per_trajectory']['train_validation_macro']['tv']:.6f}",
+            f"- Conditional stratified TV sum: {statistics['conditional_label_tv_sum']:.6f}",
+            f"- Simple contiguous conditional TV sum: "
+            f"{statistics['simple_contiguous_conditional_label_tv_sum']:.6f}",
             "",
             "## Leakage Checks",
             "",
@@ -1796,6 +1982,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 __all__ = [
+    "ASSIGNMENT_ALGORITHM",
     "CACHE_IDENTITY_FIELDS",
     "DEFAULT_BLOCK_SIZE",
     "EXPECTED_WEATHERS",

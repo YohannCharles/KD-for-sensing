@@ -35,6 +35,7 @@ PCPF_SPARSE_CSI_MODALITY = "csi"
 PROTOCOL_LINEAGE_KEYS = (
     "mode",
     "protocol_id",
+    "assignment_algorithm",
     "protocol_fingerprint",
     "audit_id",
     "audit_sha256",

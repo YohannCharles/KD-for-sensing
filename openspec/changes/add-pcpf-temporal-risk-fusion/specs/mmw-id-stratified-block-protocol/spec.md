@@ -1,8 +1,24 @@
 ## MODIFIED Requirements
 
+### Requirement: MMW block assignment 必须平衡 domain 内 beam 分布
+
+`mmw_id_stratified_block_v1` MUST 使用默认 32-base-frame 连续 block 和 manifest schema version 2。assignment MUST 在固定 70/15/15、三 role trajectory 覆盖与零 block/base/weather/window-frame overlap 下，同时优化全局、按 scene/domain 及按 `(scene_id,cav_id)` trajectory 的 train--validation/train--test beam TV，并惩罚条件 held-out beam 在相应 train 中缺失。旧 128-block/global-only assignment manifest MUST 失败关闭并显式 regenerate；其 normalization、GPS 和 sparse-CSI split-specific cache MUST 随 manifest hash 重建。
+
+#### Scenario: 旧全局标签平衡 manifest 被复用
+
+- **WHEN** loader 或 PCPF resolver 收到 manifest schema version 1、旧 assignment algorithm 或 block size 128 的产物
+- **THEN** 系统 MUST 在 dataset 创建前拒绝
+- **AND** 不得沿用旧 split-specific normalization、GPS、CSI bundle 或 checkpoint
+
+#### Scenario: 生成 seed 0 代表性报告
+
+- **WHEN** builder 完成默认 seed 0 assignment
+- **THEN** report MUST 同时给出全局、scene/domain 与 trajectory 的 train--validation/train--test TV、macro/worst 和条件未覆盖 beam 质量
+- **AND** MUST 保留简单连续 block baseline 与全部 leakage 检查
+
 ### Requirement: PCPF-T 必须绑定唯一 MMW block protocol
 
-PCPF-T resolver、preflight、train、continue-pipeline、gate、matrix 与 sparse-CSI sidecar MUST 只接受 `mmw_id_stratified_block_v1` version 1 manifest，并绑定相同 split seed、block size、manifest hash、data source hash、window config hash 与 train seed。旧 `mmw_trajectory_disjoint`、clean-inner、group-safe、随机窗口及其 cache/checkpoint MUST 失败关闭。
+PCPF-T resolver、preflight、train、continue-pipeline、gate、matrix 与 sparse-CSI sidecar MUST 只接受 `mmw_id_stratified_block_v1` protocol version 1、manifest schema version 2 和 conditional assignment v2，并绑定相同 split seed、block size、manifest hash、data source hash、window config hash 与 train seed。旧 `mmw_trajectory_disjoint`、clean-inner、group-safe、随机窗口及其 cache/checkpoint MUST 失败关闭。
 
 #### Scenario: PCPF-T 请求旧 split artifact
 

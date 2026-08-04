@@ -210,12 +210,18 @@ def apply_training_temporal_missing(
         schedule_id = _validate_balanced_pattern_config(temporal, actual_history_window=steps)
         schedule_spec = _balanced_schedule_spec(schedule_id)
         seed = _derived_seed(base_seed, schedule_spec["seed_label"], int(epoch))
+    elif mode == "fixed_single_modality":
+        seed = base_seed
     else:
         seed = _training_seed(cfg, temporal, epoch=epoch, step=step)
     condition_ids: list[str] | None = None
     panel_indices: list[int] | None = None
     panel_sha256: str | None = None
-    if mode == "balanced_pattern_schedule":
+    if mode == "fixed_single_modality":
+        fixed_modality = _fixed_single_modality_name(temporal, modalities)
+        sampled = torch.zeros(batch_size, steps, len(modalities), dtype=torch.bool)
+        sampled[:, :, modalities.index(fixed_modality)] = True
+    elif mode == "balanced_pattern_schedule":
         if steps != 5:
             raise ValueError("balanced_pattern_schedule requires the MMW 5-frame history window.")
         assert schedule_id is not None and schedule_spec is not None
@@ -245,7 +251,13 @@ def apply_training_temporal_missing(
                 for _ in range(batch_size)
             ]
         )
-    mask, fixes = _restore_missing_samples(base & sampled, base)
+    mask = base & sampled
+    if mode == "fixed_single_modality":
+        if not bool(mask.any(dim=(1, 2)).all().item()):
+            raise ValueError(f"fixed_single_modality requires available {fixed_modality} history for every sample.")
+        fixes = 0
+    else:
+        mask, fixes = _restore_missing_samples(mask, base)
     apply_modality_temporal_mask_to_batch(batch, mask, modalities=modalities)
     if original_inputs is not None:
         batch[TEMPORAL_SUPERSET_PAYLOAD_KEY] = {
@@ -259,6 +271,8 @@ def apply_training_temporal_missing(
         "available_rate": float(mask.to(dtype=torch.float32).mean().item()),
         "num_fallback_fixes": fixes,
     }
+    if mode == "fixed_single_modality":
+        metadata["fixed_modality"] = fixed_modality
     if condition_ids is not None:
         metadata.update(
             {
@@ -278,6 +292,23 @@ def apply_training_temporal_missing(
             )
     batch["temporal_missing_metadata"] = metadata
     return batch
+
+
+def fixed_single_modality_from_config(cfg: Mapping[str, Any]) -> str | None:
+    temporal = cfg.get("temporal_missing", {})
+    if not isinstance(temporal, Mapping) or not temporal.get("enabled", False):
+        return None
+    if normalize_temporal_missing_mode(temporal.get("mode")) != "fixed_single_modality":
+        return None
+    return _fixed_single_modality_name(temporal, _configured_modalities(cfg))
+
+
+def fixed_single_modality_mask_from_config(cfg: Mapping[str, Any]) -> torch.Tensor | None:
+    fixed_modality = fixed_single_modality_from_config(cfg)
+    if fixed_modality is None:
+        return None
+    modalities = _configured_modalities(cfg)
+    return torch.tensor([name == fixed_modality for name in modalities], dtype=torch.bool)
 
 
 def apply_modality_temporal_mask_to_batch(
@@ -324,6 +355,13 @@ def _configured_modalities(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     if names != DEFAULT_TEMPORAL_MODALITIES:
         raise ValueError(f"Four-modality temporal missing requires modalities {list(DEFAULT_TEMPORAL_MODALITIES)}.")
     return PCPF_SPARSE_CSI_MODALITIES if bool(primary.get("use_sparse_csi", False)) else names
+
+
+def _fixed_single_modality_name(temporal: Mapping[str, Any], modalities: tuple[str, ...]) -> str:
+    name = str(temporal.get("fixed_modality", "")).strip().lower()
+    if name not in modalities:
+        raise ValueError(f"fixed_single_modality fixed_modality must be one of {list(modalities)}, got {name!r}.")
+    return name
 
 
 def _batch_time_shape(batch: Mapping[str, Any], modalities: tuple[str, ...]) -> tuple[int, int]:
@@ -628,6 +666,8 @@ __all__ = [
     "apply_training_temporal_missing",
     "build_random_balanced_modality_frame_masks",
     "masked_temporal_mean",
+    "fixed_single_modality_from_config",
+    "fixed_single_modality_mask_from_config",
     "sample_stratified_modality_temporal_mask",
     "WHOLE_ONLY_PATTERN_CONDITION_COUNTS",
     "WHOLE_ONLY_PATTERN_PANEL_SIZE",

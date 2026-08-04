@@ -162,9 +162,23 @@ Stage 2、gate 与 Stage 3 分别在独立子进程中运行，使 CUDA 与 data
 
 协议构建读取 15 个 strict sequence index，并使用每行 `seq_index`、`history_frame_ids_json` 与 `future_frame_ids_json` 建立天气内物理 frame 到 `(scene_id,cav_id,base_frame_index)` 的显式映射。重叠窗口对同一物理 frame 给出的 base index 必须一致；三天气的 base index 集、对应标签和窗口跨度必须一致。frame manifest 仅用于补充并验证基础帧 inventory/source hash；不能按物理 frame 数值或 CSV 遍历顺序跨天气配对。
 
-每条 trajectory 按 base index 每 128 点切 block，尾块保留；block assignment 先保证每 trajectory 三 role 覆盖与整数 quota，再使用 seed 控制的确定性多起点局部 swap 优化预计窗口 ratio、beam TV/L1、trajectory/scene ratio 和 train coverage。最终窗口通过严格候选 index 在 assignment 后 materialize，只有全部历史与目标 base index 属于同一 block 才写入 role CSV。
+每条 trajectory 按 base index 每 32 点切 block，尾块保留；block assignment 先保证每 trajectory 三 role 覆盖与整数 quota，再使用 seed 控制的确定性多起点局部 swap 优化预计窗口 ratio、全局 beam TV、按 scene/domain 与 trajectory 的 train--validation/train--test TV、trajectory/scene ratio和对应 train 条件覆盖。32 点 block 在保持连续时间隔离的同时为每条 trajectory 提供多个分散 held-out block；最终窗口通过严格候选 index 在 assignment 后 materialize，只有全部历史与目标 base index 属于同一 block 才写入 role CSV。
 
-manifest 记录 protocol version 1、70/15/15、block/trajectory/base identity、source/window hash、完整 block 清单、assignment objective 与实际窗口统计。JSON/Markdown report 同时给出优化 assignment 与简单前段 block baseline 的 TV/JSD/correlation。已有 manifest 任何 identity 不匹配时拒绝复用；只有显式 regenerate 才可重写。所有 split-specific cache 统一继承八项 cache identity，原始内容寻址 CSI cache不删除。
+manifest 记录 protocol version 1、manifest schema version 2、assignment algorithm、70/15/15、block/trajectory/base identity、source/window hash、完整 block 清单、全局/scene/trajectory assignment objective 与实际窗口统计。JSON/Markdown report 同时给出优化 assignment 与简单前段 block baseline 的全局及条件 TV/JSD/correlation/coverage。已有 manifest 任何 identity 不匹配时拒绝复用；只有显式 regenerate 才可重写。所有 split-specific cache 继续由 manifest hash 失效，原始内容寻址 CSI cache不删除。
+
+### 20. 单模态能力诊断使用独立 Stage 1，而非联合 checkpoint 的强制 mask
+
+联合 31-subset Stage 1 的 Single-mask validation 同时受到共享 prototype、其他专家训练和 mask schedule 影响，不能回答单个传感器在当前 split 上能否独立学到 beam label。诊断因此为 image、radar、GPS、LiDAR 与 sparse CSI 分别启动 fresh-start `stage1_expert`；五条运行绑定同一个 `mmw_id_stratified_block_v1` seed 0 manifest、train seed、40-epoch 预算、batch/worker、topology 与 validation-loss checkpoint selection。
+
+`fixed_single_modality` mask 在训练时只保留指定模态的真实历史 cell，并与 source availability 取交集；若任一样本没有该模态的有效历史 cell，必须失败，不能恢复其他模态。逐 epoch validation 使用同一个固定 modality mask，31-mask 末尾评估关闭。诊断不启动 Stage 2、Stage 3、gate 或任何融合对照，不读取 test，结果保持 `claim_ineligible=true`。联合 checkpoint 的 forced-only 数字和旧 clean-inner 结果只作为背景，不与该诊断混成同一协议结论。
+
+### 21. 拓扑原型监督与动态融合使用嵌套 2x2 消融
+
+创新点一严格定义为 Stage 1 的 topology-aware prototype supervision，而不是 K-means 或每类多 prototype 聚类。关闭分支仍实例化同一个 64-beam `BeamPrototypeBank`，所有模态继续通过该共享 bank 产生 logits，并保留 fused/unimodal hard CE；仅将 `unimodal_soft_weight`、`lambda_proto`、`lambda_modality_proto` 置零并关闭 `use_beam_prototype_alignment`。这样反事实只移除邻近 beam topology soft target 与 fused/modality prototype alignment，不改变 head 容量、参数量或推理路径。
+
+每个 train seed 分别 fresh-start 训练 topology supervision 开/关两条 Stage 1 专家链，并各自完成 Stage 2。每条专家链从同一个 Stage 2 validation-best 和 gate 分叉 Static Prior 与 analytic PCPF Stage 3，形成 E0=`topology off + static`、E1=`topology on + static`、E2=`topology off + dynamic`、E3=`topology on + dynamic`。创新点一主效应报告 E1-E0，创新点二在创新点一基础上的条件效应报告 E3-E1，同时报告 E2-E0 与交互项 `(E3-E1)-(E2-E0)`；不得用 `no-proto` 风险分量消融替代 topology-loss 消融。
+
+补充实验固定 `mmw_id_stratified_block_v1` split seed 0、train seed 1/2/3、五模态 31-subset schedule、40/20/10 epoch、batch 64、8 workers、`ula_dft_phase_cycle_v1` topology 和 validation-loss checkpoint selection。四个 cell 对同一 seed 使用同一 validation identity、样本顺序与指标实现；每条专家链内 Static/Dynamic 必须共享 Stage 1/2 fingerprint。跨 topology 开/关分支的 expert fingerprint 本来就应不同，评估不得伪称同专家对照，只允许在相同 sample/group identity 上计算 seed 内 paired 差值，再跨三个预注册 seed 汇总。开发流程继续封存 test，全部结果保持 `claim_ineligible=true`。
 
 ## Risks / Trade-offs
 
@@ -191,6 +205,6 @@ manifest 记录 protocol version 1、70/15/15、block/trajectory/base identity�
 2. 先以 synthetic tensor 完成三阶段冻结、checkpoint metadata、数值和 backward smoke。
 3. 由本地 resolver 注入 block protocol、split audit、当前 manifest 的 train-only GPS scaler、fresh-start Stage 1 和后续 gate sidecar，生成 `outputs/` 下 resolved configs。
 4. 先扫描 block train/validation 补齐固定 2x2 CSI cache并发布 packed bundle，绑定严格 RGB/LiDAR/GPS cache，再运行真实 MMW 一个 batch的 Stage 1/2/3 smoke；默认不构建 test loader。
-5. 模型方案冻结后才可由用户显式启动额外 split seed 与 train seed；本轮只准备 `split_seed=0` 且不启动长训练。
+5. 用户已显式授权在固定 `split_seed=0` 上启动 train seed 1/2/3 的拓扑监督 2x2 长训练；运行保持 test 封存、独立 GPU/输出目录且不自动重试。
 6. 回滚只需停止使用 PCPF local configs/registry type；stable baseline 无迁移步骤。
 7. 将其他 change 以 closure note 和仓库外快照归档；删除非 PCPF 本地实验 owner。

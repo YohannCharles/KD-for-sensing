@@ -10,6 +10,7 @@ from kd_sensing.config import load_config
 from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 from kd_sensing.eval.pcpf import (
     _control_fusion_from_cached_evidence,
+    _protocol_sample_id,
     _r0_r7_summary,
     build_stage2_gate_report,
     fit_train_confidence_p90,
@@ -52,6 +53,15 @@ PATTERNS = [
 def _sha256_lines(values: list[str], *, sort: bool = False) -> str:
     selected = sorted(values) if sort else values
     return hashlib.sha256("\n".join(selected).encode("utf-8")).hexdigest()
+
+
+def test_protocol_sample_id_preserves_audited_mmw_identity() -> None:
+    sample_id = "foggy:Town03:Town03_5wayroad_seed28:cav_1:000849"
+
+    assert _protocol_sample_id({"source_sample_id": sample_id}) == sample_id
+    assert _protocol_sample_id({"sample_id": sample_id}) == sample_id
+    with pytest.raises(ValueError, match="audited protocol sample identity"):
+        _protocol_sample_id({})
 
 
 def _identity_binding(records: dict) -> dict[str, object]:
@@ -377,6 +387,18 @@ def test_evaluation_checkpoint_rejects_posthoc_topology_and_protocol_relabel(tmp
 def test_stage2_gate_passes_registered_observability_contract() -> None:
     records = _records()
     confidence, count = fit_train_confidence_p90(records)
+    protocol = {
+        **_protocol(records),
+        "protocol_version": 1,
+        "block_size": 128,
+        "split_manifest_hash": "1" * 64,
+        "data_source_hash": "2" * 64,
+        "window_config_hash": "3" * 64,
+        "weather_binding": True,
+        "train_block_count": 90,
+        "validation_block_count": 19,
+        "test_block_count": 19,
+    }
 
     report = build_stage2_gate_report(
         records,
@@ -385,7 +407,7 @@ def test_stage2_gate_passes_registered_observability_contract() -> None:
         train_confidence_count=count,
         stage2_checkpoint_sha256="b" * 64,
         bounded_evaluation=False,
-        data_protocol=_protocol(records),
+        data_protocol=protocol,
         prototype_topology=_topology(),
         experiment_seed=1,
         validation_identity_binding=_identity_binding(records),
@@ -396,6 +418,7 @@ def test_stage2_gate_passes_registered_observability_contract() -> None:
     assert report["overall"]["spearman"] > 0.99
     assert len(report["domains"]) == 15
     assert set(report["mask_groups"]) == {"full", "drop1", "drop2", "single"}
+    assert all(report["data_protocol"][key] == protocol[key] for key in protocol)
 
 
 def test_bounded_gate_is_never_promotion_eligible() -> None:

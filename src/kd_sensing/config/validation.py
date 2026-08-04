@@ -42,8 +42,8 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
             raise ValueError("MMW data.split_protocol must be 'mmw_id_stratified_block_v1'.")
         if int(data_section.get("split_seed", -1)) < 0:
             raise ValueError("MMW data.split_seed must be a non-negative integer.")
-        if int(data_section.get("block_size", 0)) != 128:
-            raise ValueError("MMW data.block_size must be 128 for the canonical protocol.")
+        if int(data_section.get("block_size", 0)) != 32:
+            raise ValueError("MMW data.block_size must be 32 for the canonical protocol.")
         if data_section.get("split_ratios") != {"train": 0.70, "validation": 0.15, "test": 0.15}:
             raise ValueError("MMW data.split_ratios must be the canonical 70/15/15 mapping.")
         retired_names = {"split_mode", "split_strategy", "train_ratio", "val_ratio", "test_ratio"}

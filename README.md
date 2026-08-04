@@ -2,7 +2,7 @@
 
 PCPF-T 是当前唯一 active research mainline，研究共享 beam prototype、逐模态时序建模、拓扑风险与解析可靠性融合。U0、AMBER-Full、RMBP-MM 与 DeepSense6G Scene31--34 T2 作为稳定 recipe 保留。
 
-MMW 训练只能通过经审计的 `mmw_id_stratified_block_v1` protocol 启动。trajectory 固定为 `(scene_id,cav_id)`，三种天气按基础时间点绑定，以 128 个基础帧的连续 block 做确定性标签平衡 70/15/15 分配。当前 seed 0 为 90/19/19 blocks、31,602/6,723/6,855 windows；三个 split 均覆盖 5 个场景和全部 16 条轨迹，block/base frame/raw frame 跨 split 重叠均为 0。
+MMW 训练只能通过经审计的 `mmw_id_stratified_block_v1` protocol 启动。trajectory 固定为 `(scene_id,cav_id)`，三种天气按基础时间点绑定，以 32 个基础帧的连续 block 做全局、scene/domain 与 trajectory 条件标签平衡的 70/15/15 分配。当前 seed 0 manifest v2 为 350/75/75 blocks、27,666/5,931/6,003 windows；三个 split 均覆盖 5 个场景和全部 16 条轨迹，15-domain validation beam 在对应 scene train 的未覆盖质量为 0，block/base frame/raw frame 跨 split 重叠均为 0。
 
 ## PCPF-T 主线
 

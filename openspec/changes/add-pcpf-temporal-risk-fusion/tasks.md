@@ -150,3 +150,25 @@
 - [x] 20.5 删除旧 trajectory-disjoint 函数、协议字符串、配置/脚本入口、fallback 与 current capability；保留历史本地产物但拒绝加载
 - [x] 20.6 增加确定性、seed 独立、天气/block/base/window 泄漏、覆盖、比例、标签优化、旧 manifest/cache、train-only 统计、默认 test 封存和输入遍历顺序测试
 - [x] 20.7 只生成并验证 seed 0 manifest/report，构建 train/validation loader并运行 1--2 batch 模态/CSI identity smoke；训练/验证流程不构建 test loader，不运行其他 seed 或长训练
+
+## 21. 五个独立单模态 Stage 1 诊断
+
+- [x] 21.1 定义 fixed-single-modality 的训练/validation 一致 mask、Stage 1-only、missing-matrix 关闭与 sealed-test 契约
+- [x] 21.2 实现 fixed mask、validation 绑定和 PCPF resolver 的窄诊断参数，并增加 fail-closed focused tests
+- [x] 21.3 使用当前 seed 0 ID-block manifest 完成真实 batch 64 CUDA smoke，核对五份 resolved config、GPU、输出、seed、预算和不覆盖策略
+- [ ] 21.4 在独立 GPU/输出目录并行启动 image/radar/GPS/LiDAR/CSI seed1 Stage 1，监控首轮健康度并汇总 validation-best 与逐 epoch peak Top-1
+
+## 22. ID-block 条件标签分布修复
+
+- [x] 22.1 更新 proposal、design、current/delta specs，定义 32-base-frame block、scene/trajectory 条件标签目标、manifest v2 与旧 cache 失效
+- [x] 22.2 实现确定性 conditional assignment、可扩展 quota 搜索、manifest 身份与全局/条件分布报告
+- [x] 22.3 增加旧 manifest 拒绝、条件目标、默认配置、确定性与 leakage focused tests
+- [x] 22.4 显式重建并审计 seed 0 manifest/report、train-only normalization、GPS 与 train/validation sparse-CSI split bundle，不启动长训练或访问 test evaluator
+- [x] 22.5 运行 focused tests、OpenSpec strict、CLI config、compile、quick 与 full 验证，记录未执行的长训练
+
+## 23. 拓扑原型监督与动态融合 2x2 消融
+
+- [x] 23.1 定义 E0--E3、拓扑监督关闭边界、三 seed 配对、共享专家约束与交互项报告契约
+- [x] 23.2 增加最小 topology-loss-off Stage 1 overlay 和配置回归测试，完成 strict OpenSpec、focused test、resolve 与 preflight
+- [x] 23.3 在独立 GPU/输出目录启动 split seed 0、train seed 1/2/3 的两条专家链，并从各自 Stage 2 分叉 Static/Dynamic；禁止覆盖和自动重试，监控首轮健康度
+- [ ] 23.4 完成 E0--E3 同 validation identity 评估，汇总逐 seed/均值/不确定性、E1-E0、E3-E1、E2-E0 与交互项；保持 test 未访问和 claim-ineligible
