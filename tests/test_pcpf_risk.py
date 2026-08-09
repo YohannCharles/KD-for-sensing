@@ -31,8 +31,7 @@ def test_temporal_residual_does_not_treat_wrap_as_full_circle_jump() -> None:
     features[0, :, 0] = frames[0, :, 0]
     probability = frames[:, -1].expand(-1, 1, -1)
     result = topology_risk_components(
-        mu=features[:, -1],
-        logvar=torch.full((1, 1, 64), -4.0),
+        concentration=torch.full((1, 1), 64.0),
         frame_features=features,
         temporal_mask=torch.ones(1, 5, 1, dtype=torch.bool),
         probabilities=probability,
@@ -46,8 +45,6 @@ def test_temporal_residual_does_not_treat_wrap_as_full_circle_jump() -> None:
 
 
 def test_risk_components_are_fp32_and_handle_short_history_and_single_modality() -> None:
-    mu = torch.randn(2, 4, 64, dtype=torch.bfloat16)
-    logvar = torch.full_like(mu, -4.0)
     frames = torch.randn(2, 5, 4, 64, dtype=torch.bfloat16)
     mask = torch.zeros(2, 5, 4, dtype=torch.bool)
     mask[:, :2, 0] = True
@@ -55,8 +52,7 @@ def test_risk_components_are_fp32_and_handle_short_history_and_single_modality()
     probability[:, 0] = torch.softmax(torch.randn(2, 64), dim=-1)
 
     result = topology_risk_components(
-        mu=mu,
-        logvar=logvar,
+        concentration=torch.full((2, 4), 64.0, dtype=torch.bfloat16),
         frame_features=frames,
         temporal_mask=mask,
         probabilities=probability,
@@ -70,3 +66,26 @@ def test_risk_components_are_fp32_and_handle_short_history_and_single_modality()
     assert result["components"][:, 0, 3].eq(0).all()
     assert torch.isfinite(result["components"]).all()
     assert math.isfinite(result["components"][:, 0, 0].mean().item())
+
+
+def test_neighbor_mass_and_conflict_respect_circular_beam_topology() -> None:
+    probability = torch.zeros(1, 3, 64)
+    probability[0, 0, 63] = 0.6
+    probability[0, 0, 0] = 0.4
+    probability[0, 1, 0] = 1.0
+    probability[0, 2, 32] = 1.0
+    frames = torch.zeros(1, 5, 3, 64)
+    frames[..., 0] = 1.0
+    result = topology_risk_components(
+        concentration=torch.full((1, 3), 64.0),
+        frame_features=frames,
+        temporal_mask=torch.ones(1, 5, 3, dtype=torch.bool),
+        probabilities=probability,
+        prototypes=torch.eye(64),
+        prototype_temperature=0.1,
+        topology_positions=torch.arange(64, dtype=torch.float32),
+        neighbor_radius=2,
+    )
+
+    assert result["components"][0, 0, 1].item() < 1e-6
+    assert result["components"][0, 1, 3].item() < result["components"][0, 2, 3].item()

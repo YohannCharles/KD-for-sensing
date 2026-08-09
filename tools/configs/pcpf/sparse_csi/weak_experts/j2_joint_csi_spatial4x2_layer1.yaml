@@ -1,0 +1,16 @@
+_base_: j0_joint_bf16_control.yaml
+
+data:
+  dataset:
+    sparse_csi:
+      cache_manifest_path: outputs/pcpf_sparse_csi_router_v1/cache/trajectory_cache_manifest_4x2.json
+      selection_sha256: 2d035d64f6b9ac408532040b3ff09151a8831361d81c83b1b77e218e4344a4f4
+  dataloader:
+    generator_seeds:
+      train: 3702095051185301119
+      validation: 5941928843505026558
+
+model:
+  primary:
+    sparse_csi_encoder:
+      num_layers: 1

@@ -75,10 +75,16 @@ def prepare_fusion_inputs(
         csi = _sequence(batch, "csi", seq_length, device, non_blocking)
         pattern_ids = _sequence(batch, "csi_pattern_ids", seq_length, device, non_blocking).long()
         pilot_mask = _sequence(batch, "csi_pilot_mask", seq_length, device, non_blocking).bool()
-        if not torch.is_complex(csi) or tuple(csi.shape[1:]) != (seq_length, 2, 2):
-            raise ValueError(f"csi must be complex [B,{seq_length},2,2].")
+        if (
+            not torch.is_complex(csi)
+            or csi.ndim != 4
+            or csi.shape[1] != seq_length
+            or csi.shape[2] not in {2, 4}
+            or csi.shape[3] != 2
+        ):
+            raise ValueError(f"csi must be complex [B,{seq_length},M,2] with M in {{2,4}}.")
         if tuple(pattern_ids.shape) != tuple(csi.shape[:3]) or tuple(pilot_mask.shape) != tuple(csi.shape):
-            raise ValueError("csi_pattern_ids/csi_pilot_mask must have shapes [B,T,2] and [B,T,2,2].")
+            raise ValueError("csi_pattern_ids/csi_pilot_mask must have shapes [B,T,M] and [B,T,M,2].")
         inputs.update(
             csi_batch=csi,
             csi_pattern_ids=pattern_ids,

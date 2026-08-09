@@ -1,0 +1,7 @@
+_base_: ../stage1.yaml
+
+model:
+  primary:
+    encoders:
+      radar:
+        type: radar_dual_branch_cnn

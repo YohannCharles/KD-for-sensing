@@ -718,6 +718,8 @@ def bind_trajectory_config(cfg: dict[str, Any], manifest_path: str | Path) -> di
         "evaluate_test_requested": evaluate_test,
         "test_evaluated": evaluate_test,
         "leakage_validation": "PASS",
+        "outer_test_enabled": evaluate_test,
+        "allow_confirmation_train": False,
     }
     validate_trajectory_config_protocol(cfg)
     return protocol

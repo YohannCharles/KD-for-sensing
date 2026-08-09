@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn as nn
 
@@ -74,7 +75,7 @@ def test_stage1_loss_updates_expert_and_shared_prototype_only() -> None:
     assert model.temperature_raw.grad is None
 
 
-def test_stage2_loss_updates_probability_and_risk_without_fused_ce() -> None:
+def test_stage2_loss_updates_evidence_and_risk_without_fused_ce() -> None:
     model = _model("stage2_risk").train()
     output = model(**_inputs())
 
@@ -88,7 +89,19 @@ def test_stage2_loss_updates_probability_and_risk_without_fused_ce() -> None:
 
     assert not result["risk_target"].requires_grad
     assert model.risk_coefficient_raw.grad is not None
-    assert model.probability_head.logvar_head.weight.grad is not None
+    assert any(parameter.grad is not None for parameter in model.probability_head.parameters())
     assert model.prototype_bank.prototypes.grad is None
     assert all(parameter.grad is None for parameter in model.encoders.parameters())
     assert "loss/pcpf_fusion_nll" not in result["diagnostics"]
+    assert "loss/pcpf_concentration" in result["diagnostics"]
+    assert "loss/pcpf_kl" not in result["diagnostics"]
+
+
+def test_retired_gaussian_loss_fields_are_rejected() -> None:
+    cfg = {
+        "model": {"primary": {"training_stage": "stage2_risk"}},
+        "loss": {"pcpf_temporal_risk": {"enabled": True, "beta_kl": 1e-4}},
+    }
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        pcpf_temporal_risk_config(cfg)

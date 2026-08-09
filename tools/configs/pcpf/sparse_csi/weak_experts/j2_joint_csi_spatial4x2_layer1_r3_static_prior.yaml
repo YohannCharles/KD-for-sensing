@@ -1,0 +1,8 @@
+_base_: j2_joint_csi_spatial4x2_layer1_stage3.yaml
+
+experiment:
+  name: PCPF-T-sparse-CSI-R3-static-prior
+
+model:
+  primary:
+    fusion_mode: static_prior

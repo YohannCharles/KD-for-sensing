@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from kd_sensing.engine.evaluation_pass_runtime import metadata_rows_from_batch, prepare_evaluation_batch
 from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_ID
 from kd_sensing.engine.runtime import prepare_task_labels, run_model_step
-from kd_sensing.evaluation.metrics import beam_classification_circular_summary
+from kd_sensing.evaluation.metrics import beam_classification_circular_summary, calculate_dba_score
 from kd_sensing.losses.pcpf_temporal_risk import topology_risk_target
 from kd_sensing.models.pcpf_temporal_risk import analytic_fusion_weights
 from kd_sensing.utils.missing_patterns import make_fixed_missing_mask, resolve_missing_patterns
@@ -37,22 +37,12 @@ def collect_pcpf_observations(
     device: str | torch.device,
     patterns: Mapping[str, Sequence[int]],
     max_batches: int | None = None,
-    control_models: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect validation diagnostics without reading an outer-test loader."""
     device = torch.device(device)
     modalities = tuple(str(value) for value in getattr(model, "modalities", ()))
     if modalities not in {PCPF_SENSING_MODALITIES, PCPF_SPARSE_CSI_MODALITIES}:
         raise ValueError("PCPF diagnostics require canonical sensing modalities with optional sparse CSI.")
-    controls = dict(control_models or {})
-    allowed_controls = {"uniform", "static_prior", "direct_router_control", "cuaf_local_adaptation"}
-    for mode, control in controls.items():
-        if mode not in allowed_controls or getattr(control, "fusion_mode", None) != mode:
-            raise ValueError(f"Invalid PCPF replacement control {mode!r}.")
-        if model._expert_fingerprint() != control._expert_fingerprint():
-            raise ValueError(f"{mode} and PCPF checkpoints do not share the Stage 1 expert fingerprint.")
-        control.to(device).eval()
-
     tensor_chunks: dict[str, list[torch.Tensor]] = {
         key: []
         for key in (
@@ -69,6 +59,8 @@ def collect_pcpf_observations(
             "available",
             "fusion_weights",
             "unimodal_probabilities",
+            "probability_concentration",
+            "probability_uncertainty",
             "calibrated_unimodal_probabilities",
             "fused_probability",
             "risk_components",
@@ -83,7 +75,7 @@ def collect_pcpf_observations(
             csi_snr_available=[],
         )
     replacement_probability: dict[str, list[torch.Tensor]] = {
-        name: [] for name in ("uniform", "static_prior", "pcpf_analytic", *sorted(controls))
+        name: [] for name in ("uniform", "static_prior", "pcpf_analytic")
     }
     replacement_weights: dict[str, list[torch.Tensor]] = {key: [] for key in replacement_probability}
     strings = {
@@ -153,17 +145,8 @@ def collect_pcpf_observations(
                     "static_prior": static,
                     "pcpf_analytic": _tensor(diagnostics, "fusion_weights").float(),
                 }
-                calibrated_by_name = {name: calibrated for name in weights_by_name}
-                for name, control in controls.items():
-                    control_weights, control_calibrated = _control_fusion_from_cached_evidence(
-                        control,
-                        diagnostics,
-                        available,
-                    )
-                    weights_by_name[name] = control_weights
-                    calibrated_by_name[name] = control_calibrated
                 for name, weights in weights_by_name.items():
-                    probability = (weights.unsqueeze(-1) * calibrated_by_name[name]).sum(dim=1)
+                    probability = (weights.unsqueeze(-1) * calibrated).sum(dim=1)
                     probability = probability / probability.sum(dim=-1, keepdim=True).clamp_min(1e-12)
                     replacement_probability[name].append(probability.cpu())
                     replacement_weights[name].append(weights.cpu())
@@ -187,6 +170,8 @@ def collect_pcpf_observations(
                     "available": available,
                     "fusion_weights": _tensor(diagnostics, "fusion_weights"),
                     "unimodal_probabilities": probabilities,
+                    "probability_concentration": _tensor(diagnostics, "probability_concentration"),
+                    "probability_uncertainty": _tensor(diagnostics, "probability_uncertainty"),
                     "calibrated_unimodal_probabilities": calibrated,
                     "fused_probability": _tensor(diagnostics, "fused_probability"),
                     "risk_components": _tensor(diagnostics, "risk_components"),
@@ -226,14 +211,12 @@ def collect_pcpf_observations(
         "modality_temperatures": model.temperatures.detach().float().cpu(),
         "static_capability": model._static_capability().detach().float().cpu(),
         "fusion_tau": float(model.tau.detach().float().cpu().item()),
+        "max_log_adjustment": float(model.max_log_adjustment),
+        "dba_delta": float(cfg.get("evaluation", {}).get("dba_delta", 5.0)),
+        "dba_distance_mode": str(cfg.get("evaluation", {}).get("dba_distance_mode", "circular")),
         "risk_coefficients": model.risk_coefficients.detach().float().cpu(),
         "risk_component_mean": model.risk_component_mean.detach().float().cpu(),
         "risk_component_std": model.risk_component_std.detach().float().cpu(),
-        "trained_controls": sorted(controls),
-        "replacement_parameters": {
-            name: _fusion_parameter_summary(controls.get(name, model), source="control_checkpoint" if name in controls else "main_checkpoint")
-            for name in replacement_probability
-        },
         "expert_fingerprint": model._expert_fingerprint(),
         "training_stage": str(model.training_stage),
         "bounded_evaluation": max_batches is not None,
@@ -509,6 +492,7 @@ def summarize_pcpf_matrix(
         "training_stage": records["training_stage"],
         "expert_fingerprint": records["expert_fingerprint"],
         "bounded_evaluation": bool(records["bounded_evaluation"]),
+        "evaluation_scope": "checkpoint_bound_matrix",
         "claim_ineligible": True,
         "outer_test_accessed": False,
         "provenance": dict(provenance),
@@ -516,8 +500,7 @@ def summarize_pcpf_matrix(
         "modality_temperatures": {name: float(records["modality_temperatures"][index]) for index, name in enumerate(records["modalities"])},
         "static_capability": {name: float(records["static_capability"][index]) for index, name in enumerate(records["modalities"])},
         "fusion_tau": float(records["fusion_tau"]),
-        "trained_controls": list(records.get("trained_controls", ())),
-        "replacement_parameters": dict(records.get("replacement_parameters", {})),
+        "max_log_adjustment": float(records.get("max_log_adjustment", 1.0)),
         "overall": _matrix_group(records, all_rows, train_confidence_p90),
         "patterns": pattern_reports,
         "pattern_aggregates": _pattern_aggregates(pattern_reports, records=records),
@@ -526,10 +509,6 @@ def summarize_pcpf_matrix(
         "domains": _group_matrix(records, "domain", train_confidence_p90),
         "pattern_weather": _joint_group_matrix(records, "pattern", "weather", train_confidence_p90),
         "pattern_domain": _joint_group_matrix(records, "pattern", "domain", train_confidence_p90),
-        "direct_router_status": ("evaluated" if "direct_router_control" in records["replacement_probability"] else "not_supplied"),
-        "cuaf_local_adaptation_status": (
-            "evaluated" if "cuaf_local_adaptation" in records["replacement_probability"] else "not_supplied"
-        ),
     }
     config = dict(diagnostics_config or {})
     mechanism = build_pcpf_mechanism_diagnostics(
@@ -539,11 +518,6 @@ def summarize_pcpf_matrix(
         source_split=validation_role,
     )
     result["mechanism_diagnostics"] = mechanism
-    result["R0_R7"] = (
-        _r0_r7_summary(result, trajectory_r0_reference=config.get("trajectory_r0_reference_summary"))
-        if tuple(records["modalities"]) == PCPF_SPARSE_CSI_MODALITIES
-        else {"status": "not_applicable_without_sparse_csi"}
-    )
     return result
 
 
@@ -600,11 +574,16 @@ def _matrix_group(
     risk = torch.as_tensor(records["raw_risk"], dtype=torch.float32)[rows]
     true_errors = _record_circular_errors(records)[rows]
     static_weights = torch.as_tensor(records["replacement_weights"]["static_prior"], dtype=torch.float32)[rows]
+    metric_options = {
+        "dba_delta": float(records.get("dba_delta", 5.0)),
+        "distance_mode": str(records.get("dba_distance_mode", "circular")),
+    }
     replacement = {
-        name: _classification_metrics(torch.as_tensor(values)[rows], labels) for name, values in records["replacement_probability"].items()
+        name: _classification_metrics(torch.as_tensor(values)[rows], labels, **metric_options)
+        for name, values in records["replacement_probability"].items()
     }
     return {
-        **_classification_metrics(probability, labels),
+        **_classification_metrics(probability, labels, **metric_options),
         "weight_diagnostics": _weight_diagnostics(
             weights,
             risk,
@@ -618,18 +597,32 @@ def _matrix_group(
     }
 
 
-def _classification_metrics(probability: torch.Tensor, labels: torch.Tensor) -> dict[str, Any]:
+def _classification_metrics(
+    probability: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    dba_delta: float = 5.0,
+    distance_mode: str = "circular",
+) -> dict[str, Any]:
     if labels.numel() == 0:
         return {"count": 0}
     probability = probability.float().clamp_min(1e-12)
     logits = probability.log()
-    summary = beam_classification_circular_summary(logits, labels, num_beams=probability.shape[-1])
+    summary = beam_classification_circular_summary(
+        logits,
+        labels,
+        num_beams=probability.shape[-1],
+        dba_delta=dba_delta,
+        distance_mode=distance_mode,
+    )
+    adba = calculate_dba_score(logits, labels, dba_delta, distance_mode=distance_mode)
     one_hot = F.one_hot(labels, num_classes=probability.shape[-1]).float()
     return {
         "count": int(labels.numel()),
         "top1": float(summary["top1"]),
         "top3": float(summary["top3"]),
         "top5": float(summary["top5"]),
+        "adba": float(adba[0]),
         "within_3": float(summary["within_3"]),
         "circular_mae": float(summary["mean_error"]),
         "nll": float(F.nll_loss(logits, labels).item()),
@@ -705,7 +698,7 @@ def _confident_wrong(
         )
     confidence, prediction = probabilities.max(dim=-1)
     result: dict[str, Any] = {}
-    component_names = ("u_var", "u_proto", "u_temp", "u_conflict")
+    component_names = ("u_concentration", "u_neighbor", "u_temp", "u_conflict")
     for index, name in enumerate(records["modalities"]):
         wrong = available[:, index] & confidence[:, index].ge(float(threshold[index])) & prediction[:, index].ne(labels)
         correct = available[:, index] & prediction[:, index].eq(labels)
@@ -726,11 +719,6 @@ def _confident_wrong(
                 for component_index, component in enumerate(component_names)
             },
         }
-        if "direct_router_control" in records["replacement_weights"]:
-            router = torch.as_tensor(records["replacement_weights"]["direct_router_control"], dtype=torch.float32)
-            if rows is not None:
-                router = router[rows]
-            result[name]["old_router_mean_weight"] = _mean_or_none(router[:, index][wrong])
     return result
 
 
@@ -797,7 +785,7 @@ def _pattern_aggregates(
     expected_non_full = (1 << len(names)) - 2
     if len(single) not in {4, 5} or len(non_full) != expected_non_full:
         raise ValueError("PCPF matrix aggregation requires every non-empty availability subset.")
-    higher_is_better = {"top1", "top3", "top5", "within_3"}
+    higher_is_better = {"adba", "top1", "top3", "top5", "within_3"}
     metric_names = (*sorted(higher_is_better), "circular_mae", "nll", "brier", "ece")
     result: dict[str, Any] = {}
     groups: dict[str, list[str]] = {
@@ -849,119 +837,6 @@ def _pattern_mask_from_name(pattern: str, modalities: list[str]) -> tuple[bool, 
             raise ValueError(f"Unknown PCPF missing pattern {pattern!r}.")
         return tuple(name not in missing for name in modalities)
     raise ValueError(f"Unsupported PCPF pattern name {pattern!r}.")
-
-
-def _r0_r7_summary(
-    report: Mapping[str, Any],
-    *,
-    trajectory_r0_reference: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    overall = report["overall"]["replacement_metrics"]
-    patterns = report["patterns"]
-    aggregates = report["pattern_aggregates"]
-
-    def method(name: str) -> dict[str, Any]:
-        if name not in overall:
-            return {"status": "control_checkpoint_not_supplied"}
-        return {
-            "status": "evaluated",
-            "overall31": _metric_slice(overall[name]),
-            "full5": _metric_slice(patterns["full"]["replacement_metrics"][name]),
-            "all30": aggregates["all30"][name],
-            "single5": aggregates["single5"][name],
-            "multi_modal": aggregates["multi_modal"][name],
-            "csi_present_with_sensing": aggregates["csi_present_with_sensing"][name],
-            "csi_absent_legacy15": aggregates["csi_absent_legacy15"][name],
-        }
-
-    if not isinstance(trajectory_r0_reference, Mapping) and report.get("bounded_evaluation") is True:
-        return {
-            "status": "bounded_evaluation_has_no_r0_comparison",
-            "promotion_eligible": False,
-        }
-    if not isinstance(trajectory_r0_reference, Mapping):
-        raise ValueError("The five-modality R0--R7 matrix requires a hashed trajectory R0 reference report.")
-    r0 = dict(trajectory_r0_reference)
-    reference_contract = r0.pop("comparison_contract", None)
-    current_contract = _r0_comparison_contract(report)
-    if not isinstance(reference_contract, Mapping):
-        raise ValueError("The trajectory R0 reference is missing its comparison contract.")
-    mismatches = sorted(key for key, value in current_contract.items() if reference_contract.get(key) != value)
-    if mismatches:
-        raise ValueError(f"Trajectory R0 comparison contract mismatch: {', '.join(mismatches)}.")
-    r0["comparison_contract"] = current_contract
-
-    return {
-        "R0_four_modality_pcpf": r0,
-        "R1_five_modality_checkpoint_csi_masked": {
-            "status": "evaluated_on_all_legacy_nonempty_sensing_masks",
-            "csi_absent_legacy15": aggregates["csi_absent_legacy15"]["pcpf_analytic"],
-            "full_four_sensing_modalities": _metric_slice(
-                patterns["missing_csi"]["replacement_metrics"]["pcpf_analytic"]
-            ),
-        },
-        "R2_five_modality_uniform": method("uniform"),
-        "R3_five_modality_static_prior": method("static_prior"),
-        "R4_five_modality_direct_router": method("direct_router_control"),
-        "R5_five_modality_cuaf_local_adaptation": method("cuaf_local_adaptation"),
-        "R6_five_modality_pcpf_analytic": method("pcpf_analytic"),
-        "R7_joint_checkpoint_csi_only": {
-            "status": "evaluated",
-            "csi_only": _metric_slice(patterns["csi_only"]["replacement_metrics"]["pcpf_analytic"]),
-        },
-    }
-
-
-def _r0_comparison_contract(report: Mapping[str, Any]) -> dict[str, Any]:
-    if tuple(report.get("modalities", ())) != PCPF_SPARSE_CSI_MODALITIES:
-        raise ValueError("The current R0--R7 matrix must be the five-modality PCPF evaluation.")
-    protocol = report.get("provenance", {}).get("data_protocol", {})
-    if not isinstance(protocol, Mapping) or protocol.get("protocol_id") != TRAJECTORY_PROTOCOL_ID:
-        raise ValueError(f"R0--R7 requires data_protocol.protocol_id={TRAJECTORY_PROTOCOL_ID!r}.")
-    if not str(protocol.get("audit_id", "")).strip() or not _is_sha256(protocol.get("audit_sha256")):
-        raise ValueError("R0--R7 requires a bound trajectory protocol audit.")
-    train_role, validation_role = _protocol_roles(protocol)
-    identity = report.get("validation_identity")
-    if not isinstance(identity, Mapping):
-        raise ValueError("R0--R7 requires validation identity provenance.")
-    budget = report.get("provenance", {}).get("comparison_budget", {})
-    if not isinstance(budget, Mapping) or len(str(budget.get("sha256", ""))) != 64:
-        raise ValueError("R0--R7 requires a hashed comparison budget descriptor.")
-    topology = report.get("provenance", {}).get("prototype_topology", {})
-    if (
-        not isinstance(topology, Mapping)
-        or topology.get("id") != "ula_dft_phase_cycle_v1"
-        or topology.get("formal_r0_r7_eligible") is not True
-        or not _is_sha256(topology.get("descriptor_sha256"))
-        or not _is_sha256(topology.get("audit_sha256"))
-    ):
-        raise ValueError("R0--R7 requires an audited ULA-DFT topology descriptor.")
-    return {
-        "protocol_id": str(protocol["protocol_id"]),
-        "protocol_fingerprint": str(protocol["protocol_fingerprint"]),
-        "protocol_audit_id": str(protocol["audit_id"]),
-        "protocol_audit_sha256": str(protocol["audit_sha256"]),
-        "train_role": train_role,
-        "validation_role": validation_role,
-        "experiment_seed": int(report.get("experiment_seed", -1)),
-        "validation_sample_count": int(identity.get("sample_count", -1)),
-        "validation_ordered_sample_id_sha256": str(identity.get("ordered_sample_id_sha256", "")),
-        "validation_protocol_sample_id_sha256": str(identity.get("protocol_sample_id_sha256", "")),
-        "comparison_budget_sha256": str(budget["sha256"]),
-        "prototype_topology_id": str(topology["id"]),
-        "prototype_topology_descriptor_sha256": str(topology["descriptor_sha256"]),
-        "prototype_topology_audit_sha256": str(topology["audit_sha256"]),
-    }
-
-
-def _is_sha256(value: Any) -> bool:
-    normalized = str(value).strip().lower()
-    return len(normalized) == 64 and all(char in "0123456789abcdef" for char in normalized)
-
-
-def _metric_slice(metrics: Mapping[str, Any]) -> dict[str, Any]:
-    names = ("count", "top1", "top3", "top5", "within_3", "circular_mae", "nll", "brier", "ece")
-    return {name: metrics[name] for name in names if name in metrics}
 
 
 def _expert_input_diagnostics(records: Mapping[str, Any]) -> dict[str, Any]:
@@ -1106,33 +981,6 @@ def _pair_order_agreement(risk: torch.Tensor, weights: torch.Tensor, available: 
     return _mean_or_none(torch.cat(values)) if values else None
 
 
-def _control_fusion_from_cached_evidence(
-    model: Any,
-    diagnostics: Mapping[str, Any],
-    available: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    weights, calibrated, _, effective_mode = model._fuse(
-        _tensor(diagnostics, "unimodal_logits").float(),
-        _tensor(diagnostics, "unimodal_probabilities").float(),
-        _tensor(diagnostics, "raw_risk").float(),
-        _tensor(diagnostics, "risk_components").float(),
-        available,
-    )
-    if effective_mode != model.fusion_mode:
-        raise ValueError(f"Control fusion mode changed from {model.fusion_mode!r} to {effective_mode!r}.")
-    return weights, calibrated
-
-
-def _fusion_parameter_summary(model: Any, *, source: str) -> dict[str, Any]:
-    return {
-        "source": source,
-        "fusion_mode": str(model.fusion_mode),
-        "temperatures": model.temperatures.detach().float().cpu().tolist(),
-        "tau": float(model.tau.detach().float().cpu().item()),
-        "static_capability": model._static_capability().detach().float().cpu().tolist(),
-    }
-
-
 def _mask_group(name: str, pattern: Sequence[int], modality_count: int) -> str:
     available = sum(int(value) for value in pattern)
     if name == "full" or available == modality_count:
@@ -1265,6 +1113,7 @@ def _dynamicity_tests(records: Mapping[str, Any], bootstrap: Mapping[str, Any]) 
     calibrated = torch.as_tensor(records["calibrated_unimodal_probabilities"], dtype=torch.float32)
     capability = torch.as_tensor(records["static_capability"], dtype=torch.float32)
     tau = float(records["fusion_tau"])
+    max_log_adjustment = float(records.get("max_log_adjustment", 1.0))
     shuffled = _groupwise_risk(records, risk, mode="shuffle", seed=int(bootstrap["seed"]))
     grouped_mean = _groupwise_risk(records, risk, mode="mean", seed=int(bootstrap["seed"]))
     d0_weights = torch.as_tensor(records["replacement_weights"]["pcpf_analytic"], dtype=torch.float32)
@@ -1273,12 +1122,14 @@ def _dynamicity_tests(records: Mapping[str, Any], bootstrap: Mapping[str, Any]) 
         available=available,
         static_capability=capability,
         tau=tau,
+        max_log_adjustment=max_log_adjustment,
     )
     d2_weights = analytic_fusion_weights(
         risk=grouped_mean,
         available=available,
         static_capability=capability,
         tau=tau,
+        max_log_adjustment=max_log_adjustment,
     )
     d3_weights = torch.as_tensor(records["replacement_weights"]["static_prior"], dtype=torch.float32)
     probabilities = {
@@ -1363,6 +1214,8 @@ def _compact_classification_metrics(
     metrics = _classification_metrics(
         torch.as_tensor(probability, dtype=torch.float32)[rows],
         torch.as_tensor(records["labels"], dtype=torch.long)[rows],
+        dba_delta=float(records.get("dba_delta", 5.0)),
+        distance_mode=str(records.get("dba_distance_mode", "circular")),
     )
     metrics.pop("reliability_diagram", None)
     return metrics
@@ -1384,7 +1237,7 @@ def _risk_and_component_diagnostics(
     wrong = prediction.ne(labels.unsqueeze(1)) & available
     threshold = torch.as_tensor(train_confidence_p90, dtype=torch.float32).view(1, -1)
     confident_wrong = wrong & confidence.ge(threshold)
-    component_names = ("var", "proto", "temp", "conflict")
+    component_names = ("concentration", "neighbor", "temp", "conflict")
     per_modality = {}
     for index, name in enumerate(modalities):
         valid = available[:, index]

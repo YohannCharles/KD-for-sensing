@@ -131,8 +131,8 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
     resume_checkpoint = resolve_resume_checkpoint(cfg, run_dir)
     resume_metadata = load_checkpoint_metadata(resume_checkpoint) if resume_checkpoint is not None else None
     configured_artifacts = cfg.get("data", {}).get("normalization_artifacts")
-    if resume_metadata is not None and configured_artifacts:
-        raise ValueError("Fresh normalization_artifacts cannot be combined with checkpoint resume metadata.")
+    # Exact resume restores the checkpoint artifacts; the resume contract still
+    # verifies that the resolved config has not drifted.
     normalization_metadata = (
         resume_metadata
         if resume_metadata is not None

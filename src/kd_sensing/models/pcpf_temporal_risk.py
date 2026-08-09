@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from kd_sensing.losses.beam_prototype_alignment import BeamPrototypeBank, beam_topology_positions
 from kd_sensing.modalities import MODALITY_ORDER, normalize_modalities
+from kd_sensing.models.beam_posterior import beam_posterior_statistics
 from kd_sensing.models.sparse_pilot_encoder import SparsePilotEncoder
 from kd_sensing.models.temporal_transformer import SharedTemporalTransformer
 from kd_sensing.registries import ENCODERS, MODELS
@@ -26,11 +27,10 @@ TRAINING_STAGES = (
 FUSION_MODES = (
     "uniform",
     "static_prior",
-    "direct_router_control",
-    "cuaf_local_adaptation",
     "pcpf_analytic",
 )
-RISK_COMPONENT_NAMES = ("var", "proto", "temp", "conflict")
+RISK_COMPONENT_NAMES = ("concentration", "neighbor", "temp", "conflict")
+PROBABILITY_PARAMETERIZATION = "prototype_mean_dirichlet_concentration_v1"
 PCPF_SPARSE_CSI_MODALITY = "csi"
 PROTOCOL_LINEAGE_KEYS = (
     "mode",
@@ -67,25 +67,28 @@ _FORBIDDEN_INPUT_KEYS = frozenset(
 )
 
 
-class ProbabilityEmbeddingHead(nn.Module):
+class PrototypeEvidenceHead(nn.Module):
     def __init__(
         self,
         d_model: int,
         *,
         hidden_dim: int = 64,
-        min_logvar: float = -8.0,
-        max_logvar: float = 4.0,
-        initial_logvar: float = -4.0,
+        min_concentration: float = 1.0,
+        max_concentration: float = 4096.0,
+        initial_concentration: float = 64.0,
     ) -> None:
         super().__init__()
         self.d_model = int(d_model)
-        self.min_logvar = float(min_logvar)
-        self.max_logvar = float(max_logvar)
-        if int(hidden_dim) <= 0 or not self.min_logvar < self.max_logvar:
-            raise ValueError("Probability head hidden_dim and logvar bounds are invalid.")
-        if not self.min_logvar <= float(initial_logvar) <= self.max_logvar:
-            raise ValueError("initial_logvar must be inside the configured clamp interval.")
+        self.min_concentration = float(min_concentration)
+        self.max_concentration = float(max_concentration)
+        self.initial_concentration = float(initial_concentration)
+        if int(hidden_dim) <= 0:
+            raise ValueError("Evidence head hidden_dim must be positive.")
+        if not 0.0 < self.min_concentration < self.initial_concentration < self.max_concentration:
+            raise ValueError("Evidence concentration must satisfy 0 < min < initial < max.")
         self.input_norm = nn.LayerNorm(self.d_model)
+        # These D-dimensional projections aggregate feature-wise evidence only;
+        # neither output is added to the frozen expert representation.
         self.delta_mu = nn.Sequential(
             nn.Linear(self.d_model, int(hidden_dim)),
             nn.GELU(),
@@ -95,64 +98,82 @@ class ProbabilityEmbeddingHead(nn.Module):
         nn.init.zeros_(self.delta_mu[-1].weight)
         nn.init.zeros_(self.delta_mu[-1].bias)
         nn.init.zeros_(self.logvar_head.weight)
-        nn.init.constant_(self.logvar_head.bias, float(initial_logvar))
+        nn.init.constant_(self.logvar_head.bias, -4.0)
+        initial_fraction = (self.initial_concentration - self.min_concentration) / (
+            self.max_concentration - self.min_concentration
+        )
+        initial_logit = math.log(initial_fraction / (1.0 - initial_fraction))
+        self._evidence_offset = float(initial_logit + 4.0)
 
-    def forward(self, features: torch.Tensor, *, sample: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        normalized = self.input_norm(features)
-        mu = features + self.delta_mu(normalized)
-        logvar = self.logvar_head(normalized).clamp(self.min_logvar, self.max_logvar)
-        if sample:
-            sampled = mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
-        else:
-            sampled = mu
-        return mu, logvar, sampled
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.ndim != 3 or int(features.shape[-1]) != self.d_model:
+            raise ValueError("Evidence head expects features with shape [B,M,D].")
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            normalized = self.input_norm(features.float())
+            evidence_logit = (
+                self.delta_mu(normalized) + self.logvar_head(normalized)
+            ).mean(dim=-1) + self._evidence_offset
+            concentration = self.min_concentration + (
+                self.max_concentration - self.min_concentration
+            ) * torch.sigmoid(evidence_logit)
+        return concentration
 
 
 def topology_risk_components(
     *,
-    mu: torch.Tensor,
-    logvar: torch.Tensor,
+    concentration: torch.Tensor,
     frame_features: torch.Tensor,
     temporal_mask: torch.Tensor,
     probabilities: torch.Tensor,
     prototypes: torch.Tensor,
     prototype_temperature: float,
     topology_positions: torch.Tensor,
+    neighbor_radius: int = 2,
 ) -> dict[str, torch.Tensor]:
     """Compute the four PCPF-T risk observations in FP32."""
-    if mu.ndim != 3 or logvar.shape != mu.shape:
-        raise ValueError("mu and logvar must share shape [B,M,D].")
-    if frame_features.ndim != 4 or frame_features.shape[0] != mu.shape[0] or frame_features.shape[2:] != mu.shape[1:]:
+    if concentration.ndim != 2:
+        raise ValueError("concentration must have shape [B,M].")
+    if frame_features.ndim != 4 or tuple(frame_features.shape[::2]) != (
+        int(concentration.shape[0]),
+        int(concentration.shape[1]),
+    ):
         raise ValueError("frame_features must have shape [B,T,M,D].")
-    mask = torch.as_tensor(temporal_mask, device=mu.device, dtype=torch.bool)
+    mask = torch.as_tensor(temporal_mask, device=concentration.device, dtype=torch.bool)
     if tuple(mask.shape) != tuple(frame_features.shape[:3]):
         raise ValueError("temporal_mask must match frame_features [B,T,M].")
     available = mask.any(dim=1)
-    if tuple(probabilities.shape[:2]) != tuple(mu.shape[:2]):
+    if tuple(probabilities.shape[:2]) != tuple(concentration.shape):
         raise ValueError("probabilities must have shape [B,M,C].")
+    classes = int(probabilities.shape[-1])
+    if not 0 <= int(neighbor_radius) <= classes // 2:
+        raise ValueError("neighbor_radius must be in [0, C/2].")
 
-    with torch.autocast(device_type=mu.device.type, enabled=False):
-        mu32 = mu.float()
-        logvar32 = logvar.float()
+    with torch.autocast(device_type=concentration.device.type, enabled=False):
+        concentration32 = concentration.float()
         frames32 = frame_features.float()
         probabilities32 = probabilities.float()
         prototypes32 = prototypes.float()
-        u_var = torch.exp(logvar32).mean(dim=-1)
-        cosine = F.normalize(mu32, dim=-1) @ F.normalize(prototypes32, dim=-1).t()
-        u_proto = 1.0 - cosine.amax(dim=-1)
+        positions32 = topology_positions.to(device=concentration.device, dtype=torch.float32)
+        u_concentration = float(classes) / (float(classes) + concentration32.clamp_min(1e-6))
+        u_neighbor = _outside_topology_neighborhood_mass(
+            probabilities32,
+            positions32,
+            radius=int(neighbor_radius),
+        )
 
         frame_logits = F.normalize(frames32, dim=-1) @ F.normalize(prototypes32, dim=-1).t() / float(prototype_temperature)
         frame_probability = torch.softmax(frame_logits, dim=-1)
         u_temp, temp_valid, circular_frame_mean = _temporal_circular_residual(
             frame_probability,
             mask,
-            topology_positions.to(device=mu.device, dtype=torch.float32),
+            positions32,
         )
-        u_conflict = _cross_modal_js(probabilities32, available)
+        u_conflict = _cross_modal_topology_disagreement(probabilities32, available, positions32)
         available_float = available.to(dtype=torch.float32)
-        components = torch.stack([u_var, u_proto, u_temp, u_conflict], dim=-1)
+        components = torch.stack([u_concentration, u_neighbor, u_temp, u_conflict], dim=-1)
         components = components * available_float.unsqueeze(-1)
-        valid = torch.stack([available, available, temp_valid, available], dim=-1)
+        conflict_valid = available & available.sum(dim=1, keepdim=True).gt(1)
+        valid = torch.stack([available, available, temp_valid, conflict_valid], dim=-1)
     return {
         "components": components,
         "component_valid": valid,
@@ -167,8 +188,9 @@ def analytic_fusion_weights(
     available: torch.Tensor,
     static_capability: torch.Tensor,
     tau: torch.Tensor | float,
+    max_log_adjustment: float = 1.0,
 ) -> torch.Tensor:
-    """Return normalized precision-style weights using a stable FP32 log score."""
+    """Return static-anchored weights with a bounded sample-wise correction."""
     mask = torch.as_tensor(available, device=risk.device, dtype=torch.bool)
     if risk.ndim != 2 or tuple(mask.shape) != tuple(risk.shape):
         raise ValueError("risk and available must have shape [B,M].")
@@ -184,7 +206,15 @@ def analytic_fusion_weights(
         tau32 = torch.as_tensor(tau, device=risk.device, dtype=torch.float32)
         if bool((tau32 <= 0).any().item()):
             raise ValueError("tau must be positive.")
-        log_score = capability32.log() - risk32 / tau32
+        adjustment_limit = float(max_log_adjustment)
+        if not math.isfinite(adjustment_limit) or adjustment_limit <= 0:
+            raise ValueError("max_log_adjustment must be finite and positive.")
+        available_float = mask.to(torch.float32)
+        centered = risk32 - (risk32 * available_float).sum(dim=1, keepdim=True) / available_float.sum(
+            dim=1, keepdim=True
+        )
+        adjustment = adjustment_limit * torch.tanh(centered / tau32)
+        log_score = capability32.log() - adjustment
         weights = _masked_softmax_fp32(log_score, mask)
     return weights
 
@@ -195,6 +225,7 @@ class PCPFTemporalRiskFusion(nn.Module):
 
     supports_modality_kwargs = True
     supports_force_modality_mask = True
+    probability_parameterization = PROBABILITY_PARAMETERIZATION
 
     def __init__(
         self,
@@ -270,7 +301,7 @@ class PCPFTemporalRiskFusion(nn.Module):
         )
         probability_cfg = _strict_mapping(
             probability_head,
-            allowed={"hidden_dim", "min_logvar", "max_logvar", "initial_logvar"},
+            allowed={"hidden_dim", "min_concentration", "max_concentration", "initial_concentration"},
             context="model.primary.probability_head",
         )
         sparse_csi_cfg = _strict_mapping(
@@ -291,25 +322,16 @@ class PCPFTemporalRiskFusion(nn.Module):
             raise ValueError("model.primary.sparse_csi_encoder requires use_sparse_csi=true.")
         risk_cfg = _strict_mapping(
             risk,
-            allowed={"enabled_components", "coefficient_init", "bias_init", "normalization_epsilon"},
+            allowed={
+                "enabled_components",
+                "coefficient_init",
+                "bias_init",
+                "normalization_epsilon",
+                "neighbor_radius",
+            },
             context="model.primary.risk",
         )
-        fusion_cfg = _strict_mapping(
-            fusion,
-            allowed={
-                "temperature_min",
-                "temperature_init",
-                "tau_min",
-                "tau_init",
-                "eta_init",
-                "train_eta",
-                "finetune_risk_coefficients",
-                "use_static_capability",
-                "static_prior_source",
-                "direct_router_hidden_dim",
-            },
-            context="model.primary.fusion",
-        )
+        fusion_cfg = _fusion_config(fusion)
 
         encoder_configs = {name: dict((encoders or {}).get(name, {})) for name in self.sensing_modalities}
         missing = [name for name, config in encoder_configs.items() if not config]
@@ -378,7 +400,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             self.num_classes,
             temperature=float(beam_proto_temperature),
         )
-        self.probability_head = ProbabilityEmbeddingHead(self.d_model, **probability_cfg)
+        self.probability_head = PrototypeEvidenceHead(self.d_model, **probability_cfg)
 
         enabled_components = risk_cfg.get("enabled_components", list(RISK_COMPONENT_NAMES))
         if not isinstance(enabled_components, (list, tuple)):
@@ -403,6 +425,9 @@ class PCPFTemporalRiskFusion(nn.Module):
             risk_cfg.get("normalization_epsilon", 0.01),
             "risk.normalization_epsilon",
         )
+        self.risk_neighbor_radius = int(risk_cfg.get("neighbor_radius", 2))
+        if not 0 <= self.risk_neighbor_radius <= self.num_classes // 2:
+            raise ValueError("risk.neighbor_radius must be in [0, num_classes/2].")
         self.register_buffer("risk_component_mean", torch.zeros(4, dtype=torch.float32))
         self.register_buffer("risk_component_std", torch.ones(4, dtype=torch.float32))
         self.register_buffer("risk_component_count", torch.zeros(4, dtype=torch.long))
@@ -479,6 +504,10 @@ class PCPFTemporalRiskFusion(nn.Module):
         self.train_eta = bool(fusion_cfg.get("train_eta", False))
         self.finetune_risk_coefficients = bool(fusion_cfg.get("finetune_risk_coefficients", False))
         self.use_static_capability = bool(fusion_cfg.get("use_static_capability", True))
+        self.max_log_adjustment = _positive(
+            fusion_cfg.get("max_log_adjustment", 1.0),
+            "fusion.max_log_adjustment",
+        )
         self.static_prior_source = str(fusion_cfg.get("static_prior_source", "train_risk")).strip().lower()
         if self.static_prior_source not in {"train_risk", "learned"}:
             raise ValueError("fusion.static_prior_source must be train_risk or learned.")
@@ -487,17 +516,6 @@ class PCPFTemporalRiskFusion(nn.Module):
             if self.fusion_mode == "static_prior" and self.static_prior_source == "learned"
             else None
         )
-        self.direct_router = None
-        if self.fusion_mode == "direct_router_control":
-            hidden = int(fusion_cfg.get("direct_router_hidden_dim", 32))
-            if hidden <= 0:
-                raise ValueError("fusion.direct_router_hidden_dim must be positive.")
-            self.direct_router = nn.Sequential(
-                nn.LayerNorm(5),
-                nn.Linear(5, hidden),
-                nn.GELU(),
-                nn.Linear(hidden, 1),
-            )
         self._configure_training_stage()
 
     @property
@@ -578,34 +596,37 @@ class PCPFTemporalRiskFusion(nn.Module):
 
         probability_stage = self.training_stage != "stage1_expert"
         if probability_stage:
-            mu, logvar, sampled = self.probability_head(
-                cls_features,
-                sample=self.training and self.training_stage == "stage2_risk",
-            )
+            concentration = self.probability_head(cls_features)
         else:
-            mu = cls_features
-            logvar = torch.full_like(cls_features, -4.0)
-            sampled = mu
-        available_float = available.unsqueeze(-1).to(dtype=mu.dtype)
-        mu = mu * available_float
-        sampled = sampled * available_float
-        deterministic_logits = self.prototype_bank(mu.reshape(-1, self.d_model)).reshape(
-            mu.shape[0], len(self.modalities), self.num_classes
+            concentration = torch.full(
+                cls_features.shape[:2],
+                self.probability_head.initial_concentration,
+                device=cls_features.device,
+                dtype=torch.float32,
+            )
+        expert_features = cls_features * available.unsqueeze(-1).to(dtype=cls_features.dtype)
+        concentration = concentration.float() * available.to(torch.float32)
+        deterministic_logits = self.prototype_bank(expert_features.reshape(-1, self.d_model)).reshape(
+            expert_features.shape[0], len(self.modalities), self.num_classes
         )
-        sampled_logits = self.prototype_bank(sampled.reshape(-1, self.d_model)).reshape_as(deterministic_logits)
         deterministic_probability = torch.softmax(deterministic_logits.float(), dim=-1)
         deterministic_probability = deterministic_probability * available.unsqueeze(-1).to(torch.float32)
+        evidential_alpha = deterministic_probability * concentration.unsqueeze(-1)
+        evidence_uncertainty = float(self.num_classes) / (
+            float(self.num_classes) + concentration.clamp_min(1e-6)
+        )
+        evidence_uncertainty = evidence_uncertainty * available.to(torch.float32)
 
         if probability_stage:
             risk_observations = topology_risk_components(
-                mu=mu,
-                logvar=logvar,
+                concentration=concentration,
                 frame_features=temporal["temporal_token_features"],
                 temporal_mask=cell_mask,
                 probabilities=deterministic_probability,
                 prototypes=self.prototype_bank.prototypes,
                 prototype_temperature=self.prototype_bank.temperature,
                 topology_positions=self.topology_positions,
+                neighbor_radius=self.risk_neighbor_radius,
             )
             components = risk_observations["components"]
             normalized = (components - self.risk_component_mean.view(1, 1, 4)) / self.risk_component_std.clamp_min(
@@ -613,49 +634,59 @@ class PCPFTemporalRiskFusion(nn.Module):
             ).view(1, 1, 4)
             normalized = normalized * self.risk_component_enabled.view(1, 1, 4).to(torch.float32)
             normalized = normalized * available.unsqueeze(-1).to(torch.float32)
-            with torch.autocast(device_type=mu.device.type, enabled=False):
+            with torch.autocast(device_type=expert_features.device.type, enabled=False):
                 raw_risk = F.softplus((normalized * self.risk_coefficients.view(1, 1, 4)).sum(dim=-1) + self.risk_bias.float())
                 raw_risk = raw_risk * available.to(torch.float32)
         else:
-            components = torch.zeros(*mu.shape[:2], 4, device=mu.device, dtype=torch.float32)
+            components = torch.zeros(*expert_features.shape[:2], 4, device=expert_features.device, dtype=torch.float32)
             normalized = torch.zeros_like(components)
-            raw_risk = torch.zeros(mu.shape[:2], device=mu.device, dtype=torch.float32)
+            raw_risk = torch.zeros(expert_features.shape[:2], device=expert_features.device, dtype=torch.float32)
             risk_observations = {
                 "component_valid": torch.zeros_like(components, dtype=torch.bool),
                 "temp_valid": torch.zeros_like(available),
                 "circular_frame_mean": torch.zeros(
-                    mu.shape[0], self.seq_length, len(self.modalities), device=mu.device, dtype=torch.float32
+                    expert_features.shape[0],
+                    self.seq_length,
+                    len(self.modalities),
+                    device=expert_features.device,
+                    dtype=torch.float32,
                 ),
             }
 
         weights, calibrated_probability, static_capability, effective_fusion_mode = self._fuse(
             deterministic_logits,
-            deterministic_probability,
             raw_risk,
-            components,
             available,
         )
         fused_probability = (weights.unsqueeze(-1) * calibrated_probability).sum(dim=1)
         fused_probability = fused_probability / fused_probability.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-        fused_features = (weights.to(dtype=mu.dtype).unsqueeze(-1) * mu).sum(dim=1)
+        posterior_statistics = beam_posterior_statistics(
+            fused_probability,
+            num_beams=self.num_classes,
+            topology_positions=self.topology_positions,
+            top_l=7,
+        )
+        fused_features = (weights.to(dtype=expert_features.dtype).unsqueeze(-1) * expert_features).sum(dim=1)
         logits = fused_probability.clamp_min(torch.finfo(torch.float32).tiny).log().unsqueeze(1)
         return {
             "logits": logits,
             "input_features": cls_features,
             "output_features": fused_features,
-            "modality_features": mu,
+            "modality_features": expert_features,
             "missing_mask": available,
             "available_modalities": available,
             "modality_temporal_mask": cell_mask,
             "temporal_mask": cell_mask.any(dim=2),
             **temporal,
-            "probability_mu": mu,
-            "probability_logvar": logvar,
+            "probability_concentration": concentration,
+            "probability_uncertainty": evidence_uncertainty,
+            "probability_alpha": evidential_alpha,
+            "probability_mean": deterministic_probability,
             "unimodal_logits": deterministic_logits,
-            "sampled_unimodal_logits": sampled_logits,
             "unimodal_probabilities": deterministic_probability,
             "calibrated_unimodal_probabilities": calibrated_probability,
             "fused_probability": fused_probability,
+            **posterior_statistics,
             "fusion_weights": weights,
             "reliability_fusion_weights": weights,
             "reliability_fusion_mode": effective_fusion_mode,
@@ -664,8 +695,8 @@ class PCPFTemporalRiskFusion(nn.Module):
             "risk_components": components,
             "normalized_risk_components": normalized,
             "risk_component_valid": risk_observations["component_valid"],
-            "risk_u_var": components[..., 0],
-            "risk_u_proto": components[..., 1],
+            "risk_u_concentration": components[..., 0],
+            "risk_u_neighbor": components[..., 1],
             "risk_u_temp": components[..., 2],
             "risk_u_conflict": components[..., 3],
             "risk_temp_valid": risk_observations["temp_valid"],
@@ -687,7 +718,7 @@ class PCPFTemporalRiskFusion(nn.Module):
             "architecture_category": "temporal_prototype_calibrated_analytic_fusion",
             "training_stage": self.training_stage,
             "fusion_mode": self.fusion_mode,
-            "control_only": self.fusion_mode in {"direct_router_control", "cuaf_local_adaptation"},
+            "control_only": False,
             "claim_ineligible": True,
             "outer_test_accessed": False,
             "modalities": list(self.modalities),
@@ -696,6 +727,8 @@ class PCPFTemporalRiskFusion(nn.Module):
             "consumes_missing_modality_metadata": self.consume_missing_modality_metadata,
             "cross_modal_attention": False,
             "feature_concatenation_before_risk": False,
+            "probability_parameterization": self.probability_parameterization,
+            "stage2_preserves_unimodal_logits": True,
             "prototype_bank_count": 1,
             "prototype_topology_id": self.prototype_topology_id,
             "prototype_topology": self.prototype_topology_metadata(),
@@ -708,6 +741,9 @@ class PCPFTemporalRiskFusion(nn.Module):
             "risk_stats_fitted": bool(self.risk_stats_fitted.item()),
             "static_capability_fitted": bool(self.static_capability_fitted.item()),
             "train_confidence_fitted": bool((self.train_confidence_count > 0).all().item()),
+            "risk_component_names": list(RISK_COMPONENT_NAMES),
+            "risk_neighbor_radius": self.risk_neighbor_radius,
+            "max_log_adjustment": self.max_log_adjustment,
         }
 
     def prototype_topology_metadata(self) -> dict[str, Any]:
@@ -716,8 +752,17 @@ class PCPFTemporalRiskFusion(nn.Module):
             "descriptor_sha256": self.prototype_topology_descriptor_sha256,
             "audit_path": self.prototype_topology_audit_path,
             "audit_sha256": self.prototype_topology_audit_sha256,
-            "formal_r0_r7_eligible": self.prototype_topology_id == "ula_dft_phase_cycle_v1",
         }
+
+    def validate_initialization_metadata(self, source: Mapping[str, Any]) -> None:
+        source_stage = str(source.get("training_stage", ""))
+        parameterization = source.get("probability_parameterization")
+        if self.training_stage == "stage2_risk" and source_stage == "stage1_expert" and parameterization is None:
+            return
+        if parameterization != self.probability_parameterization:
+            raise ValueError(
+                "PCPF initialization checkpoint probability parameterization does not match the target model."
+            )
 
     def checkpoint_metadata(self) -> dict[str, Any]:
         metadata = self.training_strategy_metadata()
@@ -1041,13 +1086,10 @@ class PCPFTemporalRiskFusion(nn.Module):
             self.risk_bias.requires_grad_(True)
         else:
             self.temperature_raw.requires_grad_(True)
-            if self.fusion_mode in {"pcpf_analytic", "cuaf_local_adaptation"}:
+            if self.fusion_mode == "pcpf_analytic":
                 self.tau_raw.requires_grad_(True)
             if self.train_eta and self.use_static_capability:
                 self.eta_raw.requires_grad_(True)
-            if self.fusion_mode == "direct_router_control":
-                assert self.direct_router is not None
-                _set_module_trainable(self.direct_router)
             if self.static_prior_logits is not None:
                 self.static_prior_logits.requires_grad_(True)
             if self.finetune_risk_coefficients:
@@ -1059,9 +1101,7 @@ class PCPFTemporalRiskFusion(nn.Module):
     def _fuse(
         self,
         logits: torch.Tensor,
-        probabilities: torch.Tensor,
         risk: torch.Tensor,
-        components: torch.Tensor,
         available: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
         with torch.autocast(device_type=logits.device.type, enabled=False):
@@ -1088,29 +1128,8 @@ class PCPFTemporalRiskFusion(nn.Module):
                     available=available,
                     static_capability=capability,
                     tau=self.tau,
+                    max_log_adjustment=self.max_log_adjustment,
                 )
-            elif effective_mode == "cuaf_local_adaptation":
-                entropy = -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1) / math.log(self.num_classes)
-                top2 = probabilities.topk(2, dim=-1).values
-                margin_risk = 1.0 - (top2[..., 0] - top2[..., 1])
-                local_risk = entropy + margin_risk + 0.25 * components[..., 3]
-                weights = analytic_fusion_weights(
-                    risk=local_risk,
-                    available=available,
-                    static_capability=capability,
-                    tau=self.tau,
-                )
-            elif effective_mode == "direct_router_control":
-                if self.direct_router is None:
-                    raise RuntimeError("direct_router_control was selected without its control module.")
-                entropy = -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1, keepdim=True)
-                top2 = probabilities.topk(2, dim=-1).values
-                margin = top2[..., :1] - top2[..., 1:2]
-                confidence = top2[..., :1]
-                norm = logits.float().norm(dim=-1, keepdim=True)
-                features = torch.cat([components[..., 1:2], entropy, margin, confidence, norm], dim=-1)
-                router_logits = self.direct_router(features).squeeze(-1)
-                weights = _masked_softmax_fp32(router_logits.float(), available)
             else:  # pragma: no cover - constructor validates the mode.
                 raise RuntimeError(f"Unsupported fusion mode {effective_mode!r}.")
         return weights, calibrated, capability, effective_mode
@@ -1150,14 +1169,14 @@ class PCPFTemporalRiskFusion(nn.Module):
             raise ValueError("PCPF sparse CSI requires observations, pattern/frequency ids, positions, and pilot mask.")
         observations = torch.as_tensor(value)
         if not torch.is_complex(observations) or observations.ndim != 4:
-            raise ValueError("csi_batch must be complex [B,5,2,2].")
+            raise ValueError("csi_batch must be complex [B,5,M,2] with M in {2,4}.")
         batch_size, steps, patterns, frequencies = observations.shape
-        if (steps, patterns, frequencies) != (self.seq_length, 2, 2):
-            raise ValueError(f"csi_batch must have shape [B,{self.seq_length},2,2].")
+        if steps != self.seq_length or patterns not in {2, 4} or frequencies != 2:
+            raise ValueError(f"csi_batch must have shape [B,{self.seq_length},M,2] with M in {{2,4}}.")
         ids = torch.as_tensor(pattern_ids, device=observations.device, dtype=torch.long)
         valid = torch.as_tensor(pilot_mask, device=observations.device, dtype=torch.bool)
         if tuple(ids.shape) != (batch_size, steps, patterns) or tuple(valid.shape) != tuple(observations.shape):
-            raise ValueError("csi_pattern_ids and csi_pilot_mask must have shapes [B,5,2] and [B,5,2,2].")
+            raise ValueError("csi_pattern_ids and csi_pilot_mask must have shapes [B,5,M] and [B,5,M,2].")
 
         positions = _repeat_csi_index_values(
             frequency_positions,
@@ -1327,19 +1346,38 @@ def _temporal_circular_residual(
     return residual, valid, circular_mean * temporal_mask.to(torch.float32)
 
 
-def _cross_modal_js(probability: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
+def _outside_topology_neighborhood_mass(
+    probability: torch.Tensor,
+    topology_positions: torch.Tensor,
+    *,
+    radius: int,
+) -> torch.Tensor:
+    classes = int(probability.shape[-1])
+    predicted = probability.argmax(dim=-1)
+    center = topology_positions[predicted]
+    distance = (topology_positions.view(1, 1, classes) - center.unsqueeze(-1)).abs()
+    distance = torch.minimum(distance, float(classes) - distance)
+    inside = distance.le(float(radius))
+    return 1.0 - (probability * inside.to(torch.float32)).sum(dim=-1)
+
+
+def _cross_modal_topology_disagreement(
+    probability: torch.Tensor,
+    available: torch.Tensor,
+    topology_positions: torch.Tensor,
+) -> torch.Tensor:
+    classes = int(probability.shape[-1])
+    pairwise_distance = (topology_positions[:, None] - topology_positions[None, :]).abs()
+    pairwise_distance = torch.minimum(pairwise_distance, float(classes) - pairwise_distance)
+    pairwise_distance = pairwise_distance / max(float(classes // 2), 1.0)
     available_float = available.to(dtype=torch.float32)
     counts = available_float.sum(dim=1, keepdim=True)
-    others = ((probability * available_float.unsqueeze(-1)).sum(dim=1, keepdim=True) - probability) / (
-        counts.unsqueeze(-1) - 1.0
-    ).clamp_min(1.0)
-    midpoint = 0.5 * (probability + others)
-    p = probability.clamp_min(1e-12)
-    q = others.clamp_min(1e-12)
-    middle = midpoint.clamp_min(1e-12)
-    divergence = 0.5 * ((p * (p.log() - middle.log())).sum(dim=-1) + (q * (q.log() - middle.log())).sum(dim=-1))
+    probability_sum = (probability * available_float.unsqueeze(-1)).sum(dim=1, keepdim=True)
+    others = (probability_sum - probability) / (counts.unsqueeze(-1) - 1.0).clamp_min(1.0)
+    projected_distance = probability @ pairwise_distance
+    disagreement = (projected_distance * others).sum(dim=-1)
     valid = available & counts.gt(1)
-    return divergence * valid.to(torch.float32)
+    return disagreement * valid.to(torch.float32)
 
 
 def _masked_softmax_fp32(logits: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
@@ -1367,6 +1405,28 @@ def _strict_mapping(value: Mapping[str, Any] | None, *, allowed: set[str], conte
     if unknown:
         raise ValueError(f"{context} contains unsupported fields: {unknown}.")
     return result
+
+
+def _fusion_config(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = dict(value or {})
+    # Older analytic checkpoints recorded this control-only knob without using it.
+    raw.pop("direct_router_hidden_dim", None)
+    return _strict_mapping(
+        raw,
+        allowed={
+            "temperature_min",
+            "temperature_init",
+            "tau_min",
+            "tau_init",
+            "eta_init",
+            "train_eta",
+            "finetune_risk_coefficients",
+            "use_static_capability",
+            "static_prior_source",
+            "max_log_adjustment",
+        },
+        context="model.primary.fusion",
+    )
 
 
 def _positive(value: Any, field: str) -> float:
@@ -1418,11 +1478,16 @@ def validate_pcpf_model_config(primary: Mapping[str, Any], dataset: Mapping[str,
         raise ValueError("PCPF-T d_model must be divisible by temporal_transformer.num_heads.")
     if bool(temporal.get("causal", False)):
         raise ValueError("PCPF-T temporal_transformer.causal must be false.")
-    _strict_mapping(
+    probability = _strict_mapping(
         primary.get("probability_head"),
-        allowed={"hidden_dim", "min_logvar", "max_logvar", "initial_logvar"},
+        allowed={"hidden_dim", "min_concentration", "max_concentration", "initial_concentration"},
         context="model.primary.probability_head",
     )
+    minimum_concentration = float(probability.get("min_concentration", 1.0))
+    maximum_concentration = float(probability.get("max_concentration", 4096.0))
+    initial_concentration = float(probability.get("initial_concentration", 64.0))
+    if not 0.0 < minimum_concentration < initial_concentration < maximum_concentration:
+        raise ValueError("PCPF evidence concentration must satisfy 0 < min < initial < max.")
     sparse_csi = _strict_mapping(
         primary.get("sparse_csi_encoder"),
         allowed={
@@ -1449,28 +1514,29 @@ def validate_pcpf_model_config(primary: Mapping[str, Any], dataset: Mapping[str,
         PCPFSparseCSISidecar(dataset_sparse_csi)
     elif dataset_sparse_csi is not None:
         raise ValueError("data.dataset.sparse_csi requires model.primary.use_sparse_csi=true.")
-    _strict_mapping(
+    risk = _strict_mapping(
         primary.get("risk"),
-        allowed={"enabled_components", "coefficient_init", "bias_init", "normalization_epsilon"},
+        allowed={
+            "enabled_components",
+            "coefficient_init",
+            "bias_init",
+            "normalization_epsilon",
+            "neighbor_radius",
+        },
         context="model.primary.risk",
     )
-    fusion = _strict_mapping(
-        primary.get("fusion"),
-        allowed={
-            "temperature_min",
-            "temperature_init",
-            "tau_min",
-            "tau_init",
-            "eta_init",
-            "train_eta",
-            "finetune_risk_coefficients",
-            "use_static_capability",
-            "static_prior_source",
-            "direct_router_hidden_dim",
-        },
-        context="model.primary.fusion",
-    )
-    for field in ("temperature_min", "temperature_init", "tau_min", "tau_init", "eta_init"):
+    neighbor_radius = int(risk.get("neighbor_radius", 2))
+    if not 0 <= neighbor_radius <= dimensions[1] // 2:
+        raise ValueError("risk.neighbor_radius must be in [0, num_classes/2].")
+    fusion = _fusion_config(primary.get("fusion"))
+    for field in (
+        "temperature_min",
+        "temperature_init",
+        "tau_min",
+        "tau_init",
+        "eta_init",
+        "max_log_adjustment",
+    ):
         if field in fusion:
             _positive(fusion[field], f"fusion.{field}")
     stage = str(primary.get("training_stage", "")).strip().lower()
@@ -1496,7 +1562,8 @@ def _find_forbidden_keys(value: Any) -> set[str]:
 __all__ = [
     "FUSION_MODES",
     "PCPFTemporalRiskFusion",
-    "ProbabilityEmbeddingHead",
+    "PROBABILITY_PARAMETERIZATION",
+    "PrototypeEvidenceHead",
     "RISK_COMPONENT_NAMES",
     "TRAINING_STAGES",
     "analytic_fusion_weights",

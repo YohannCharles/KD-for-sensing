@@ -130,6 +130,45 @@ def test_train_only_stage_preparation_fits_normalization_and_confidence(tmp_path
     assert available_risk.std().item() > 1e-4
 
 
+def test_pcpf_forward_adds_detached_beam_statistics_without_state() -> None:
+    model = _model("stage2_risk")
+    batch = next(iter(DataLoader(_WorkflowDataset(), batch_size=2, shuffle=False)))
+    state_keys = tuple(model.state_dict())
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    available = torch.tensor([[True, False, True, False], [False, True, False, True]])
+
+    outputs = model(
+        image_batch=batch["image"],
+        radar_batch=torch.cat([batch["radar_ra"], batch["radar_da"]], dim=2),
+        gps_batch=batch["gps"],
+        lidar_batch=batch["lidar"],
+        missing_mask=available,
+    )
+
+    assert tuple(model.state_dict()) == state_keys
+    assert sum(parameter.numel() for parameter in model.parameters()) == parameter_count
+    assert outputs["beam_map"].shape == (2,)
+    assert outputs["beam_top_indices"].shape == (2, 7)
+    assert outputs["beam_top_probabilities"].shape == (2, 7)
+    assert torch.equal(outputs["beam_map"], outputs["fused_probability"].argmax(dim=-1))
+    for name in (
+        "beam_map",
+        "beam_circular_mean",
+        "beam_resultant_length",
+        "beam_circular_variance",
+        "beam_variance",
+        "beam_spread",
+        "beam_normalized_entropy",
+        "beam_top_indices",
+        "beam_top_probabilities",
+    ):
+        assert outputs[name].requires_grad is False
+
+    outputs["raw_risk"].sum().backward()
+    assert all(not name.startswith("beam_") for name, _ in model.named_parameters())
+    assert any(parameter.grad is not None for parameter in model.parameters() if parameter.requires_grad)
+
+
 def test_formal_topology_revalidates_the_bound_audit_file(tmp_path) -> None:
     descriptor = {
         "topology_id": "ula_dft_phase_cycle_v1",
@@ -156,7 +195,6 @@ def test_formal_topology_revalidates_the_bound_audit_file(tmp_path) -> None:
         prototype_topology_audit_path=str(audit_path),
         prototype_topology_audit_sha256=audit_sha256,
     )
-    assert model.prototype_topology_metadata()["formal_r0_r7_eligible"] is True
 
     audit_path.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="audit SHA256"):
@@ -254,13 +292,6 @@ def test_pcpf_config_keeps_image_profile_at_dataset_boundary() -> None:
     assert cfg["model"]["primary"]["risk"]["normalization_epsilon"] == pytest.approx(0.01)
     assert cfg["training"]["checkpoint_selection"] == "best_validation_loss"
     assert "image_profile" not in cfg["model"]["primary"]
-
-
-def test_direct_router_control_allows_only_its_new_checkpoint_prefix() -> None:
-    cfg = load_config("tools/configs/pcpf/ablations/a2_direct_router_control.yaml")
-
-    initialization = cfg["training"]["initialization_checkpoint"]
-    assert initialization["allowed_missing_prefixes"] == ["direct_router"]
 
 
 def test_all_pcpf_templates_pass_strict_config_loading() -> None:

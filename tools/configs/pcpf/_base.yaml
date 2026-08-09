@@ -29,14 +29,15 @@ model:
       adapter_enabled: true
     probability_head:
       hidden_dim: 64
-      min_logvar: -8.0
-      max_logvar: 4.0
-      initial_logvar: -4.0
+      min_concentration: 1.0
+      max_concentration: 4096.0
+      initial_concentration: 64.0
     risk:
-      enabled_components: [var, proto, temp, conflict]
+      enabled_components: [concentration, neighbor, temp, conflict]
       coefficient_init: [1.0, 1.0, 1.0, 0.25]
       bias_init: 0.0
       normalization_epsilon: 0.01
+      neighbor_radius: 2
     fusion:
       temperature_min: 0.05
       temperature_init: 1.0
@@ -47,7 +48,7 @@ model:
       finetune_risk_coefficients: false
       use_static_capability: true
       static_prior_source: train_risk
-      direct_router_hidden_dim: 32
+      max_log_adjustment: 1.0
     encoders:
       image:
         type: tinyvit_5m_scratch_rgb
@@ -90,8 +91,7 @@ loss:
     lambda_risk: 1.0
     lambda_rank: 0.2
     rank_margin: 0.05
-    beta_kl: 0.0001
-    lambda_preserve: 0.2
+    lambda_concentration: 0.5
     stage3_topology_weight: 0.0
     stage_preparation:
       enabled: true

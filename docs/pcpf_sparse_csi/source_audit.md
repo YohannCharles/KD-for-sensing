@@ -14,12 +14,12 @@ ID-block protocol 与 split audit 门禁通过：trajectory overlap 是设计目
 
 ## Mother CSI 与时序语义
 
-- 当前 seed 0 train/validation cache scan 分别覆盖 27,666/5,931 个样本；每个样本从五帧历史 channel 生成固定 `[5,2,2]` complex sparse observation。
+- 当前 seed 0 train/validation cache scan 分别覆盖 27,666/5,931 个样本；默认 selection 从五帧历史 channel 生成 `[5,2,2]` complex sparse observation，C2 独立 selection 生成 `[5,4,2]`。
 - `candidate_history[:,i]` 由同一样本第 `i` 个历史 `csi` path 的 `a: complex64 [1,1,16,1,64,L,1]` 和 `tau: float32 [1,1,1,L]` 生成。32 是固定 Tx/Rx probe pattern 数，16 是固定母频率位置数；它不是未来 channel，也不是 beam-power 特征。
 - 当前 trajectory PCPF 输入帧为 `t-4..t`，标签 `future_beam_label1` 为 `t+1`。`resolve_input_channel_refs` 要求五个 history frame 连续递增、每个 channel 文件 frame id 与 history id 相同，并要求 `last_input_frame < target_frame`。
 - Prepared CSV 含 `future_csi1`，但 `create_samples` 不把该列保留到 dataset row；`MMWDataset(include_channel_history_refs=true)` 只解析 `csi1..csi5`。新 CSI owner 不得接收 `future_csi*`、`future_beam*`、当前/未来 beam power 或历史 beam index。
 
-## 固定 2x2 Pilot 协议
+## 固定 2x2 Pilot 基线与 C2 4x2 筛选
 
 第一轮完全采用 TSPC-V2 的 nested selection：从 32 个 mother pattern 固定取索引 `[0,1]`，从 16 个母频点用 `round(linspace(0,15,2))` 固定取索引 `[0,15]`，五个历史时刻均使用同一选择。对应频率位置为 `[-61440000.0, 61320000.0] Hz`；每帧 4 个复数 RE、每窗口 20 个复数 RE，实际比例为 `4/(32*16)=0.0078125`，即 `0.78125%`。
 
@@ -34,6 +34,10 @@ ID-block protocol 与 split audit 门禁通过：trajectory overlap 是设计目
 其 SHA256 为 `87bad2292ba3d22cac413e71d9303f2dd229ed64fe39eeb4df6272f42e6bca28`。固定 probe codebook 的逻辑 hash 为 `eec8709fbabff5bf2530a7b3789d3d23ad59165c1eead8ebad44af995ec763fa`，文件 SHA256 为 `efa88aa18483664b53fe9506f15aa6c9bbf276e2042fb4664ee56d04e806779e`。pattern、频率和 codebook 均在训练前固定，不读取 label 或 validation 指标。
 
 本轮禁止调用 TSPC 的 `_noisy_observations`/`_noisy_pilots`：不注入 AWGN、pilot dropout 或其他人工 corruption。输入是上述 path-domain simulator 的确定性历史观测。
+
+C1 validation-best 相对同协议零层 C0 已提高 Top-1/Top-3/Top-5/ADBA，但逐 epoch 曲线同时显示明显过拟合。后续 C2 因此只增加一个预注册开销档：保持一层 token Transformer、CSI-only mask、loss、split seed 0、train seed 1、40 epoch、batch 64、8 workers和 validation-loss checkpoint selection 不变，把 pattern 固定扩为 `[0,1,2,3]`，频率仍为 `[0,15]`。C2 输入为 `[5,4,2]` complex，每帧 8 RE、每窗口 40 RE，占 mother grid 的 `8/(32*16)=1.5625%`；selection SHA256 为 `2d035d64f6b9ac408532040b3ff09151a8831361d81c83b1b77e218e4344a4f4`。
+
+2x2 与 4x2 是 sidecar 唯一允许的 selection。二者复用同一 codebook、两个物理频率与原内容寻址 `[32,2]` mother cache，但 4x2 必须生成独立的 `[N,4,2]` packed bundle/cache manifest；selection hash 或 shape 不匹配时失败，不能把已有 2x2 bundle 重标。C2 仍只读取 train/validation 历史 channel，test 保持封存，结果保持 `claim_ineligible=true`。
 
 ## SparsePilotEncoder 与 SNR
 
@@ -59,6 +63,6 @@ Recovery record、prepared CSV 和 channel NPZ 中均没有真实 SNR 字段。�
 
 ## 数据流与冻结预期
 
-历史 channel refs 经固定 codebook/2x2 selection 得到 `complex [B,5,2,2]`，每帧进入同一 `SparsePilotEncoder`，再经 Linear/LayerNorm 投影为 `[B,5,64]`。它与四 sensing sequence stack 为 `[B,5,5,64]`，逐模态进入唯一 `SharedTemporalTransformer`，并通过同一 `ProbabilityEmbeddingHead`、唯一 `BeamPrototypeBank`、四项 risk 和解析融合。CSI 全缺失时 frame、CLS、probability、risk 和 weight 必须显式为零。
+历史 channel refs 经固定 codebook 与预注册 selection 得到 `complex [B,5,M,2]`（默认 `M=2`，仅 C2 为 `M=4`），每帧进入同一 `SparsePilotEncoder`，再经 Linear/LayerNorm 投影为 `[B,5,64]`。它与四 sensing sequence stack 为 `[B,5,5,64]`，逐模态进入唯一 `SharedTemporalTransformer`，并通过同一 `ProbabilityEmbeddingHead`、唯一 `BeamPrototypeBank`、四项 risk 和解析融合。CSI 全缺失时 frame、CLS、probability、risk 和 weight 必须显式为零。
 
-Stage1 训练五个 encoder/input path、共享 Temporal Transformer 和 prototype bank；Stage2 只训练共享 probability head 与 risk coefficient/bias；Stage3 默认只训练五个 temperature 与全局 tau（以及配置明确允许的现有低维参数）。旧 Direct Router 仅为 control，CSI 不建立独立最终 classifier，也不直接叠加到 fused logits。
+Stage1 训练五个 encoder/input path、共享 Temporal Transformer 和 prototype bank；Stage2 只训练共享 probability head 与 risk coefficient/bias；Stage3 默认只训练五个 temperature 与全局 tau。Direct Router/CUAF 已退出 active surface；CSI 不建立独立最终 classifier，也不直接叠加到 fused logits。

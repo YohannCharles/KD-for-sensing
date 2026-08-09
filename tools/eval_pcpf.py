@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,7 +10,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from kd_sensing.config import load_config
-from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 from kd_sensing.engine.data_factory import build_dataloaders, shutdown_dataloader_workers
 from kd_sensing.engine.optim import build_device, build_model
 from kd_sensing.engine.normalization_artifacts import (
@@ -28,6 +26,21 @@ from kd_sensing.eval.pcpf import (
     write_pcpf_observation_cache,
     write_pcpf_report,
 )
+from kd_sensing.eval.beam_probe_diagnostic import (
+    build_train_power_index,
+    build_validation_power_index,
+    load_probe_evidence,
+    run_tbcp_robustness_sensitivity,
+    run_tbcp_probe_diagnostic,
+    summarize_tbcp_robustness_replays,
+    summarize_tbcp_replays,
+)
+from kd_sensing.eval.beam_topology_likelihood import (
+    fit_topology_likelihood,
+    load_topology_likelihood,
+    save_topology_likelihood,
+    train_power_content_sha256,
+)
 from kd_sensing.losses.pcpf_temporal_risk_config import pcpf_temporal_risk_config
 from kd_sensing.utils.checkpoint import (
     checkpoint_file_digest,
@@ -38,7 +51,6 @@ from kd_sensing.utils.checkpoint import (
 from kd_sensing.utils.seed import set_seed
 
 
-CONTROL_FUSION_MODES = {"uniform", "static_prior", "direct_router_control", "cuaf_local_adaptation"}
 PROTOCOL_LINEAGE_KEYS = (
     "mode",
     "protocol_id",
@@ -71,7 +83,7 @@ TOPOLOGY_LINEAGE_KEYS = ("id", "descriptor_sha256", "audit_sha256")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Evaluate PCPF-T Stage 2 risk and 15/31-mask diagnostics.")
+    parser = argparse.ArgumentParser(description="Evaluate PCPF-T risk, missing masks, and local beam probing.")
     subparsers = parser.add_subparsers(dest="action", required=True)
     for action in ("gate", "matrix"):
         sub = subparsers.add_parser(action)
@@ -83,25 +95,158 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--max-train-batches", type=int)
     matrix = subparsers.choices["matrix"]
     matrix.add_argument(
-        "--control",
-        action="append",
-        nargs=2,
-        default=[],
-        metavar=("CONFIG", "CHECKPOINT"),
-        help="Repeat for trained A0-A3 controls; fusion_mode identifies each control.",
-    )
-    matrix.add_argument(
         "--reuse-evidence",
         action="store_true",
         help="Reuse and validate the output-adjacent sample/train caches after a reporting-only failure.",
     )
-    matrix.add_argument(
-        "--r0-reference",
-        nargs=2,
-        metavar=("REPORT", "SHA256"),
-        help="Required for a five-modality matrix; binds the same-protocol four-modality trajectory R0 report.",
+    probe = subparsers.add_parser(
+        "probe-diagnostic",
+        help="Run validation-only TBCP-7 probing from checkpoint-bound evidence and a train-only likelihood.",
     )
+    probe.add_argument("--config", required=True)
+    probe.add_argument("--checkpoint", required=True)
+    probe.add_argument("--matrix-report", required=True)
+    probe.add_argument("--topology-likelihood", required=True)
+    probe.add_argument("--output-dir", required=True)
+    probe.add_argument("--max-samples-per-pattern", type=int)
+    probe.add_argument("--include-diagonal-covariance-ablation", action="store_true")
+    probe.add_argument(
+        "--include-defense-experiments",
+        action="store_true",
+        help="Run the preregistered noiseless open-loop control and K={3,5,7,9} budget curve.",
+    )
+    probe.add_argument(
+        "--include-batch-feedback-experiments",
+        action="store_true",
+        help="Run preregistered noiseless Batch-TBCP-2+2+3, Batch-TBCP-2+5, and Batch-TBCP-3+4 diagnostics.",
+    )
+    robustness = subparsers.add_parser(
+        "probe-robustness",
+        help="Run the preregistered bounded TBCP-7 synthetic measurement-error grid.",
+    )
+    robustness.add_argument("--config", required=True)
+    robustness.add_argument("--checkpoint", required=True)
+    robustness.add_argument("--matrix-report", required=True)
+    robustness.add_argument("--topology-likelihood", required=True)
+    robustness.add_argument("--output-dir", required=True)
+    fit_probe = subparsers.add_parser(
+        "fit-probe-likelihood",
+        help="Fit one train-only ULA-DFT relative-gain likelihood for TBCP-7.",
+    )
+    fit_probe.add_argument("--config", required=True)
+    fit_probe.add_argument("--output", required=True)
+    probe_summary = subparsers.add_parser(
+        "probe-summary",
+        help="Summarize exactly three sealed TBCP-7 validation replays.",
+    )
+    probe_summary.add_argument("--run", action="append", nargs=2, required=True, metavar=("SEED", "RESULT"))
+    probe_summary.add_argument("--output-dir", required=True)
+    robustness_summary = subparsers.add_parser(
+        "probe-robustness-summary",
+        help="Summarize exactly three preregistered TBCP-7 robustness replays.",
+    )
+    robustness_summary.add_argument(
+        "--run", action="append", nargs=2, required=True, metavar=("SEED", "RESULT")
+    )
+    robustness_summary.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
+
+    if args.action in {"probe-summary", "probe-robustness-summary"}:
+        run_paths: dict[int, str] = {}
+        for raw_seed, path in args.run:
+            seed = int(raw_seed)
+            if seed in run_paths:
+                raise ValueError(f"Duplicate TBCP summary seed: {seed}")
+            run_paths[seed] = path
+        result = (
+            summarize_tbcp_replays(run_paths, output_dir=args.output_dir)
+            if args.action == "probe-summary"
+            else summarize_tbcp_robustness_replays(run_paths, output_dir=args.output_dir)
+        )
+        print(
+            json.dumps(
+                {
+                    "output_dir": result["output_dir"],
+                    "report": result["report"],
+                    "seeds": [1, 2, 3],
+                    "claim_ineligible": True,
+                    "outer_test_accessed": False,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.action == "fit-probe-likelihood":
+        cfg = load_config(args.config)
+        _require_pcpf(cfg)
+        train_paths, train_labels, protocol_sample_ids, provenance = build_train_power_index(cfg)
+        artifact = fit_topology_likelihood(
+            train_paths,
+            train_labels,
+            protocol_sample_ids,
+            provenance=provenance,
+        )
+        record = save_topology_likelihood(artifact, args.output)
+        print(
+            json.dumps(
+                {
+                    "artifact": record["path"],
+                    "sidecar": record["sidecar"],
+                    "artifact_sha256": record["artifact_sha256"],
+                    "artifact_fingerprint": artifact.metadata["artifact_fingerprint"],
+                    "fit_split": "train",
+                    "train_sample_count": provenance["train_sample_count"],
+                    "outer_test_accessed": False,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.action in {"probe-diagnostic", "probe-robustness"}:
+        evidence, power_paths, labels, likelihood, likelihood_source = _load_probe_inputs(
+            args,
+            max_samples_per_pattern=(
+                args.max_samples_per_pattern if args.action == "probe-diagnostic" else None
+            ),
+        )
+        result = (
+            run_tbcp_probe_diagnostic(
+                evidence,
+                power_paths=power_paths,
+                indexed_labels=labels,
+                likelihood=likelihood,
+                likelihood_source=likelihood_source,
+                output_dir=args.output_dir,
+                include_diagonal_covariance_ablation=args.include_diagonal_covariance_ablation,
+                include_defense_experiments=args.include_defense_experiments,
+                include_batch_feedback_experiments=args.include_batch_feedback_experiments,
+            )
+            if args.action == "probe-diagnostic"
+            else run_tbcp_robustness_sensitivity(
+                evidence,
+                power_paths=power_paths,
+                indexed_labels=labels,
+                likelihood=likelihood,
+                likelihood_source=likelihood_source,
+                output_dir=args.output_dir,
+            )
+        )
+        print(
+            json.dumps(
+                {
+                    "output_dir": result["output_dir"],
+                    "report": result["report"],
+                    "primary_policy": "TBCP-7",
+                    "evaluation_scope": result["config"].get("robustness_version", "noiseless"),
+                    "claim_ineligible": True,
+                    "outer_test_accessed": False,
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     cfg = load_config(args.config)
     _require_pcpf(cfg)
@@ -134,11 +279,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_batches=args.max_batches,
                 max_train_batches=args.max_train_batches,
             )
-        control_models, control_provenance = _load_controls(args.control, device, reference_cfg=cfg)
         return _run_matrix(
             model,
-            control_models,
-            control_provenance,
             dataloaders,
             cfg,
             device=device,
@@ -149,7 +291,6 @@ def main(argv: list[str] | None = None) -> int:
             max_batches=args.max_batches,
             max_train_batches=args.max_train_batches,
             reuse_evidence=args.reuse_evidence,
-            r0_reference=args.r0_reference,
         )
     finally:
         for dataloader in dataloaders.values():
@@ -221,8 +362,6 @@ def _run_gate(
 
 def _run_matrix(
     model: Any,
-    control_models: dict[str, Any],
-    control_provenance: dict[str, Any],
     dataloaders: dict[str, Any],
     cfg: dict[str, Any],
     *,
@@ -234,24 +373,8 @@ def _run_matrix(
     max_batches: int | None,
     max_train_batches: int | None,
     reuse_evidence: bool,
-    r0_reference: list[str] | None,
 ) -> int:
     diagnostics_config = dict(cfg.get("evaluation", {}).get("pcpf_diagnostics") or {})
-    configured_r0 = diagnostics_config.pop("trajectory_r0_reference", None)
-    if configured_r0 is not None and r0_reference is not None:
-        raise ValueError("Specify the trajectory R0 reference in either config or --r0-reference, not both.")
-    raw_r0 = configured_r0 or (
-        {"path": r0_reference[0], "sha256": r0_reference[1]} if r0_reference is not None else None
-    )
-    five_modality = tuple(model.modalities) == ("image", "radar", "gps", "lidar", "csi")
-    bounded_evaluation = max_batches is not None or max_train_batches is not None
-    comparison_budget = _comparison_budget(cfg)
-    if five_modality and comparison_budget is None:
-        raise ValueError("A five-modality matrix requires a comparison_budget descriptor.")
-    if five_modality and raw_r0 is None and not bounded_evaluation:
-        raise ValueError("A five-modality matrix requires --r0-reference REPORT SHA256.")
-    if not five_modality and raw_r0 is not None:
-        raise ValueError("A trajectory R0 reference is only valid for a five-modality matrix.")
 
     evidence_path = output.with_name(f"{output.stem}_sample_records.pt")
     train_evidence_path = output.with_name(f"{output.stem}_train_records.pt")
@@ -259,13 +382,11 @@ def _run_matrix(
         model,
         cfg,
         checkpoint_sha256=checkpoint_digest,
-        control_checkpoint_sha256={name: str(value["sha256"]) for name, value in control_provenance.items()},
     )
     train_evidence_binding = _evidence_binding(
         model,
         cfg,
         checkpoint_sha256=checkpoint_digest,
-        control_checkpoint_sha256={},
     )
     if reuse_evidence:
         if max_batches is not None or max_train_batches is not None:
@@ -275,7 +396,6 @@ def _run_matrix(
             model=model,
             expected_patterns={"full"},
             samples_per_pattern=len(dataloaders["train"].dataset),
-            expected_controls=set(),
             expected_binding=train_evidence_binding,
         )
         records = _load_reusable_evidence(
@@ -283,7 +403,6 @@ def _run_matrix(
             model=model,
             expected_patterns=set(patterns),
             samples_per_pattern=len(dataloaders["validation"].dataset),
-            expected_controls=set(control_models),
             expected_binding=evidence_binding,
         )
     else:
@@ -302,7 +421,6 @@ def _run_matrix(
             device=device,
             patterns=patterns,
             max_batches=max_batches,
-            control_models=control_models,
         )
         train_records["evidence_binding"] = train_evidence_binding
         records["evidence_binding"] = evidence_binding
@@ -373,15 +491,9 @@ def _run_matrix(
             "reused_after_reporting_failure": bool(reuse_evidence),
         },
     }
-    if comparison_budget is not None:
-        provenance["comparison_budget"] = comparison_budget
     gate_binding = cfg.get("training", {}).get("pcpf_stage2_gate")
     if isinstance(gate_binding, dict):
         provenance["stage2_gate"] = dict(gate_binding)
-    if control_provenance:
-        provenance["controls"] = control_provenance
-    if five_modality and isinstance(raw_r0, Mapping):
-        diagnostics_config["trajectory_r0_reference_summary"] = _load_trajectory_r0_reference(raw_r0)
     report = summarize_pcpf_matrix(
         records,
         train_confidence_p90=confidence_p90,
@@ -397,8 +509,6 @@ def _run_matrix(
                 "report": str(output.resolve()),
                 "pattern_count": len(report["patterns"]),
                 "domain_count": len(report["domains"]),
-                "direct_router_status": report["direct_router_status"],
-                "trained_controls": report["trained_controls"],
                 "bounded_evaluation": report["bounded_evaluation"],
                 "reused_evidence": bool(reuse_evidence),
                 "outer_test_accessed": False,
@@ -415,7 +525,6 @@ def _load_reusable_evidence(
     model: Any,
     expected_patterns: set[str],
     samples_per_pattern: int,
-    expected_controls: set[str],
     expected_binding: Mapping[str, Any],
 ) -> dict[str, Any]:
     payload = load_torch_payload(path.resolve(), map_location="cpu")
@@ -437,8 +546,6 @@ def _load_reusable_evidence(
         observed_patterns.count(pattern) != samples_per_pattern for pattern in expected_patterns
     ):
         raise ValueError(f"PCPF reusable evidence pattern coverage is incomplete: {path}")
-    if set(records.get("trained_controls", ())) != expected_controls:
-        raise ValueError(f"PCPF reusable evidence controls do not match the requested matrix: {path}")
     labels = torch.as_tensor(records.get("labels"), dtype=torch.long)
     probabilities = torch.as_tensor(records.get("unimodal_probabilities"), dtype=torch.float32)
     available = torch.as_tensor(records.get("available"), dtype=torch.bool)
@@ -448,204 +555,6 @@ def _load_reusable_evidence(
     records["unimodal_confidence"] = probabilities.amax(dim=-1)
     records["unimodal_correct"] = predictions.eq(labels.unsqueeze(1)) & available
     return records
-
-
-def _load_trajectory_r0_reference(value: Mapping[str, Any]) -> dict[str, Any]:
-    raw = dict(value)
-    unknown = sorted(set(raw) - {"path", "sha256"})
-    if unknown:
-        raise ValueError(f"PCPF trajectory R0 reference contains unsupported fields: {unknown}.")
-    path = Path(str(raw.get("path", ""))).resolve()
-    expected_sha256 = str(raw.get("sha256", "")).strip().lower()
-    if not path.is_file() or len(expected_sha256) != 64:
-        raise ValueError("PCPF trajectory R0 reference requires an existing path and SHA256.")
-    actual_sha256, _ = checkpoint_file_digest(path)
-    if actual_sha256 != expected_sha256:
-        raise ValueError(
-            f"PCPF trajectory R0 reference SHA256 mismatch: expected={expected_sha256}, actual={actual_sha256}."
-        )
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("PCPF trajectory R0 reference report must be a JSON object.")
-    if (
-        payload.get("report_type") != "pcpf_15_mask_diagnostics"
-        or payload.get("bounded_evaluation") is not False
-        or payload.get("claim_ineligible") is not True
-        or payload.get("outer_test_accessed") is not False
-        or payload.get("training_stage") != "stage3_fusion"
-        or tuple(payload.get("modalities", ())) != ("image", "radar", "gps", "lidar")
-    ):
-        raise ValueError("PCPF trajectory R0 must be an unbounded claim-ineligible four-modality Stage 3 report.")
-    try:
-        overall = payload["overall"]["replacement_metrics"]["pcpf_analytic"]
-        full = payload["patterns"]["full"]["replacement_metrics"]["pcpf_analytic"]
-        all14 = payload["pattern_aggregates"]["all14"]["pcpf_analytic"]
-        checkpoint = payload["provenance"]["checkpoint"]
-        protocol = payload["provenance"]["data_protocol"]
-        normalization = payload["provenance"]["normalization"]
-        budget = payload["provenance"]["comparison_budget"]
-        topology = payload["provenance"]["prototype_topology"]
-        identity = payload["validation_identity"]
-    except KeyError as exc:
-        raise ValueError(f"PCPF trajectory R0 reference is missing {exc.args[0]!r}.") from exc
-    if not all(isinstance(value, Mapping) for value in (checkpoint, protocol, normalization, budget, topology, identity)):
-        raise ValueError("PCPF trajectory R0 provenance sections must be mappings.")
-    recorded_budget_sha256 = str(budget.get("sha256", ""))
-    budget_payload = {key: value for key, value in budget.items() if key != "sha256"}
-    actual_budget_sha256 = hashlib.sha256(
-        json.dumps(budget_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    if (
-        protocol.get("mode") != TRAJECTORY_PROTOCOL_MODE
-        or protocol.get("protocol_id") != TRAJECTORY_PROTOCOL_MODE
-        or not str(protocol.get("audit_id", "")).strip()
-        or not _is_sha256(protocol.get("audit_sha256"))
-        or payload.get("source_split") != protocol.get("validation_role")
-        or payload.get("train_confidence_source_split") != protocol.get("train_role")
-        or normalization.get("source_split") != protocol.get("train_role")
-        or identity.get("source_split") != protocol.get("validation_role")
-        or int(identity.get("sample_count", -1)) <= 0
-        or int(identity.get("sample_count", -1)) != int(protocol.get("validation_sample_count", -2))
-        or identity.get("protocol_sample_id_sha256") != protocol.get("validation_sample_id_hash")
-        or identity.get("bound_sample_id_sha256") != protocol.get("validation_sample_id_hash")
-        or int(identity.get("experiment_seed", -1)) != int(payload.get("experiment_seed", -2))
-        or recorded_budget_sha256 != actual_budget_sha256
-        or topology.get("id") != "ula_dft_phase_cycle_v1"
-        or topology.get("formal_r0_r7_eligible") is not True
-        or not _is_sha256(topology.get("descriptor_sha256"))
-        or not _is_sha256(topology.get("audit_sha256"))
-    ):
-        raise ValueError("PCPF trajectory R0 protocol, split, seed, or validation identity provenance is invalid.")
-    comparison_contract = {
-        "protocol_id": str(protocol["protocol_id"]),
-        "protocol_fingerprint": str(protocol["protocol_fingerprint"]),
-        "protocol_audit_id": str(protocol["audit_id"]),
-        "protocol_audit_sha256": str(protocol["audit_sha256"]),
-        "train_role": str(protocol["train_role"]),
-        "validation_role": str(protocol["validation_role"]),
-        "experiment_seed": int(payload["experiment_seed"]),
-        "validation_sample_count": int(identity["sample_count"]),
-        "validation_ordered_sample_id_sha256": str(identity["ordered_sample_id_sha256"]),
-        "validation_protocol_sample_id_sha256": str(identity["protocol_sample_id_sha256"]),
-        "comparison_budget_sha256": recorded_budget_sha256,
-        "prototype_topology_id": str(topology["id"]),
-        "prototype_topology_descriptor_sha256": str(topology["descriptor_sha256"]),
-        "prototype_topology_audit_sha256": str(topology["audit_sha256"]),
-    }
-    if any(
-        len(comparison_contract[key]) != 64
-        for key in (
-            "protocol_fingerprint",
-            "validation_ordered_sample_id_sha256",
-            "validation_protocol_sample_id_sha256",
-        )
-    ):
-        raise ValueError("PCPF trajectory R0 comparison contract contains an invalid SHA256 digest.")
-    metric_names = ("count", "top1", "top3", "top5", "within_3", "circular_mae", "nll", "brier", "ece")
-    return {
-        "status": "verified_same_protocol_trajectory_reference",
-        "report": {"path": str(path), "sha256": actual_sha256},
-        "checkpoint": dict(checkpoint),
-        "expert_fingerprint": payload.get("expert_fingerprint"),
-        "overall15": {name: overall[name] for name in metric_names if name in overall},
-        "full4": {name: full[name] for name in metric_names if name in full},
-        "all14": dict(all14),
-        "comparison_contract": comparison_contract,
-        "claim_ineligible": True,
-        "outer_test_accessed": False,
-    }
-
-
-def _load_controls(
-    entries: list[list[str]],
-    device: torch.device,
-    *,
-    reference_cfg: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    models: dict[str, Any] = {}
-    provenance: dict[str, Any] = {}
-    for raw_config, raw_checkpoint in entries:
-        config_path = Path(raw_config).resolve()
-        checkpoint_path = Path(raw_checkpoint).resolve()
-        cfg = load_config(config_path)
-        _require_pcpf(cfg)
-        mode = str(cfg["model"]["primary"].get("fusion_mode", ""))
-        if mode not in CONTROL_FUSION_MODES:
-            raise ValueError(f"Unsupported PCPF control fusion mode {mode!r}.")
-        if mode in models:
-            raise ValueError(f"Duplicate PCPF control fusion mode {mode!r}.")
-        comparability = _require_control_comparability(reference_cfg, cfg, mode=mode)
-        model = build_model(cfg["model"]["primary"]).to(device)
-        if model.training_stage != "stage3_fusion":
-            raise ValueError("PCPF replacement controls must use training_stage=stage3_fusion.")
-        digest = _load_evaluation_checkpoint(
-            model,
-            checkpoint_path,
-            expected_stage=model.training_stage,
-            device=device,
-            config=cfg,
-        )
-        models[mode] = model.eval()
-        provenance[mode] = {
-            "config": str(config_path),
-            "path": str(checkpoint_path),
-            "sha256": digest,
-            "role": "validation_best",
-            "training_stage": model.training_stage,
-            "fusion_mode": mode,
-            "expert_fingerprint": model._expert_fingerprint(),
-            "comparability_contract": comparability,
-        }
-    return models, provenance
-
-
-def _require_control_comparability(
-    reference_cfg: dict[str, Any],
-    control_cfg: dict[str, Any],
-    *,
-    mode: str,
-) -> dict[str, Any]:
-    expected = _comparability_contract(reference_cfg)
-    actual = _comparability_contract(control_cfg)
-    if actual != expected:
-        mismatches = sorted(key for key in expected if actual.get(key) != expected[key])
-        raise ValueError(f"PCPF control {mode!r} comparability mismatch: {', '.join(mismatches)}.")
-    return actual
-
-
-def _comparability_contract(cfg: dict[str, Any]) -> dict[str, Any]:
-    training = cfg.get("training", {})
-    initialization = training.get("initialization_checkpoint", {})
-    protocol = cfg.get("data_protocol", {})
-    dataloader = cfg.get("data", {}).get("dataloader", {})
-    return {
-        "seed": cfg.get("experiment", {}).get("seed"),
-        "protocol": {
-            key: protocol.get(key)
-            for key in PROTOCOL_LINEAGE_KEYS
-        },
-        "temporal_missing": cfg.get("temporal_missing"),
-        "batch_size": {
-            "train": dataloader.get("train_batch_size"),
-            "validation": dataloader.get("validation_batch_size"),
-        },
-        "training_budget": {
-            key: training.get(key)
-            for key in ("epochs", "max_epochs", "lr", "weight_decay", "checkpoint_selection")
-        },
-        "source_checkpoint": {
-            key: initialization.get(key)
-            for key in ("sha256", "role", "expected_source_training_stage")
-        },
-        "prototype_topology": {
-            "id": cfg.get("model", {}).get("primary", {}).get("prototype_topology_id", "cyclic_index_v1"),
-            "descriptor_sha256": cfg.get("model", {}).get("primary", {}).get(
-                "prototype_topology_descriptor_sha256", ""
-            ),
-            "audit_sha256": cfg.get("model", {}).get("primary", {}).get("prototype_topology_audit_sha256", ""),
-        },
-        "scheduler": cfg.get("scheduler"),
-    }
 
 
 def _load_evaluation_checkpoint(
@@ -664,6 +573,9 @@ def _load_evaluation_checkpoint(
     metadata = payload.get("model_metadata")
     if not isinstance(metadata, dict) or metadata.get("training_stage") != expected_stage:
         raise ValueError(f"Checkpoint model_metadata does not match stage {expected_stage!r}.")
+    target_parameterization = getattr(model, "probability_parameterization", None)
+    if target_parameterization is not None and metadata.get("probability_parameterization") != target_parameterization:
+        raise ValueError("Checkpoint probability parameterization does not match the evaluation model.")
     checkpoint_topology = metadata.get("prototype_topology")
     if not isinstance(checkpoint_topology, Mapping):
         checkpoint_topology = {"id": metadata.get("prototype_topology_id")}
@@ -707,7 +619,6 @@ def _evidence_binding(
     cfg: Mapping[str, Any],
     *,
     checkpoint_sha256: str,
-    control_checkpoint_sha256: Mapping[str, str],
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -715,7 +626,6 @@ def _evidence_binding(
         "prototype_topology": _topology_lineage(model.prototype_topology_metadata()),
         "data_protocol": _protocol_lineage(_data_protocol(cfg)),
         "experiment_seed": int(cfg.get("experiment", {}).get("seed", -1)),
-        "control_checkpoint_sha256": dict(sorted(control_checkpoint_sha256.items())),
     }
 
 
@@ -755,52 +665,6 @@ def _data_protocol(cfg: Mapping[str, Any]) -> dict[str, Any]:
     return dict(protocol)
 
 
-def _comparison_budget(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
-    diagnostics = cfg.get("evaluation", {}).get("pcpf_diagnostics", {})
-    budget = diagnostics.get("comparison_budget") if isinstance(diagnostics, Mapping) else None
-    if budget is None:
-        return None
-    if not isinstance(budget, Mapping):
-        raise ValueError("PCPF comparison_budget must be a mapping.")
-    expected_keys = {
-        "id",
-        "stage_epochs",
-        "stage_learning_rates",
-        "train_batch_size",
-        "validation_batch_size",
-        "scheduler",
-    }
-    if set(budget) != expected_keys:
-        raise ValueError("PCPF comparison_budget fields do not match the registered contract.")
-    stage = str(cfg.get("model", {}).get("primary", {}).get("training_stage", ""))
-    epochs = budget.get("stage_epochs")
-    learning_rates = budget.get("stage_learning_rates")
-    loader = cfg.get("data", {}).get("dataloader", {})
-    training = cfg.get("training", {})
-    scheduler = cfg.get("scheduler", {})
-    if (
-        budget.get("id") != "pcpf_trajectory_r0_r7_budget_v1"
-        or not isinstance(epochs, Mapping)
-        or not isinstance(learning_rates, Mapping)
-        or int(epochs.get(stage, -1)) != int(training.get("epochs", -2))
-        or float(learning_rates.get(stage, -1.0)) != float(training.get("lr", -2.0))
-        or int(budget.get("train_batch_size", -1)) != int(loader.get("train_batch_size", -2))
-        or int(budget.get("validation_batch_size", -1)) != int(loader.get("validation_batch_size", -2))
-        or str(budget.get("scheduler")) != str(scheduler.get("type"))
-    ):
-        raise ValueError("PCPF comparison_budget does not match the evaluated config.")
-    payload = dict(budget)
-    payload["sha256"] = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return payload
-
-
-def _is_sha256(value: Any) -> bool:
-    normalized = str(value).strip().lower()
-    return len(normalized) == 64 and all(char in "0123456789abcdef" for char in normalized)
-
-
 def _validation_identity_binding(loader: Any) -> dict[str, Any]:
     identity = getattr(loader, "data_protocol_identity", None)
     if not isinstance(identity, Mapping):
@@ -826,6 +690,38 @@ def _sequential(loader: Any) -> DataLoader:
     if workers:
         options["prefetch_factor"] = getattr(loader, "prefetch_factor", None) or 2
     return DataLoader(loader.dataset, **options)
+
+
+def _load_probe_inputs(
+    args: argparse.Namespace,
+    *,
+    max_samples_per_pattern: int | None,
+):
+    cfg = load_config(args.config)
+    _require_pcpf(cfg)
+    train_paths, _, _, expected_provenance = build_train_power_index(cfg)
+    likelihood_path = Path(args.topology_likelihood).resolve()
+    likelihood = load_topology_likelihood(
+        likelihood_path,
+        expected_provenance=expected_provenance,
+        expected_train_power_content_sha256=train_power_content_sha256(train_paths),
+    )
+    likelihood_sha256, likelihood_size = checkpoint_file_digest(likelihood_path)
+    evidence = load_probe_evidence(
+        matrix_report=args.matrix_report,
+        checkpoint=args.checkpoint,
+        cfg=cfg,
+        max_samples_per_pattern=max_samples_per_pattern,
+    )
+    power_paths, labels = build_validation_power_index(cfg)
+    likelihood_source = {
+        "path": str(likelihood_path),
+        "sha256": likelihood_sha256,
+        "size_bytes": likelihood_size,
+        "artifact_fingerprint": likelihood.metadata["artifact_fingerprint"],
+        "fit_split": likelihood.metadata["provenance"]["fit_split"],
+    }
+    return evidence, power_paths, labels, likelihood, likelihood_source
 
 
 def _require_pcpf(cfg: dict[str, Any]) -> None:

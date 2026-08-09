@@ -351,6 +351,8 @@ def test_binding_defaults_to_train_validation_without_loading_test(built_protoco
     assert observed_roles and all(roles == ("train", "validation") for roles in observed_roles)
     assert cfg["training"]["final_test"] == {"enabled": False}
     assert cfg["data_protocol"]["test_evaluated"] is False
+    assert cfg["data_protocol"]["outer_test_enabled"] is False
+    assert cfg["data_protocol"]["allow_confirmation_train"] is False
     assert all("test_csv_name" in domain for domain in protocol_dataset_domains(_protocol))
 
 
@@ -382,6 +384,8 @@ def test_explicit_test_binding_loads_test_and_records_authorization(built_protoc
     assert observed_roles and all(roles == SPLIT_ROLES for roles in observed_roles)
     assert cfg["training"]["final_test"] == {"enabled": True}
     assert cfg["data_protocol"]["test_evaluated"] is True
+    assert cfg["data_protocol"]["outer_test_enabled"] is True
+    assert cfg["data_protocol"]["allow_confirmation_train"] is False
 
 
 def test_split_seed_and_train_seed_are_independent(built_protocol) -> None:

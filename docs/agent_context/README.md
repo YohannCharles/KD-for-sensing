@@ -1,6 +1,6 @@
 # Agent Context 路由
 
-先读导航和维护索引，再只按任务加载一份 context。权威是 `AGENTS.md`、README、四个 current spec 和 PCPF-T active change。
+先读导航和维护索引，再只按任务加载一份 context。权威是 `AGENTS.md`、README、五个 current spec 和当前 probing active change。
 
 | Route id | Scoped context | 适用任务 |
 | --- | --- | --- |

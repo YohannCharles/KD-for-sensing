@@ -1,7 +1,0 @@
-_base_: a4_full.yaml
-experiment:
-  name: PCPF-T-A4-no-conflict
-model:
-  primary:
-    risk:
-      enabled_components: [var, proto, temp]

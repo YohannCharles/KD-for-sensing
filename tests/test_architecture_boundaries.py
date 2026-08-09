@@ -109,7 +109,7 @@ def test_retired_u2_and_capacity_owners_are_absent():
     assert all(not (ROOT / path).exists() for path in RETIRED_OWNERS)
 
 
-def test_openspec_current_context_is_scoped_to_pcpf_mainline() -> None:
+def test_openspec_current_context_is_scoped_to_probing_mainline() -> None:
     specs = {
         path.parent.name
         for path in (ROOT / "openspec/specs").glob("*/spec.md")
@@ -123,10 +123,11 @@ def test_openspec_current_context_is_scoped_to_pcpf_mainline() -> None:
     assert specs == {
         "clean-data-integrity",
         "mmw-id-stratified-block-protocol",
+        "pcpf-temporal-risk-fusion",
         "repo-boundaries",
         "u0-mainline",
     }
-    assert active_changes == {"add-pcpf-temporal-risk-fusion"}
+    assert active_changes == {"add-uncertainty-adaptive-local-probing"}
     assert not (ROOT / "openspec/changes/archive").exists()
 
 

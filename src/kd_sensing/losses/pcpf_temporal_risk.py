@@ -210,36 +210,22 @@ def _stage2_loss(output: dict[str, Any], labels: torch.Tensor, *, config: dict[s
     predicted = output["raw_risk"].float()
     loss_risk = _masked_mean(F.smooth_l1_loss(predicted, target, reduction="none"), mask)
     loss_rank, active_pairs = _pair_ranking_loss(predicted, target, mask, margin=config["rank_margin"])
-    mu = output["probability_mu"].float()
-    logvar = output["probability_logvar"].float()
-    with torch.autocast(device_type=mu.device.type, enabled=False):
-        gaussian_kl = 0.5 * (torch.exp(logvar) + mu.square() - 1.0 - logvar).mean(dim=-1)
-    loss_kl = _masked_mean(gaussian_kl, mask)
-    preserve_logits = output["sampled_unimodal_logits"].float()
-    safe_hard = _labels(labels, available.shape[0]).masked_fill(~valid_label, 0)
-    soft_target = make_soft_beam_labels(
-        safe_hard,
-        int(preserve_logits.shape[-1]),
-        config["beam_label_sigma"],
-        circular=True,
-        topology_id=topology["id"],
-        topology_permutation=topology["permutation"],
-    ).to(device=preserve_logits.device, dtype=torch.float32)
-    preserve = -(soft_target.unsqueeze(1) * F.log_softmax(preserve_logits, dim=-1)).sum(dim=-1)
-    loss_preserve = _masked_mean(preserve, mask)
+    uncertainty = output["probability_uncertainty"].float()
+    loss_concentration = _masked_mean(
+        F.smooth_l1_loss(uncertainty, target, reduction="none"),
+        mask,
+    )
     supervision = 1.0 if config["risk_supervision_enabled"] else 0.0
-    total = (
-        supervision * config["lambda_risk"] * loss_risk
-        + supervision * config["lambda_rank"] * loss_rank
-        + config["beta_kl"] * loss_kl
-        + config["lambda_preserve"] * loss_preserve
+    total = supervision * (
+        config["lambda_risk"] * loss_risk
+        + config["lambda_rank"] * loss_rank
+        + config["lambda_concentration"] * loss_concentration
     )
     diagnostics = {
         "loss/pcpf_stage2_total": _scalar(total),
         "loss/pcpf_risk": _scalar(loss_risk),
         "loss/pcpf_rank": _scalar(loss_rank),
-        "loss/pcpf_kl": _scalar(loss_kl),
-        "loss/pcpf_preserve": _scalar(loss_preserve),
+        "loss/pcpf_concentration": _scalar(loss_concentration),
         "pcpf/rank_active_pairs": float(active_pairs),
         "pcpf/risk_target_mean": _scalar(_masked_mean(target, mask)),
         "pcpf/predicted_risk_mean": _scalar(_masked_mean(predicted, mask)),

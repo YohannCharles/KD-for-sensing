@@ -1,17 +1,12 @@
-import copy
 import hashlib
-import json
 
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from kd_sensing.config import load_config
 from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 from kd_sensing.eval.pcpf import (
-    _control_fusion_from_cached_evidence,
     _protocol_sample_id,
-    _r0_r7_summary,
     build_stage2_gate_report,
     fit_train_confidence_p90,
     resolve_pcpf_missing_patterns,
@@ -20,12 +15,9 @@ from kd_sensing.eval.pcpf import (
 from kd_sensing.models.pcpf_temporal_risk import analytic_fusion_weights
 from kd_sensing.utils.checkpoint import publish_checkpoint
 from tools.eval_pcpf import (
-    _comparison_budget,
     _evaluation_normalization_metadata,
     _load_evaluation_checkpoint,
     _load_reusable_evidence,
-    _load_trajectory_r0_reference,
-    _require_control_comparability,
     _sequential,
 )
 
@@ -92,33 +84,17 @@ def _protocol(records: dict, *, trajectory: bool = False) -> dict[str, object]:
     }
 
 
-def _comparison_budget_descriptor() -> dict[str, object]:
-    payload: dict[str, object] = {
-        "id": "pcpf_trajectory_r0_r7_budget_v1",
-        "stage_epochs": {"stage1_expert": 40, "stage2_risk": 20, "stage3_fusion": 10},
-        "stage_learning_rates": {"stage1_expert": 0.0005, "stage2_risk": 0.0005, "stage3_fusion": 0.0001},
-        "train_batch_size": 64,
-        "validation_batch_size": 64,
-        "scheduler": "none",
-    }
-    payload["sha256"] = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return payload
-
-
 def _topology(*, formal: bool = False) -> dict[str, object]:
     return {
         "id": "ula_dft_phase_cycle_v1" if formal else "cyclic_index_v1",
         "descriptor_sha256": "1" * 64 if formal else "",
         "audit_path": "/tmp/topology.json" if formal else "",
         "audit_sha256": "2" * 64 if formal else "",
-        "formal_r0_r7_eligible": formal,
     }
 
 
-def _provenance(records: dict, *, trajectory: bool = False, comparison_budget: bool = False) -> dict:
-    result = {
+def _provenance(records: dict, *, trajectory: bool = False) -> dict:
+    return {
         "checkpoint": {"path": "/tmp/stage3_best.pth", "sha256": "c" * 64, "role": "validation_best"},
         "data_protocol": _protocol(records, trajectory=trajectory),
         "normalization": {
@@ -126,37 +102,8 @@ def _provenance(records: dict, *, trajectory: bool = False, comparison_budget: b
             "risk_component_std": [0.01, 0.2, 0.3, 0.4],
         },
         "experiment_seed": 1,
-        "prototype_topology": _topology(formal=trajectory and comparison_budget),
+        "prototype_topology": _topology(formal=trajectory),
         "validation_identity_binding": _identity_binding(records),
-    }
-    if comparison_budget:
-        result["comparison_budget"] = _comparison_budget_descriptor()
-    return result
-
-
-def _trajectory_r0_summary(records: dict, provenance: dict) -> dict[str, object]:
-    indices = [index for index, pattern in enumerate(records["pattern"]) if pattern == "full"]
-    sample_ids = [records["sample_id"][index] for index in indices]
-    protocol_ids = [records["protocol_sample_id"][index] for index in indices]
-    protocol = provenance["data_protocol"]
-    return {
-        "status": "verified_same_protocol_trajectory_reference",
-        "comparison_contract": {
-            "protocol_id": protocol["protocol_id"],
-            "protocol_fingerprint": protocol["protocol_fingerprint"],
-            "protocol_audit_id": protocol["audit_id"],
-            "protocol_audit_sha256": protocol["audit_sha256"],
-            "train_role": protocol["train_role"],
-            "validation_role": protocol["validation_role"],
-            "experiment_seed": provenance["experiment_seed"],
-            "validation_sample_count": len(indices),
-            "validation_ordered_sample_id_sha256": _sha256_lines(sample_ids),
-            "validation_protocol_sample_id_sha256": _sha256_lines(protocol_ids, sort=True),
-            "comparison_budget_sha256": provenance["comparison_budget"]["sha256"],
-            "prototype_topology_id": provenance["prototype_topology"]["id"],
-            "prototype_topology_descriptor_sha256": provenance["prototype_topology"]["descriptor_sha256"],
-            "prototype_topology_audit_sha256": provenance["prototype_topology"]["audit_sha256"],
-        },
     }
 
 
@@ -274,7 +221,6 @@ def test_reusable_evidence_validates_identity_and_adds_derived_fields(tmp_path) 
         "prototype_topology": {"id": "cyclic_index_v1", "descriptor_sha256": "", "audit_sha256": ""},
         "data_protocol": {"protocol_id": TRAJECTORY_PROTOCOL_MODE},
         "experiment_seed": 1,
-        "control_checkpoint_sha256": {},
     }
     torch.save(
         {
@@ -283,7 +229,6 @@ def test_reusable_evidence_validates_identity_and_adds_derived_fields(tmp_path) 
             "expert_fingerprint": "a" * 64,
             "bounded_evaluation": False,
             "pattern": ["full", "full"],
-            "trained_controls": [],
             "labels": torch.tensor([1, 2]),
             "unimodal_probabilities": torch.rand(2, 5, 64),
             "available": torch.ones(2, 5, dtype=torch.bool),
@@ -297,7 +242,6 @@ def test_reusable_evidence_validates_identity_and_adds_derived_fields(tmp_path) 
         model=Model(),
         expected_patterns={"full"},
         samples_per_pattern=2,
-        expected_controls=set(),
         expected_binding=binding,
     )
 
@@ -310,7 +254,6 @@ def test_reusable_evidence_validates_identity_and_adds_derived_fields(tmp_path) 
             model=Model(),
             expected_patterns={"full"},
             samples_per_pattern=2,
-            expected_controls=set(),
             expected_binding={**binding, "checkpoint_sha256": "c" * 64},
         )
 
@@ -453,7 +396,7 @@ def test_matrix_reuses_same_unimodal_probabilities_for_replacements() -> None:
     assert set(report["overall"]["replacement_metrics"]) == {"uniform", "static_prior", "pcpf_analytic"}
     assert report["overall"]["weight_diagnostics"]["missing_weight_max"] == 0.0
     assert report["overall"]["weight_diagnostics"]["weight_row_sum_max_error"] < 1e-6
-    assert report["direct_router_status"] == "not_supplied"
+    assert report["evaluation_scope"] == "checkpoint_bound_matrix"
     assert report["provenance"] == provenance
     assert set(report["pattern_aggregates"]) == {"single", "all14"}
     expected_single = sum(
@@ -479,16 +422,13 @@ def test_sparse_csi_matrix_uses_exact_r_d_contracts() -> None:
     records = _five_modality_records()
     train_records = _five_modality_records(pattern_limit="full")
     confidence, _ = fit_train_confidence_p90(train_records)
-    provenance = _provenance(records, trajectory=True, comparison_budget=True)
+    provenance = _provenance(records, trajectory=True)
 
     report = summarize_pcpf_matrix(
         records,
         train_confidence_p90=confidence,
         provenance=provenance,
-        diagnostics_config={
-            "bootstrap": {"seed": 1, "resamples": 8, "confidence": 0.95},
-            "trajectory_r0_reference_summary": _trajectory_r0_summary(records, provenance),
-        },
+        diagnostics_config={"bootstrap": {"seed": 1, "resamples": 8, "confidence": 0.95}},
     )
 
     assert len(report["patterns"]) == 31
@@ -497,19 +437,8 @@ def test_sparse_csi_matrix_uses_exact_r_d_contracts() -> None:
     assert report["pattern_aggregates"]["csi_absent_legacy15"]["pcpf_analytic"]["top1"]["pattern_count"] == 15
     assert len(report["pattern_domain"]) == 31 * 3
     assert set(report["expert_input_diagnostics"]["prototype_distance"]) == set(records["modalities"])
-    assert report["R0_R7"]["R1_five_modality_checkpoint_csi_masked"]["status"] == (
-        "evaluated_on_all_legacy_nonempty_sensing_masks"
-    )
-    assert set(report["R0_R7"]) == {
-        "R0_four_modality_pcpf",
-        "R1_five_modality_checkpoint_csi_masked",
-        "R2_five_modality_uniform",
-        "R3_five_modality_static_prior",
-        "R4_five_modality_direct_router",
-        "R5_five_modality_cuaf_local_adaptation",
-        "R6_five_modality_pcpf_analytic",
-        "R7_joint_checkpoint_csi_only",
-    }
+    assert report["evaluation_scope"] == "checkpoint_bound_matrix"
+    assert set(report["overall"]["replacement_metrics"]) == {"uniform", "static_prior", "pcpf_analytic"}
     methods = report["mechanism_diagnostics"]["dynamicity_test"]["methods"]
     assert set(methods) == {
         "D0_original_sample_risk",
@@ -518,76 +447,6 @@ def test_sparse_csi_matrix_uses_exact_r_d_contracts() -> None:
         "D3_static_prior",
     }
 
-    mismatched_r0 = _trajectory_r0_summary(records, provenance)
-    mismatched_r0["comparison_contract"]["experiment_seed"] = 2
-    with pytest.raises(ValueError, match="experiment_seed"):
-        _r0_r7_summary(report, trajectory_r0_reference=mismatched_r0)
-
-    bounded_report = dict(report)
-    bounded_report["bounded_evaluation"] = True
-    assert _r0_r7_summary(bounded_report)["status"] == "bounded_evaluation_has_no_r0_comparison"
-
-
-def test_trajectory_r0_loader_requires_hashed_same_protocol_four_modality_report(tmp_path) -> None:
-    budget = _comparison_budget_descriptor()
-    report = {
-        "report_type": "pcpf_15_mask_diagnostics",
-        "source_split": "validation",
-        "train_confidence_source_split": "train",
-        "bounded_evaluation": False,
-        "claim_ineligible": True,
-        "outer_test_accessed": False,
-        "training_stage": "stage3_fusion",
-        "modalities": MODALITIES,
-        "experiment_seed": 1,
-        "expert_fingerprint": "a" * 64,
-        "provenance": {
-            "checkpoint": {"path": "/tmp/r0.pth", "sha256": "b" * 64, "role": "validation_best"},
-            "data_protocol": {
-                "mode": TRAJECTORY_PROTOCOL_MODE,
-                    "protocol_id": TRAJECTORY_PROTOCOL_MODE,
-                    "protocol_fingerprint": "d" * 64,
-                    "audit_id": "mmw_id_stratified_block_audit_v1",
-                    "audit_sha256": "a" * 64,
-                "train_role": "train",
-                "validation_role": "validation",
-                "validation_sample_count": 14_625,
-                "validation_sample_id_hash": "e" * 64,
-            },
-            "normalization": {"source_split": "train"},
-            "comparison_budget": budget,
-            "prototype_topology": _topology(formal=True),
-        },
-        "validation_identity": {
-            "source_split": "validation",
-            "experiment_seed": 1,
-            "sample_count": 14_625,
-            "ordered_sample_id_sha256": "f" * 64,
-            "protocol_sample_id_sha256": "e" * 64,
-            "bound_sample_id_sha256": "e" * 64,
-            "outer_test_accessed": False,
-        },
-        "overall": {"replacement_metrics": {"pcpf_analytic": {"count": 14_625, "top1": 0.5}}},
-        "patterns": {"full": {"replacement_metrics": {"pcpf_analytic": {"count": 14_625, "top1": 0.6}}}},
-        "pattern_aggregates": {"all14": {"pcpf_analytic": {"top1": {"macro": 0.4}}}},
-    }
-    path = tmp_path / "trajectory_r0.json"
-    path.write_text(json.dumps(report), encoding="utf-8")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-
-    summary = _load_trajectory_r0_reference({"path": str(path), "sha256": digest})
-
-    assert summary["status"] == "verified_same_protocol_trajectory_reference"
-    assert summary["report"]["sha256"] == digest
-    assert summary["overall15"]["count"] == 14_625
-    assert summary["comparison_contract"]["comparison_budget_sha256"] == budget["sha256"]
-
-    report["modalities"] = [*MODALITIES, "csi"]
-    path.write_text(json.dumps(report), encoding="utf-8")
-    with pytest.raises(ValueError, match="four-modality"):
-        _load_trajectory_r0_reference(
-            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        )
 
 
 def _five_modality_records(*, pattern_limit: str | None = None) -> dict:
@@ -675,15 +534,11 @@ def _five_modality_records(*, pattern_limit: str | None = None) -> dict:
             "uniform": uniform_probability,
             "static_prior": static_probability,
             "pcpf_analytic": fused,
-            "direct_router_control": uniform_probability,
-            "cuaf_local_adaptation": static_probability,
         },
         "replacement_weights": {
             "uniform": uniform,
             "static_prior": static,
             "pcpf_analytic": dynamic,
-            "direct_router_control": uniform,
-            "cuaf_local_adaptation": static,
         },
         "modality_temperatures": torch.ones(5),
         "static_capability": capability,
@@ -691,8 +546,6 @@ def _five_modality_records(*, pattern_limit: str | None = None) -> dict:
         "risk_coefficients": torch.ones(4),
         "risk_component_mean": torch.zeros(4),
         "risk_component_std": torch.ones(4),
-        "trained_controls": ["direct_router_control", "cuaf_local_adaptation"],
-        "replacement_parameters": {},
         "expert_fingerprint": "e" * 64,
         "training_stage": "stage3_fusion",
         "bounded_evaluation": False,
@@ -705,87 +558,3 @@ def test_matrix_rejects_missing_provenance() -> None:
 
     with pytest.raises(ValueError, match="data_protocol, normalization"):
         summarize_pcpf_matrix(records, train_confidence_p90=confidence, provenance={"checkpoint": {}})
-
-
-def test_registered_r0_and_sparse_csi_templates_share_the_same_budget() -> None:
-    r0 = load_config("tools/configs/pcpf/trajectory_r0/stage3.yaml")
-    sparse = load_config("tools/configs/pcpf/sparse_csi/stage3.yaml")
-
-    r0_budget = _comparison_budget(r0)
-    sparse_budget = _comparison_budget(sparse)
-
-    assert r0_budget == sparse_budget
-    assert r0_budget is not None
-    assert len(r0_budget["sha256"]) == 64
-    assert _comparison_budget(load_config("tools/configs/pcpf/stage3.yaml")) is None
-
-    r0["training"]["epochs"] = 9
-    with pytest.raises(ValueError, match="does not match"):
-        _comparison_budget(r0)
-
-
-def test_control_fusion_uses_cached_main_evidence_and_control_calibration() -> None:
-    class Control:
-        fusion_mode = "cuaf_local_adaptation"
-
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def _fuse(self, logits, probabilities, risk, components, available):
-            self.calls += 1
-            assert torch.equal(probabilities, diagnostics["unimodal_probabilities"])
-            assert torch.equal(risk, diagnostics["raw_risk"])
-            assert torch.equal(components, diagnostics["risk_components"])
-            calibrated = torch.softmax(logits / 2.0, dim=-1) * available.unsqueeze(-1)
-            weights = torch.softmax(torch.zeros_like(risk).masked_fill(~available, -torch.inf), dim=-1)
-            return weights, calibrated, torch.ones(4), self.fusion_mode
-
-    diagnostics = {
-        "unimodal_logits": torch.randn(2, 4, 64),
-        "unimodal_probabilities": torch.softmax(torch.randn(2, 4, 64), dim=-1),
-        "raw_risk": torch.rand(2, 4),
-        "risk_components": torch.rand(2, 4, 4),
-    }
-    available = torch.tensor([[True, True, True, True], [True, False, False, False]])
-    control = Control()
-
-    weights, calibrated = _control_fusion_from_cached_evidence(control, diagnostics, available)
-
-    assert control.calls == 1
-    assert torch.equal(weights[1], torch.tensor([1.0, 0.0, 0.0, 0.0]))
-    assert torch.allclose(calibrated, torch.softmax(diagnostics["unimodal_logits"] / 2.0, dim=-1) * available.unsqueeze(-1))
-
-
-def test_control_comparability_rejects_seed_or_budget_mismatch() -> None:
-    reference = {
-        "experiment": {"seed": 1},
-        "data_protocol": {
-            "protocol_id": TRAJECTORY_PROTOCOL_MODE,
-            "protocol_fingerprint": "a" * 64,
-            "train_role": "train",
-            "validation_role": "validation",
-        },
-        "temporal_missing": {"seed": 0, "mode": "balanced"},
-        "data": {"dataloader": {"train_batch_size": 32, "validation_batch_size": 32}},
-        "training": {
-            "epochs": 10,
-            "max_epochs": 10,
-            "lr": 1e-4,
-            "weight_decay": 1e-4,
-            "checkpoint_selection": "best_validation_loss",
-            "initialization_checkpoint": {
-                "sha256": "b" * 64,
-                "role": "validation_best",
-                "expected_source_training_stage": "stage2_risk",
-            },
-        },
-        "scheduler": {"type": "none"},
-    }
-    control = copy.deepcopy(reference)
-
-    assert _require_control_comparability(reference, control, mode="uniform")["seed"] == 1
-
-    control["experiment"]["seed"] = 2
-    control["training"]["epochs"] = 5
-    with pytest.raises(ValueError, match="seed, training_budget"):
-        _require_control_comparability(reference, control, mode="uniform")

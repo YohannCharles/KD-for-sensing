@@ -1,0 +1,6 @@
+_base_: ../stage1.yaml
+
+model:
+  primary:
+    sparse_csi_encoder:
+      num_layers: 1

@@ -8,7 +8,7 @@ import kd_sensing.models.amber_full  # noqa: F401
 import kd_sensing.models.rmbp_mm  # noqa: F401
 from kd_sensing.models.gps import GpsFeatureExtractor
 from kd_sensing.models.lidar import LidarFeatureExtractor
-from kd_sensing.models.radar import RadarFeatureExtractor
+from kd_sensing.models.radar import RadarDualBranchFeatureExtractor, RadarFeatureExtractor
 from kd_sensing.registries import ENCODERS, HEADS, MODELS, PROJECTORS, REPRESENTATION_CORES
 
 
@@ -24,6 +24,22 @@ def _resolve_dim(value: int | None, *fallbacks: int | None, default: int = 64) -
 
 @ENCODERS.register("radar_cnn")
 class RadarCNNEncoder(RadarFeatureExtractor):
+    def __init__(
+        self,
+        output_dim: int | None = None,
+        *,
+        feature_size: int | None = None,
+        d_model: int | None = None,
+        radar_channels: int = 2,
+        in_channels: int | None = None,
+        **_: Any,
+    ) -> None:
+        self.output_dim = _resolve_dim(output_dim, feature_size, d_model)
+        super().__init__(self.output_dim, in_channels=int(in_channels or radar_channels))
+
+
+@ENCODERS.register("radar_dual_branch_cnn")
+class RadarDualBranchCNNEncoder(RadarDualBranchFeatureExtractor):
     def __init__(
         self,
         output_dim: int | None = None,

@@ -17,12 +17,18 @@ class _TestSequenceEncoder(nn.Module):
         return self.projection(value)
 
 
-def _model(stage: str, *, fusion_mode: str = "pcpf_analytic") -> PCPFTemporalRiskFusion:
+def _model(
+    stage: str,
+    *,
+    fusion_mode: str = "pcpf_analytic",
+    fusion: dict[str, object] | None = None,
+) -> PCPFTemporalRiskFusion:
     encoders = {name: {"type": "pcpf_test_sequence", "output_dim": 64} for name in ("image", "radar", "gps", "lidar")}
     return PCPFTemporalRiskFusion(
         encoders=encoders,
         training_stage=stage,
         fusion_mode=fusion_mode,
+        fusion=fusion,
         temporal_transformer={"dropout": 0.0},
     )
 
@@ -34,6 +40,18 @@ def _inputs() -> dict[str, torch.Tensor]:
     mask[1, :3, 1] = False
     values["modality_temporal_mask"] = mask
     return values
+
+
+@pytest.mark.parametrize("fusion_mode", ["direct_router_control", "cuaf_local_adaptation"])
+def test_retired_dynamic_fusion_modes_are_rejected(fusion_mode: str) -> None:
+    with pytest.raises(ValueError, match="fusion_mode must be one of"):
+        _model("stage3_fusion", fusion_mode=fusion_mode)
+
+
+def test_legacy_router_width_is_inert_for_analytic_checkpoint_loading() -> None:
+    model = _model("stage3_fusion", fusion={"direct_router_hidden_dim": 32})
+
+    assert all("direct_router" not in name for name in model.state_dict())
 
 
 @pytest.mark.parametrize(
@@ -87,17 +105,45 @@ def test_full_model_masks_evidence_and_has_no_router_in_main_mode() -> None:
     assert model.risk_coefficients.ge(0).all()
 
 
-def test_probability_head_is_identity_initially_and_eval_is_deterministic() -> None:
+def test_evidence_head_preserves_prototype_mean_and_eval_is_deterministic() -> None:
     model = _model("stage2_risk").eval()
     inputs = _inputs()
     first = model(**inputs)
     second = model(**inputs)
 
-    torch.testing.assert_close(first["probability_mu"], first["temporal_cls_features"])
-    torch.testing.assert_close(first["probability_logvar"].mean(), torch.tensor(-4.0))
+    available = first["available_modalities"]
+    torch.testing.assert_close(
+        first["probability_concentration"][available],
+        torch.full_like(first["probability_concentration"][available], 64.0),
+    )
+    alpha_mean = first["probability_alpha"] / first["probability_alpha"].sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    torch.testing.assert_close(alpha_mean[available], first["unimodal_probabilities"][available])
     torch.testing.assert_close(first["unimodal_probabilities"], second["unimodal_probabilities"])
     torch.testing.assert_close(first["raw_risk"], second["raw_risk"])
     torch.testing.assert_close(first["fusion_weights"], second["fusion_weights"])
+
+
+def test_stage2_evidence_updates_cannot_change_unimodal_logits_or_top1() -> None:
+    model = _model("stage2_risk").eval()
+    inputs = _inputs()
+    before = model(**inputs)
+    with torch.no_grad():
+        for parameter in model.probability_head.parameters():
+            parameter.add_(torch.randn_like(parameter))
+    after = model(**inputs)
+
+    torch.testing.assert_close(before["unimodal_logits"], after["unimodal_logits"], atol=0, rtol=0)
+    assert torch.equal(before["unimodal_logits"].argmax(dim=-1), after["unimodal_logits"].argmax(dim=-1))
+    assert not torch.equal(before["probability_concentration"], after["probability_concentration"])
+
+
+def test_stage3_rejects_retired_stage2_probability_parameterization() -> None:
+    stage2 = _model("stage2_risk")
+    stage2.validate_initialization_metadata({"training_stage": "stage1_expert"})
+    stage3 = _model("stage3_fusion")
+
+    with pytest.raises(ValueError, match="probability parameterization"):
+        stage3.validate_initialization_metadata({"training_stage": "stage2_risk"})
 
 
 def test_stage3_backward_reaches_only_temperature_and_tau() -> None:

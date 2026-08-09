@@ -32,6 +32,18 @@ PCPF_SPARSE_CSI_SELECTION = {
 PCPF_SPARSE_CSI_SELECTION_SHA256 = hashlib.sha256(
     json.dumps(PCPF_SPARSE_CSI_SELECTION, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+PCPF_SPARSE_CSI_4X2_PATTERN_INDICES = (0, 1, 2, 3)
+PCPF_SPARSE_CSI_4X2_SELECTION = {
+    **PCPF_SPARSE_CSI_SELECTION,
+    "pattern_indices": list(PCPF_SPARSE_CSI_4X2_PATTERN_INDICES),
+}
+PCPF_SPARSE_CSI_4X2_SELECTION_SHA256 = hashlib.sha256(
+    json.dumps(PCPF_SPARSE_CSI_4X2_SELECTION, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+_SUPPORTED_SELECTIONS = {
+    PCPF_SPARSE_CSI_SELECTION_SHA256: PCPF_SPARSE_CSI_SELECTION,
+    PCPF_SPARSE_CSI_4X2_SELECTION_SHA256: PCPF_SPARSE_CSI_4X2_SELECTION,
+}
 PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION = 3
 
 _CONFIG_FIELDS = {
@@ -40,6 +52,7 @@ _CONFIG_FIELDS = {
     "codebook_sha256",
     "codebook_hash",
     "cache_root",
+    "cache_manifest_path",
     "selection_sha256",
     "packed_cache_path",
     "packed_cache_sha256",
@@ -53,7 +66,7 @@ _CONFIG_FIELDS = {
 
 
 class PCPFSparseCSISidecar:
-    """Deterministically load the fixed historical TSPC 2x2 observation."""
+    """Deterministically load a pre-registered historical TSPC observation."""
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         raw = dict(config)
@@ -62,8 +75,15 @@ class PCPFSparseCSISidecar:
             raise ValueError(f"PCPF sparse CSI config contains unsupported fields: {unknown}.")
         if raw.get("enabled") is not True:
             raise ValueError("PCPF sparse CSI sidecar requires enabled=true.")
-        if str(raw.get("selection_sha256", "")).lower() != PCPF_SPARSE_CSI_SELECTION_SHA256:
-            raise ValueError("PCPF sparse CSI selection SHA256 does not match the fixed TSPC-V2 2x2 selection.")
+        self.selection_sha256 = _required_sha256(raw.get("selection_sha256"), "selection_sha256")
+        if self.selection_sha256 not in _SUPPORTED_SELECTIONS:
+            raise ValueError("PCPF sparse CSI selection SHA256 is not a pre-registered TSPC-V2 selection.")
+        self.selection = _SUPPORTED_SELECTIONS[self.selection_sha256]
+        self.pattern_indices = tuple(int(value) for value in self.selection["pattern_indices"])
+        self.frequency_indices = tuple(int(value) for value in self.selection["frequency_indices"])
+        if self.frequency_indices != PCPF_SPARSE_CSI_FREQUENCY_INDICES:
+            raise ValueError("PCPF sparse CSI selection uses unsupported frequency indices.")
+        self.selected_shape = (len(self.pattern_indices), len(self.frequency_indices))
 
         self.codebook_path = _required_file(raw.get("codebook_path"), "codebook_path")
         expected_file_hash = _required_sha256(raw.get("codebook_sha256"), "codebook_sha256")
@@ -147,7 +167,9 @@ class PCPFSparseCSISidecar:
             if not isinstance(packed_fields[7], Mapping):
                 raise ValueError("PCPF sparse CSI packed_cache_split_identity must be a mapping.")
             cache_split_identity = split_cache_identity(packed_fields[7])
-            metadata, frame_index, frames = _load_packed_cache(str(packed_path), packed_sha256)
+            metadata, frame_index, frames = _load_packed_cache(
+                str(packed_path), packed_sha256, *self.selected_shape
+            )
             self._validate_packed_cache(
                 metadata,
                 protocol_id,
@@ -168,15 +190,15 @@ class PCPFSparseCSISidecar:
         identity = {
             "schema_version": 1,
             "source": "historical_channel_path_domain_simulator",
-            "selection": dict(PCPF_SPARSE_CSI_SELECTION),
-            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "selection": dict(self.selection),
+            "selection_sha256": self.selection_sha256,
             "codebook_path": str(self.codebook_path),
             "codebook_hash": self.codebook.hash,
             "codebook_file_sha256": self.codebook_file_sha256,
             "spatial_selection": {
                 "type": "paired_tx_rx_probe_patterns",
-                "tx_pattern_indices": list(PCPF_SPARSE_CSI_PATTERN_INDICES),
-                "rx_pattern_indices": list(PCPF_SPARSE_CSI_PATTERN_INDICES),
+                "tx_pattern_indices": list(self.pattern_indices),
+                "rx_pattern_indices": list(self.pattern_indices),
                 "direct_antenna_indices": None,
                 "tx_elements_per_pattern": 64,
                 "rx_elements_per_pattern": 16,
@@ -187,9 +209,9 @@ class PCPFSparseCSISidecar:
                 "spec": self.cache_spec_payload,
                 "spec_sha256": self.cache_spec_sha256,
             },
-            "complex_re_per_frame": 4,
+            "complex_re_per_frame": self.selected_shape[0] * self.selected_shape[1],
             "mother_re_per_frame": 32 * 16,
-            "sampling_ratio": 4.0 / float(32 * 16),
+            "sampling_ratio": float(self.selected_shape[0] * self.selected_shape[1]) / float(32 * 16),
             "snr_available": False,
             "awgn_enabled": False,
             "pilot_dropout_enabled": False,
@@ -227,14 +249,15 @@ class PCPFSparseCSISidecar:
             raise ValueError("PCPF sparse CSI history frame ids must be consecutive and increasing.")
         frames = [self._load_frame(path) for path in refs]
         history = np.stack(frames).astype(np.complex64, copy=False)
-        if history.shape != (5, 2, 2) or not np.isfinite(history).all():
-            raise ValueError(f"PCPF sparse CSI history must be finite complex [5,2,2], got {history.shape}.")
+        expected_shape = (5, *self.selected_shape)
+        if history.shape != expected_shape or not np.isfinite(history).all():
+            raise ValueError(f"PCPF sparse CSI history must be finite complex {expected_shape}, got {history.shape}.")
         return {
             "csi": torch.from_numpy(history),
-            "csi_pattern_ids": torch.tensor(PCPF_SPARSE_CSI_PATTERN_INDICES, dtype=torch.long).expand(5, -1).clone(),
+            "csi_pattern_ids": torch.tensor(self.pattern_indices, dtype=torch.long).expand(5, -1).clone(),
             "csi_frequency_positions": torch.tensor(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ, dtype=torch.float32),
-            "csi_frequency_ids": torch.tensor(PCPF_SPARSE_CSI_FREQUENCY_INDICES, dtype=torch.long),
-            "csi_pilot_mask": torch.ones(5, 2, 2, dtype=torch.bool),
+            "csi_frequency_ids": torch.tensor(self.frequency_indices, dtype=torch.long),
+            "csi_pilot_mask": torch.ones(expected_shape, dtype=torch.bool),
             "csi_valid_mask": torch.ones(5, dtype=torch.bool),
             "csi_snr_available": torch.tensor(False),
         }
@@ -265,7 +288,7 @@ class PCPFSparseCSISidecar:
         mother, cache_key = self.cache.get_or_compute_with_key(path, self.cache_spec, compute)
         if mother.shape != (32, 2):
             raise ValueError(f"PCPF sparse CSI cached mother frame must have shape [32,2], got {mother.shape}: {path}")
-        selected = np.asarray(mother[list(PCPF_SPARSE_CSI_PATTERN_INDICES)], dtype=np.complex64)
+        selected = np.asarray(mother[list(self.pattern_indices)], dtype=np.complex64)
         self._memory_cache[key] = selected
         self._cache_keys[key] = cache_key
         return selected.copy()
@@ -313,7 +336,7 @@ class PCPFSparseCSISidecar:
             "manifest_version": manifest_version,
             "split_seed": split_seed,
             "split_manifest": split_manifest,
-            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "selection_sha256": self.selection_sha256,
             "codebook_hash": self.codebook.hash,
             "codebook_file_sha256": self.codebook_file_sha256,
             "cache_root": str(self.cache.root.resolve()),
@@ -374,7 +397,7 @@ class PCPFSparseCSISidecar:
             "manifest_version": manifest_version,
             "split_seed": split_seed,
             "split_manifest": split_manifest,
-            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "selection_sha256": self.selection_sha256,
             "codebook_hash": self.codebook.hash,
             "codebook_file_sha256": self.codebook_file_sha256,
             "cache_root": str(self.cache.root.resolve()),
@@ -392,7 +415,12 @@ class PCPFSparseCSISidecar:
 
 
 @lru_cache(maxsize=8)
-def _load_packed_cache(path_text: str, expected_sha256: str) -> tuple[dict[str, Any], dict[str, int], np.ndarray]:
+def _load_packed_cache(
+    path_text: str,
+    expected_sha256: str,
+    num_patterns: int,
+    num_frequencies: int,
+) -> tuple[dict[str, Any], dict[str, int], np.ndarray]:
     path = Path(path_text)
     actual_sha256 = _sha256_file(path)
     if actual_sha256 != expected_sha256:
@@ -415,7 +443,11 @@ def _load_packed_cache(path_text: str, expected_sha256: str) -> tuple[dict[str, 
         for value in cache_keys
     ):
         raise ValueError(f"PCPF sparse CSI packed cache keys are invalid: {path}")
-    if frames.shape != (len(channel_paths), 2, 2) or not np.iscomplexobj(frames) or not np.isfinite(frames).all():
+    if (
+        frames.shape != (len(channel_paths), num_patterns, num_frequencies)
+        or not np.iscomplexobj(frames)
+        or not np.isfinite(frames).all()
+    ):
         raise ValueError(f"PCPF sparse CSI packed cache values are invalid: {path}")
     if int(metadata.get("entry_count", -1)) != len(channel_paths):
         raise ValueError(f"PCPF sparse CSI packed cache entry count changed: {path}")
@@ -459,6 +491,9 @@ def _sha256_file(path: Path) -> str:
 
 __all__ = [
     "PCPFSparseCSISidecar",
+    "PCPF_SPARSE_CSI_4X2_PATTERN_INDICES",
+    "PCPF_SPARSE_CSI_4X2_SELECTION",
+    "PCPF_SPARSE_CSI_4X2_SELECTION_SHA256",
     "PCPF_SPARSE_CSI_PACKED_CACHE_SCHEMA_VERSION",
     "PCPF_SPARSE_CSI_FREQUENCY_INDICES",
     "PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ",

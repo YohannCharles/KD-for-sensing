@@ -1,13 +1,13 @@
 # PCPF-T 源架构审计
 
-本审计对应 `add-pcpf-temporal-risk-fusion`，范围只包括当前 PCPF-T 主线及其直接依赖。U0、AMBER-Full、RMBP-MM、DeepSense6G、正式 MMW protocol、数据与 cache 均保留。
+本审计对应 current `pcpf-temporal-risk-fusion` spec 与 `add-uncertainty-adaptive-local-probing` change，范围只包括当前 PCPF-T 主线及其直接依赖。U0、AMBER-Full、RMBP-MM、DeepSense6G、正式 MMW protocol、数据与 cache 均保留。
 
 ## 现有契约
 
 - U0 的四个 encoder 接受五帧输入；`_encode_sequence` 将二维 encoder 输出补成三维，并要求最终表示为 `[B,T,D]`。PCPF-T 使用同一 encoder registry，但构造独立模型，不继承 U0。
 - 时间缺失真值是 `modality_temporal_mask=[B,T,4]`，其中 `true` 表示该帧该模态有效；`available_modalities=mask.any(dim=1)`。PCPF-T 的 T-CLS 永远可见，缺失帧进入 Transformer padding mask，整模态缺失后显式清零。
 - `BeamPrototypeBank` 只持有一份 `[64,64]` 可学习 prototype，以归一化 feature/prototype 的 cosine logits工作。现有 `prototype_alignment_loss` 已覆盖 fused feature、逐模态 feature、availability mask 与 circular topology soft target，因此直接复用。
-- U0 Router 保持原样，只属于 `u_mask_beam_jepa`。`pcpf_temporal_risk_fusion` 拥有独立 state dict；解析式 A4 不构造自由四维 Router，A2 control 才显式构造 `direct_router`。
+- U0 Router 保持原样，只属于 `u_mask_beam_jepa`。`pcpf_temporal_risk_fusion` 拥有独立 state dict；PCPF active surface 只保留 uniform、static prior 与 analytic fusion，不再构造或加载 Direct Router/CUAF control。
 - 通用 trainer 负责 dataloader、初始化 checkpoint、optimizer/scheduler、validation-best 与 checkpoint schema。PCPF-T 只通过 opt-in `prepare_training_stage` 和 training extension 接入，不复制 trainer。
 - train-only preparation 只接收 train loader：Stage 2 拟合风险分量 mean/std 和各模态 confidence P90；Stage 3 拟合 `mean_train_risk`。正式配置遍历完整 train，只有明确的 bounded smoke 可限制 batch。
 - 通用 15-mask evaluator 已提供固定 mask、Top-1/3/5、Within-3、circular MAE 与 ECE。PCPF 专用评估器在其数据/forward 契约上增加 risk、weight、替换融合、calibration、weather/domain 和 confident-but-wrong 诊断。
@@ -16,9 +16,9 @@
 
 ## PCPF-T 数据流
 
-`四模态五帧输入 -> 各模态 encoder -> 共享 Temporal Transformer -> 单一 BeamPrototypeBank -> deterministic unimodal probability -> 共享概率嵌入 -> 四项拓扑风险 -> 每模态温度校准 -> availability-aware 解析权重 -> 概率融合`
+`四模态五帧输入 -> 各模态 encoder -> 共享 Temporal Transformer -> 单一 BeamPrototypeBank -> deterministic categorical probability -> 四项拓扑风险 -> posterior 环形统计 -> Fixed/Adaptive Local Beam Probing`
 
-风险项为 `U_var`、`U_proto`、circular `U_temp` 与 `U_conflict`。所有 risk、softmax、exp、log 与 KL 路径在 FP32 中执行；missing weight 为零，Single weight 为一，权重行和为一。
+风险项为 `U_concentration`、`U_neighbor`、circular `U_temp` 与 `U_conflict`。所有 risk、softmax、exp 与 log 路径在 FP32 中执行。解析融合仍用于冻结 checkpoint 的预测证据；probing 固定 K=7，Adaptive Local 只按 sensing posterior mass 从预注册 spacing 1/2/4/8 中选择。
 
 ## 阶段与晋级
 

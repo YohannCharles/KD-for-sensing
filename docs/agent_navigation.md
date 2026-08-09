@@ -1,8 +1,8 @@
 # AI / Maintainer Navigation
 
-当前唯一 active research mainline 是 PCPF-T。稳定维护面还包括 U0、AMBER-Full、RMBP-MM、DeepSense6G Scene31--34 T2 与正式 MMW protocol；public CLI 仍只有 train、evaluate、preprocess 三个。
+当前唯一 active research mainline 是 PCPF-T 的原型拓扑预测与 sensing-guided local beam probing。稳定维护面还包括 U0、AMBER-Full、RMBP-MM、DeepSense6G Scene31--34 T2 与正式 MMW protocol；public CLI 仍只有 train、evaluate、preprocess 三个。
 
-非平凡改动先读 `AGENTS.md`、四个 current spec、PCPF-T active change 和 `docs/maintainer_context_index.yaml`；随后只加载与任务匹配的一份 scoped context。MMW 数据或运行改动必须绑定唯一的 `mmw_id_stratified_block_v1` protocol；默认只加载 train/validation，test 只能通过显式 `--evaluate-test` 访问，不能构造 confirmation 或 trainval 旁路。
+非平凡改动先读 `AGENTS.md`、五个 current spec、当前 probing active change 和 `docs/maintainer_context_index.yaml`；随后只加载与任务匹配的一份 scoped context。MMW 数据或运行改动必须绑定唯一的 `mmw_id_stratified_block_v1` protocol；默认只加载 train/validation，test 只能通过显式 `--evaluate-test` 访问，不能构造 confirmation 或 trainval 旁路。
 
 最小验证：
 

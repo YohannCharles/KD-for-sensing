@@ -59,7 +59,7 @@ from kd_sensing.engine.trainer import train as train_model
 from kd_sensing.engine.training_resume import CHECKPOINT_SCHEMA_VERSION
 from kd_sensing.losses.pcpf_temporal_risk import pcpf_temporal_risk_loss, topology_risk_target
 from kd_sensing.losses.pcpf_temporal_risk_config import pcpf_temporal_risk_config
-from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion
+from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion, PROBABILITY_PARAMETERIZATION
 from kd_sensing.registries import ENCODERS
 from kd_sensing.utils.checkpoint import (
     checkpoint_file_digest,
@@ -537,8 +537,6 @@ def resolve_config(
     )
     if topology_audit is not None:
         topology_binding = _bind_topology_audit(cfg, topology_audit.resolve(), protocol, domains)
-    elif template_path.parent.name == "trajectory_r0":
-        raise ValueError("Trajectory R0 templates require --topology-audit and a fresh ULA-DFT chain.")
     else:
         topology_binding = _configured_topology(cfg)
     if protocol["mode"] == TRAJECTORY_PROTOCOL_MODE:
@@ -654,6 +652,7 @@ def _configure_single_modality_diagnostic(
         temporal.pop(key, None)
     temporal.update(enabled=True, mode="fixed_single_modality", fixed_modality=fixed_modality)
     cfg.setdefault("evaluation", {}).setdefault("missing_patterns", {})["enabled"] = False
+    cfg.setdefault("loss", {}).setdefault("pcpf_temporal_risk", {})["lambda_unimodal"] = 1.0
     cfg.setdefault("experiment", {})["single_modality_diagnostic"] = {
         "enabled": True,
         "fixed_modality": fixed_modality,
@@ -818,11 +817,7 @@ def _continuation_plan(stage1_config: Path, cfg: dict[str, Any]) -> dict[str, An
     if not isinstance(output, Mapping) or not output.get("dir") or not output.get("run_name"):
         raise ValueError("Stage 1 config requires output.dir and output.run_name.")
 
-    template_dir = Path(str(resolver["template"])).resolve().parent
-    stage2_template = template_dir / STAGE_FILES["stage2"]
-    stage3_template = template_dir / STAGE_FILES["stage3"]
-    if not stage2_template.is_file() or not stage3_template.is_file():
-        raise FileNotFoundError("Stage 1 template must have sibling stage2.yaml and stage3.yaml templates.")
+    stage2_template, stage3_template = _continuation_stage_templates(Path(str(resolver["template"])).resolve())
 
     output_root = Path(str(output["dir"]))
     if not output_root.is_absolute():
@@ -860,6 +855,20 @@ def _next_stage_run_name(stage1_run_name: str, stage: str) -> str:
     return f"{stage1_run_name}_{stage}"
 
 
+def _continuation_stage_templates(stage1_template: Path) -> tuple[Path, Path]:
+    specific = tuple(
+        stage1_template.with_name(f"{stage1_template.stem}_{stage}.yaml") for stage in ("stage2", "stage3")
+    )
+    if any(path.exists() for path in specific):
+        if not all(path.is_file() for path in specific):
+            raise FileNotFoundError("A stage-specific continuation must provide both Stage 2 and Stage 3 templates.")
+        return specific
+    generic = tuple(stage1_template.parent / STAGE_FILES[stage] for stage in ("stage2", "stage3"))
+    if not all(path.is_file() for path in generic):
+        raise FileNotFoundError("Stage 1 template must have Stage 2 and Stage 3 continuation templates.")
+    return generic
+
+
 def _validate_continuation_binding(reference: dict[str, Any], candidate: dict[str, Any]) -> None:
     if int(candidate.get("experiment", {}).get("seed", -1)) != int(reference.get("experiment", {}).get("seed", -2)):
         raise ValueError("PCPF continuation stages must use the same experiment seed.")
@@ -874,6 +883,17 @@ def _validate_continuation_binding(reference: dict[str, Any], candidate: dict[st
     loader_keys = ("train_batch_size", "validation_batch_size", "num_workers")
     if any(int(reference_loader.get(key, -1)) != int(candidate_loader.get(key, -2)) for key in loader_keys):
         raise ValueError("PCPF continuation stages must use the same physical batch and worker settings.")
+    if reference_loader.get("generator_seeds") != candidate_loader.get("generator_seeds"):
+        raise ValueError("PCPF continuation stages must use the same DataLoader generator seeds.")
+    reference_primary = reference.get("model", {}).get("primary", {})
+    candidate_primary = candidate.get("model", {}).get("primary", {})
+    if reference_primary.get("sparse_csi_encoder") != candidate_primary.get("sparse_csi_encoder"):
+        raise ValueError("PCPF continuation stages must use the same sparse-CSI encoder config.")
+    reference_sparse = reference.get("data", {}).get("dataset", {}).get("sparse_csi", {})
+    candidate_sparse = candidate.get("data", {}).get("dataset", {}).get("sparse_csi", {})
+    sparse_keys = ("selection_sha256", "packed_cache_sha256", "packed_cache_protocol_fingerprint")
+    if any(reference_sparse.get(key) != candidate_sparse.get(key) for key in sparse_keys):
+        raise ValueError("PCPF continuation stages must use the same sparse-CSI selection and packed cache.")
     if candidate.get("experiment", {}).get("claim_ineligible") is not True:
         raise ValueError("PCPF continuation output must remain claim-ineligible.")
     if candidate.get("training", {}).get("final_test", {}).get("enabled") is not False:
@@ -893,8 +913,6 @@ def _continuation_contract(cfg: Mapping[str, Any]) -> dict[str, Any]:
     initialization = initialization if isinstance(initialization, Mapping) else {}
     gate = training.get("pcpf_stage2_gate")
     gate = gate if isinstance(gate, Mapping) else {}
-    diagnostics = cfg.get("evaluation", {}).get("pcpf_diagnostics", {})
-    diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
     return {
         "experiment_seed": cfg.get("experiment", {}).get("seed"),
         "data_protocol": {key: protocol.get(key) for key in PROTOCOL_LINEAGE_KEYS},
@@ -907,10 +925,16 @@ def _continuation_contract(cfg: Mapping[str, Any]) -> dict[str, Any]:
             "training_stage": primary.get("training_stage"),
             "fusion_mode": primary.get("fusion_mode"),
             "use_sparse_csi": bool(primary.get("use_sparse_csi", False)),
+            "sparse_csi_encoder": copy.deepcopy(primary.get("sparse_csi_encoder")),
         },
         "dataloader": {
             key: loader.get(key)
             for key in ("train_batch_size", "validation_batch_size", "num_workers")
+        }
+        | {"generator_seeds": copy.deepcopy(loader.get("generator_seeds"))},
+        "sparse_csi": {
+            key: cfg.get("data", {}).get("dataset", {}).get("sparse_csi", {}).get(key)
+            for key in ("selection_sha256", "packed_cache_sha256", "packed_cache_protocol_fingerprint")
         },
         "training_budget": {
             key: training.get(key)
@@ -921,7 +945,6 @@ def _continuation_contract(cfg: Mapping[str, Any]) -> dict[str, Any]:
             for key in ("sha256", "role", "expected_source_training_stage")
         },
         "stage2_gate": {key: gate.get(key) for key in ("sha256", "stage2_gate_passed")},
-        "comparison_budget": copy.deepcopy(diagnostics.get("comparison_budget")),
         "temporal_missing": copy.deepcopy(cfg.get("temporal_missing")),
     }
 
@@ -1147,6 +1170,9 @@ def prefill_sparse_csi_cache(
     sparse_config = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
     if not isinstance(sparse_config, Mapping):
         raise ValueError("Sparse-CSI cache prefill requires a template with data.dataset.sparse_csi.")
+    configured_manifest = sparse_config.get("cache_manifest_path")
+    if configured_manifest is not None and Path(str(configured_manifest)).resolve() != output.resolve():
+        raise ValueError("Sparse-CSI cache output must match the template cache_manifest_path.")
     sidecar = PCPFSparseCSISidecar(sparse_config)
     cache_root = sidecar.cache.root.resolve()
     before = sum(1 for _ in cache_root.glob("*.npz")) if cache_root.is_dir() else 0
@@ -1634,6 +1660,11 @@ def _bind_checkpoint(
     metadata = payload.get("model_metadata")
     if not isinstance(metadata, Mapping) or metadata.get("training_stage") != expected_stage:
         raise ValueError(f"PCPF source checkpoint must come from {expected_stage!r}.")
+    parameterization = metadata.get("probability_parameterization")
+    if expected_stage == "stage2_risk" and parameterization != PROBABILITY_PARAMETERIZATION:
+        raise ValueError("PCPF Stage 2 checkpoint uses an incompatible probability parameterization.")
+    if expected_stage == "stage1_expert" and parameterization not in {None, PROBABILITY_PARAMETERIZATION}:
+        raise ValueError("PCPF Stage 1 checkpoint uses an incompatible probability parameterization.")
     checkpoint_topology = metadata.get("prototype_topology")
     if not isinstance(checkpoint_topology, Mapping):
         checkpoint_topology = {"id": metadata.get("prototype_topology_id")}
@@ -1789,7 +1820,6 @@ def _bind_topology_audit(
         "audit_sha256": audit_sha256,
         "codebook_sha256": str(descriptor["codebook_sha256"]),
         "protocol_fingerprint": str(protocol["protocol_fingerprint"]),
-        "formal_r0_r7_eligible": True,
     }
     cfg["loss"]["pcpf_temporal_risk"]["prototype_topology"] = {
         key: topology[key] for key in ("id", "descriptor_sha256", "audit_path", "audit_sha256")
@@ -1846,7 +1876,6 @@ def _configured_topology(cfg: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Unsupported PCPF prototype topology {topology['id']!r}.")
     if any(topology[key] for key in ("descriptor_sha256", "audit_path", "audit_sha256")):
         raise ValueError("cyclic_index_v1 does not accept physical topology audit provenance.")
-    topology["formal_r0_r7_eligible"] = False
     return topology
 
 
@@ -2004,7 +2033,7 @@ def _bind_sparse_csi_cache(cfg: dict[str, Any], protocol: Mapping[str, Any]) -> 
     sparse = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
     if not isinstance(sparse, dict):
         return None
-    manifest_path = DEFAULT_CACHE_MANIFEST.resolve()
+    manifest_path = Path(str(sparse.get("cache_manifest_path") or DEFAULT_CACHE_MANIFEST)).resolve()
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Trajectory sparse CSI cache manifest is missing; run cache-sparse-csi first: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2068,7 +2097,7 @@ def _resolve_sparse_csi_paths(cfg: dict[str, Any]) -> None:
     sparse = cfg.get("data", {}).get("dataset", {}).get("sparse_csi")
     if not isinstance(sparse, dict):
         return
-    for key in ("codebook_path", "cache_root", "packed_cache_path"):
+    for key in ("codebook_path", "cache_root", "cache_manifest_path", "packed_cache_path"):
         if not sparse.get(key):
             continue
         path = Path(str(sparse.get(key, "")))

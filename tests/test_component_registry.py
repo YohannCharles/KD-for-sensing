@@ -25,6 +25,7 @@ def test_registry_exposes_only_the_u0_baseline_components_needed_by_recipes() ->
     assert {
         "tinyvit_5m_scratch_rgb",
         "radar_cnn",
+        "radar_dual_branch_cnn",
         "gps_mlp",
         "lidar_cnn",
         "resnet18_imagenet_rgb",

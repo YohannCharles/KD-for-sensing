@@ -1,6 +1,0 @@
-_base_: ../stage3.yaml
-experiment:
-  name: PCPF-T-A3-cuaf-local-adaptation
-model:
-  primary:
-    fusion_mode: cuaf_local_adaptation

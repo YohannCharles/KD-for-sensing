@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from kd_sensing.engine import trainer
 from kd_sensing.engine.checkpointing import resolve_resume_checkpoint
 from kd_sensing.engine.training_resume import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -13,6 +14,10 @@ from kd_sensing.engine.training_resume import (
     validate_resume_payload,
 )
 from kd_sensing.utils.checkpoint import CheckpointLoadError, publish_checkpoint
+
+
+class _NormalizationRestored(Exception):
+    pass
 
 
 def _payload(contract: dict) -> dict:
@@ -38,6 +43,36 @@ def _payload(contract: dict) -> dict:
 def test_resume_requires_the_current_run_last_checkpoint(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=r"checkpoints/last\.pth"):
         resolve_resume_checkpoint({"training": {"resume": True}, "output": {"run_name": "U0"}}, tmp_path / "U0")
+
+
+def test_resume_prefers_checkpoint_normalization_over_resolved_config(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "last.pth"
+    checkpoint.touch()
+    resume_metadata = {"normalization_artifacts": {"gps_scaler": "checkpoint.npz"}}
+    cfg = {
+        "training": {"resume": True},
+        "output": {"run_name": "run"},
+        "data": {"normalization_artifacts": {"gps_scaler": "resolved.npz"}},
+    }
+
+    monkeypatch.setattr(trainer, "configure_torch_runtime_threads", lambda _cfg: None)
+    monkeypatch.setattr(trainer, "_print_mmw_split_binding", lambda _cfg: None)
+    monkeypatch.setattr(trainer, "set_seed", lambda _seed: None)
+    monkeypatch.setattr(trainer, "create_run_dir", lambda _cfg: tmp_path / "run")
+    monkeypatch.setattr(trainer, "write_running_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(trainer, "ArtifactWriter", lambda **_kwargs: object())
+    monkeypatch.setattr(trainer, "resolve_resume_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(trainer, "load_checkpoint_metadata", lambda _path: resume_metadata)
+    monkeypatch.setattr(trainer, "validate_normalization_artifact_fingerprint", lambda _cfg, metadata: None)
+
+    def restore(metadata):
+        assert metadata is resume_metadata
+        raise _NormalizationRestored
+
+    monkeypatch.setattr(trainer, "load_normalization_artifacts", restore)
+
+    with pytest.raises(_NormalizationRestored):
+        trainer._prepare_training_run_context(cfg)
 
 
 def test_current_resume_payload_and_publication_preflight(tmp_path: Path) -> None:

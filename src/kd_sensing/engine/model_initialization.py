@@ -90,6 +90,14 @@ def initialize_model_from_checkpoint(
                 f"expected={expected_source_stage!r}, actual={actual_source_stage!r}."
             )
     _validate_model_topology_lineage(model, source_model_metadata, path=path)
+    metadata_validator = getattr(model, "validate_initialization_metadata", None)
+    if callable(metadata_validator):
+        if not isinstance(source_model_metadata, Mapping):
+            raise CheckpointLoadError(f"Initialization checkpoint lacks model metadata: {path}.")
+        try:
+            metadata_validator(source_model_metadata)
+        except (TypeError, ValueError) as exc:
+            raise CheckpointLoadError(f"Initialization checkpoint model metadata is incompatible: {path}.") from exc
     source_state = payload.get("state_dict")
     if not isinstance(source_state, Mapping):
         raise CheckpointLoadError(f"Initialization checkpoint state_dict must be a mapping: {path}.")

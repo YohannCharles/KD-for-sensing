@@ -9,7 +9,9 @@ task_routes:
     context_path: docs/agent_context/models.md
     authority_paths:
       - openspec/specs/u0-mainline/spec.md
-      - openspec/changes/add-pcpf-temporal-risk-fusion/specs/pcpf-temporal-risk-fusion/spec.md
+      - openspec/specs/pcpf-temporal-risk-fusion/spec.md
+      - openspec/changes/add-uncertainty-adaptive-local-probing/specs/pcpf-temporal-risk-fusion/spec.md
+      - openspec/changes/add-uncertainty-adaptive-local-probing/specs/sensing-guided-local-beam-probing/spec.md
     owner_modules:
       - src/kd_sensing/models/
       - src/kd_sensing/losses/
@@ -55,7 +57,7 @@ task_routes:
       - openspec/specs/clean-data-integrity/spec.md
     owner_modules:
       - tools/
-    notes: PCPF-T 是唯一 active research mainline；非 PCPF 本地实验面已删除，trajectory 只保留数据协议和 PCPF 直接依赖。
+    notes: PCPF-T 原型拓扑预测与 sensing-guided local beam probing 是唯一 active research mainline；Direct Router、CUAF、nested/R0--R7 已退出 active surface，trajectory 只保留数据协议和 PCPF 直接依赖。
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_pcpf_workflow.py tests/test_pcpf_sparse_csi.py -q
       - conda run -n kd_mm_beam python scripts/verify_compile.py

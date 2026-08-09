@@ -10,10 +10,14 @@ from kd_sensing.channel.probe_codebook import generate_probe_codebook
 from kd_sensing.channel.sparse_pilot_simulator import load_path_channel, simulate_candidate_pilots
 from kd_sensing.data.pcpf_sparse_csi import (
     PCPFSparseCSISidecar,
+    PCPF_SPARSE_CSI_4X2_PATTERN_INDICES,
+    PCPF_SPARSE_CSI_4X2_SELECTION_SHA256,
     PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ,
+    PCPF_SPARSE_CSI_PATTERN_INDICES,
     PCPF_SPARSE_CSI_SELECTION_SHA256,
 )
 from kd_sensing.data.temporal_missing import apply_training_temporal_missing
+from kd_sensing.engine.batch import prepare_fusion_inputs
 from kd_sensing.engine.run_metadata import prediction_setup_metadata
 from kd_sensing.engine.training_extensions import EpochDiagnosticsAccumulator
 from kd_sensing.models.pcpf_temporal_risk import PCPFTemporalRiskFusion
@@ -40,15 +44,20 @@ def _encoders() -> dict[str, dict[str, object]]:
     }
 
 
-def _csi_inputs(batch_size: int, *, available: bool = True) -> dict[str, torch.Tensor]:
-    real = torch.randn(batch_size, 5, 2, 2)
-    imaginary = torch.randn(batch_size, 5, 2, 2)
+def _csi_inputs(
+    batch_size: int,
+    *,
+    available: bool = True,
+    num_patterns: int = 2,
+) -> dict[str, torch.Tensor]:
+    real = torch.randn(batch_size, 5, num_patterns, 2)
+    imaginary = torch.randn(batch_size, 5, num_patterns, 2)
     return {
         "csi_batch": torch.complex(real, imaginary),
-        "csi_pattern_ids": torch.tensor([0, 1]).view(1, 1, 2).expand(batch_size, 5, -1),
+        "csi_pattern_ids": torch.arange(num_patterns).view(1, 1, num_patterns).expand(batch_size, 5, -1),
         "csi_frequency_positions": torch.tensor(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ),
         "csi_frequency_ids": torch.tensor([0, 15]),
-        "csi_pilot_mask": torch.full((batch_size, 5, 2, 2), available, dtype=torch.bool),
+        "csi_pilot_mask": torch.full((batch_size, 5, num_patterns, 2), available, dtype=torch.bool),
         "csi_snr_available": torch.zeros(batch_size, dtype=torch.bool),
     }
 
@@ -93,7 +102,36 @@ def test_sparse_pilot_encoder_uses_complex_imaginary_evidence() -> None:
     assert not torch.allclose(first_feature, second_feature)
 
 
-def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(tmp_path: Path) -> None:
+def test_sparse_pilot_encoder_supports_one_token_transformer_layer() -> None:
+    torch.manual_seed(5)
+    encoder = SparsePilotEncoder(num_candidate_patterns=32, hidden_dim=32, num_layers=1, dropout=0.0)
+    observations = torch.complex(torch.randn(2, 2, 2), torch.randn(2, 2, 2))
+    pattern_ids = torch.tensor([[0, 1]]).expand(2, -1)
+    positions = torch.tensor(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ)
+    mask = torch.ones(2, 2, 2, dtype=torch.bool)
+
+    output = encoder(observations, pattern_ids, positions, mask)
+    assert encoder.encoder is not None
+    assert len(encoder.encoder.layers) == 1
+    assert output["csi_feature"].shape == (2, 32)
+    output["csi_feature"].square().mean().backward()
+    gradient = encoder.encoder.layers[0].self_attn.in_proj_weight.grad
+    assert gradient is not None
+    assert torch.isfinite(gradient).all()
+
+
+@pytest.mark.parametrize(
+    ("selection_sha256", "pattern_indices"),
+    (
+        (PCPF_SPARSE_CSI_SELECTION_SHA256, PCPF_SPARSE_CSI_PATTERN_INDICES),
+        (PCPF_SPARSE_CSI_4X2_SELECTION_SHA256, PCPF_SPARSE_CSI_4X2_PATTERN_INDICES),
+    ),
+)
+def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(
+    tmp_path: Path,
+    selection_sha256: str,
+    pattern_indices: tuple[int, ...],
+) -> None:
     codebook = generate_probe_codebook(64, 16, num_patterns=32, seed=2026, method="random_qpsk")
     codebook_path = codebook.save(tmp_path / "codebook.npz")
     codebook_sha256 = hashlib.sha256(codebook_path.read_bytes()).hexdigest()
@@ -113,7 +151,7 @@ def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(tmp_path: Pa
             "codebook_sha256": codebook_sha256,
             "codebook_hash": codebook.hash,
             "cache_root": str(tmp_path / "cache"),
-            "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+            "selection_sha256": selection_sha256,
         }
     )
 
@@ -124,17 +162,19 @@ def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(tmp_path: Pa
         tau[None, None, None, :],
         codebook,
         np.asarray(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ),
-    )[:2]
+    )[list(pattern_indices)]
 
-    assert output["csi"].shape == (5, 2, 2)
+    assert output["csi"].shape == (5, len(pattern_indices), 2)
     assert torch.is_complex(output["csi"])
     torch.testing.assert_close(output["csi"][0], torch.from_numpy(direct))
+    assert output["csi_pattern_ids"][0].tolist() == list(pattern_indices)
     assert not bool(output["csi_snr_available"])
     assert PCPF_SPARSE_CSI_SELECTION_SHA256 == "87bad2292ba3d22cac413e71d9303f2dd229ed64fe39eeb4df6272f42e6bca28"
-    assert sidecar.identity["sampling_ratio"] == pytest.approx(0.0078125)
+    assert PCPF_SPARSE_CSI_4X2_SELECTION_SHA256 == "2d035d64f6b9ac408532040b3ff09151a8831361d81c83b1b77e218e4344a4f4"
+    assert sidecar.identity["sampling_ratio"] == pytest.approx(len(pattern_indices) * 2 / (32 * 16))
     assert sidecar.identity["spatial_selection"]["direct_antenna_indices"] is None
-    assert sidecar.identity["spatial_selection"]["tx_pattern_indices"] == [0, 1]
-    assert sidecar.identity["spatial_selection"]["rx_pattern_indices"] == [0, 1]
+    assert sidecar.identity["spatial_selection"]["tx_pattern_indices"] == list(pattern_indices)
+    assert sidecar.identity["spatial_selection"]["rx_pattern_indices"] == list(pattern_indices)
     assert sidecar.identity["awgn_enabled"] is False
     assert sidecar.identity["pilot_dropout_enabled"] is False
     assert sidecar.identity["synthetic_corruption_enabled"] is False
@@ -143,8 +183,14 @@ def test_fixed_sparse_csi_sidecar_matches_direct_complex_projection(tmp_path: Pa
         sidecar.load_history([channel_path] * 5, history_frame_ids=[1, 2, 4, 5, 6])
 
 
+@pytest.mark.parametrize(
+    "selection_sha256",
+    (PCPF_SPARSE_CSI_SELECTION_SHA256, PCPF_SPARSE_CSI_4X2_SELECTION_SHA256),
+)
 def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selection_sha256: str,
 ) -> None:
     codebook = generate_probe_codebook(64, 16, num_patterns=32, seed=2026, method="random_qpsk")
     codebook_path = codebook.save(tmp_path / "codebook.npz")
@@ -161,7 +207,7 @@ def test_packed_sparse_csi_cache_is_strict_and_does_not_reopen_channel(
         "codebook_sha256": hashlib.sha256(codebook_path.read_bytes()).hexdigest(),
         "codebook_hash": codebook.hash,
         "cache_root": str(tmp_path / "cache"),
-        "selection_sha256": PCPF_SPARSE_CSI_SELECTION_SHA256,
+        "selection_sha256": selection_sha256,
     }
     sidecar = PCPFSparseCSISidecar(config)
     expected = sidecar.load_history([channel_path] * 5, history_frame_ids=range(1, 6))["csi"]
@@ -324,6 +370,44 @@ def test_csi_only_mask_has_unit_weight_and_one_shared_temporal_core() -> None:
     invalid_snr["csi_snr_available"] = torch.ones(2, dtype=torch.bool)
     with pytest.raises(ValueError, match="requires real csi_snr_db"):
         model(**_sensing_inputs(2), **invalid_snr, modality_temporal_mask=mask)
+
+
+def test_four_by_two_sparse_csi_passes_batch_and_model_contracts() -> None:
+    batch_size = 2
+    raw_batch = {
+        "image": torch.randn(batch_size, 5, 3, 4, 4),
+        "radar_ra": torch.randn(batch_size, 5, 128, 64),
+        "radar_da": torch.randn(batch_size, 5, 128, 64),
+        "gps": torch.randn(batch_size, 5, 3),
+        "lidar": torch.randn(batch_size, 5, 3, 4, 4),
+        "csi": _csi_inputs(batch_size, num_patterns=4)["csi_batch"],
+        "csi_pattern_ids": _csi_inputs(batch_size, num_patterns=4)["csi_pattern_ids"],
+        "csi_frequency_positions": torch.tensor(PCPF_SPARSE_CSI_FREQUENCY_POSITIONS_HZ),
+        "csi_frequency_ids": torch.tensor([0, 15]),
+        "csi_pilot_mask": torch.ones(batch_size, 5, 4, 2, dtype=torch.bool),
+    }
+    prepared = prepare_fusion_inputs(
+        raw_batch,
+        seq_length=5,
+        device=torch.device("cpu"),
+        modalities=("image", "radar", "gps", "lidar", "csi"),
+    )
+    assert prepared["csi_batch"].shape == (batch_size, 5, 4, 2)
+
+    model = PCPFTemporalRiskFusion(
+        encoders=_encoders(),
+        use_sparse_csi=True,
+        sparse_csi_encoder={"hidden_dim": 32, "num_layers": 1, "dropout": 0.0},
+        training_stage="stage1_expert",
+        fusion_mode="uniform",
+        temporal_transformer={"dropout": 0.0},
+    ).eval()
+    mask = torch.zeros(batch_size, 5, 5, dtype=torch.bool)
+    mask[:, :, 4] = True
+    output = model(**_sensing_inputs(batch_size), **_csi_inputs(batch_size, num_patterns=4), modality_temporal_mask=mask)
+
+    assert output["temporal_cls_features"].shape == (batch_size, 5, 64)
+    torch.testing.assert_close(output["fusion_weights"][:, 4], torch.ones(batch_size))
 
 
 def test_epoch_mask_diagnostics_are_counts_not_batch_means() -> None:

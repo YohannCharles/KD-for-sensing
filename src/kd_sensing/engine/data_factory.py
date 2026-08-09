@@ -202,7 +202,12 @@ def build_dataloader(
 ) -> DataLoader:
     kwargs = build_dataloader_kwargs(loader_cfg, split=split)
     if experiment_seed is not None:
-        metadata = dataloader_generator_metadata(dataset, split=split, base_seed=experiment_seed)
+        metadata = dataloader_generator_metadata(
+            dataset,
+            split=split,
+            base_seed=experiment_seed,
+            explicit_seed=resolve_dataloader_generator_seed(loader_cfg, split=split),
+        )
         generator = torch.Generator().manual_seed(int(metadata["derived_seed"]))
         kwargs.update(generator=generator, worker_init_fn=_seed_dataloader_worker)
     else:
@@ -230,15 +235,42 @@ def _dataset_uses_lidar_augmentation(dataset: Any) -> bool:
     return _dataset_uses_lidar_augmentation(parent) if parent is not None else False
 
 
-def dataloader_generator_metadata(dataset: Any, *, split: str, base_seed: int) -> dict[str, Any]:
+def resolve_dataloader_generator_seed(loader_cfg: dict[str, Any], *, split: str) -> int | None:
+    configured = loader_cfg.get("generator_seeds")
+    if configured is None:
+        return None
+    if not isinstance(configured, dict):
+        raise ValueError("data.dataloader.generator_seeds must be a split-to-seed mapping.")
+    unknown = sorted(set(configured) - {"train", "validation", "test"})
+    if unknown:
+        raise ValueError(f"data.dataloader.generator_seeds contains unsupported splits: {unknown}.")
+    seed = configured.get(split)
+    if seed is None:
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < (1 << 63):
+        raise ValueError(f"data.dataloader.generator_seeds.{split} must be an integer in [0, 2^63).")
+    return seed
+
+
+def dataloader_generator_metadata(
+    dataset: Any,
+    *,
+    split: str,
+    base_seed: int,
+    explicit_seed: int | None = None,
+) -> dict[str, Any]:
     identity = {
-        "algorithm": "sha256-v1",
+        "algorithm": "explicit-v1" if explicit_seed is not None else "sha256-v1",
         "base_seed": int(base_seed),
         "split": str(split),
         "dataset_fingerprint": _dataset_fingerprint(dataset),
     }
-    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).digest()
-    identity["derived_seed"] = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    if explicit_seed is None:
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).digest()
+        identity["derived_seed"] = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    else:
+        identity["explicit_seed"] = int(explicit_seed)
+        identity["derived_seed"] = int(explicit_seed)
     return identity
 
 
@@ -480,6 +512,7 @@ __all__ = [
     "final_test_enabled",
     "has_validation_csv",
     "resolve_dataloader_split_config",
+    "resolve_dataloader_generator_seed",
     "restore_dataloaders_random_state",
     "shutdown_dataloader_workers",
 ]

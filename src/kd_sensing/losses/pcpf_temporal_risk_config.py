@@ -24,8 +24,7 @@ _FIELDS = frozenset(
         "lambda_risk",
         "lambda_rank",
         "rank_margin",
-        "beta_kl",
-        "lambda_preserve",
+        "lambda_concentration",
         "stage3_topology_weight",
         "stage_preparation",
         "stage2_gate",
@@ -74,8 +73,9 @@ def pcpf_temporal_risk_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "lambda_risk": _finite(raw.get("lambda_risk", 1.0), "lambda_risk", non_negative=True),
         "lambda_rank": _finite(raw.get("lambda_rank", 0.2), "lambda_rank", non_negative=True),
         "rank_margin": _finite(raw.get("rank_margin", 0.05), "rank_margin", non_negative=True),
-        "beta_kl": _finite(raw.get("beta_kl", 1e-4), "beta_kl", non_negative=True),
-        "lambda_preserve": _finite(raw.get("lambda_preserve", 0.2), "lambda_preserve", non_negative=True),
+        "lambda_concentration": _finite(
+            raw.get("lambda_concentration", 0.5), "lambda_concentration", non_negative=True
+        ),
         "stage3_topology_weight": _finite(
             raw.get("stage3_topology_weight", 0.0), "stage3_topology_weight", non_negative=True
         ),

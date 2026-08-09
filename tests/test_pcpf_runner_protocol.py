@@ -1,5 +1,6 @@
-import json
+import copy
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,12 @@ from tools.run_pcpf import (
     _checkpoint_protocol_fingerprint,
     _completed_stage_checkpoint,
     _configure_single_modality_diagnostic,
+    _continuation_stage_templates,
     _configured_topology,
     _load_template,
     _next_stage_run_name,
     _run_stage2_gate,
+    _validate_continuation_binding,
     _validate_trajectory_audit,
     _validate_reusable_gate_report,
 )
@@ -59,6 +62,7 @@ def test_single_modality_diagnostic_is_stage1_only_and_disables_mask_matrix() ->
             "schedule_id": "pcpf_five_modality_all_subsets_v1",
             "panel_size": 31,
         },
+        "loss": {"pcpf_temporal_risk": {"lambda_unimodal": 5.0}},
         "evaluation": {"missing_patterns": {"enabled": True, "patterns": ["all_nonempty"]}},
     }
 
@@ -69,6 +73,7 @@ def test_single_modality_diagnostic_is_stage1_only_and_disables_mask_matrix() ->
         "fixed_modality": "csi",
     }
     assert cfg["evaluation"]["missing_patterns"]["enabled"] is False
+    assert cfg["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 1.0
     assert cfg["experiment"]["single_modality_diagnostic"]["stage1_only"] is True
 
     with pytest.raises(ValueError, match="fresh-start Stage 1"):
@@ -192,16 +197,67 @@ def test_topology_loss_off_template_only_disables_topology_supervision() -> None
     assert ablation["training"] == baseline["training"]
 
 
-def test_trajectory_r0_templates_are_four_modality_and_share_sparse_budget() -> None:
+def test_weak_expert_screen_templates_change_only_the_registered_factor() -> None:
     root = Path(__file__).resolve().parents[1]
-    r0 = _load_template(root / "tools/configs/pcpf/trajectory_r0/stage1.yaml")
-    sparse = _load_template(root / "tools/configs/pcpf/sparse_csi/stage1.yaml")
+    baseline = _load_template(root / "tools/configs/pcpf/sparse_csi/stage1.yaml")
+    j0 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/j0_joint_bf16_control.yaml")
+    j1 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/j1_joint_rebalanced.yaml")
+    j1_no_topology = _load_template(
+        root / "tools/configs/pcpf/sparse_csi/weak_experts/j1_joint_rebalanced_no_topology.yaml"
+    )
+    j2 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/j2_joint_csi_spatial4x2_layer1.yaml")
+    j2_stage2 = _load_template(
+        root / "tools/configs/pcpf/sparse_csi/weak_experts/j2_joint_csi_spatial4x2_layer1_stage2.yaml"
+    )
+    j2_stage3 = _load_template(
+        root / "tools/configs/pcpf/sparse_csi/weak_experts/j2_joint_csi_spatial4x2_layer1_stage3.yaml"
+    )
+    c1 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/c1_csi_token_layer1.yaml")
+    c2 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/c2_csi_spatial4x2_layer1.yaml")
+    r1 = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/r1_radar_dual_branch.yaml")
 
-    assert r0["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
-    assert r0["model"]["primary"].get("use_sparse_csi") is not True
-    assert r0["training"]["initialization_checkpoint"] is False
-    assert r0["data"]["dataloader"]["train_batch_size"] == 64
-    assert r0["evaluation"]["pcpf_diagnostics"]["comparison_budget"] == (sparse["evaluation"]["pcpf_diagnostics"]["comparison_budget"])
+    assert baseline["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 1.0
+    assert j0["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 1.0
+    assert j1["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 5.0
+    assert j1_no_topology["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 5.0
+    assert c1["model"]["primary"]["sparse_csi_encoder"]["num_layers"] == 1
+    assert c2["model"] == c1["model"]
+    assert c2["loss"] == c1["loss"]
+    assert c2["training"] == c1["training"]
+    assert c2["temporal_missing"] == c1["temporal_missing"]
+    c1_sparse = c1["data"]["dataset"]["sparse_csi"]
+    c2_sparse = c2["data"]["dataset"]["sparse_csi"]
+    assert c2_sparse["selection_sha256"] == "2d035d64f6b9ac408532040b3ff09151a8831361d81c83b1b77e218e4344a4f4"
+    assert c2_sparse["cache_manifest_path"].endswith("trajectory_cache_manifest_4x2.json")
+    assert set(c2_sparse) - set(c1_sparse) == {"cache_manifest_path"}
+    assert all(c2_sparse[key] == value for key, value in c1_sparse.items() if key != "selection_sha256")
+    assert baseline["model"]["primary"]["sparse_csi_encoder"]["num_layers"] == 0
+    assert r1["model"]["primary"]["encoders"]["radar"]["type"] == "radar_dual_branch_cnn"
+    assert baseline["model"]["primary"]["encoders"]["radar"]["type"] == "radar_cnn"
+    assert j0["training"]["amp"] == j1["training"]["amp"] == {
+        "enabled": True,
+        "dtype": "bfloat16",
+        "grad_scaler": False,
+    }
+    assert j1_no_topology["training"]["amp"] == j1["training"]["amp"]
+    assert j0["model"] == j1["model"]
+    assert j0["temporal_missing"] == j1["temporal_missing"]
+    assert j2["training"] == j0["training"]
+    assert j2["loss"] == j0["loss"]
+    assert j2["temporal_missing"] == j0["temporal_missing"]
+    assert j2["model"]["primary"]["sparse_csi_encoder"]["num_layers"] == 1
+    assert j2["data"]["dataset"]["sparse_csi"] == c2["data"]["dataset"]["sparse_csi"]
+    assert j2["data"]["dataloader"]["generator_seeds"] == {
+        "train": 3702095051185301119,
+        "validation": 5941928843505026558,
+    }
+    for continuation in (j2_stage2, j2_stage3):
+        assert continuation["data"]["dataset"]["sparse_csi"] == j2["data"]["dataset"]["sparse_csi"]
+        assert continuation["data"]["dataloader"]["generator_seeds"] == j2["data"]["dataloader"]["generator_seeds"]
+        assert continuation["model"]["primary"]["sparse_csi_encoder"] == j2["model"]["primary"]["sparse_csi_encoder"]
+
+    _configure_single_modality_diagnostic(j1, stage="stage1", modality="csi")
+    assert j1["loss"]["pcpf_temporal_risk"]["lambda_unimodal"] == 1.0
 
 
 def test_stage2_gate_uses_checkpoint_run_local_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -381,6 +437,40 @@ def test_pipeline_stage_names_and_train_seed_follow_stage1() -> None:
     assert cfg["evaluation"]["pcpf_diagnostics"]["bootstrap"]["seed"] == 7
     assert _next_stage_run_name("stage1_trajectory_seed7", "stage2") == "stage2_trajectory_seed7"
     assert _next_stage_run_name("custom", "stage3") == "custom_stage3"
+
+
+def test_continuation_prefers_complete_stage1_specific_template_pair(tmp_path: Path) -> None:
+    stage1 = tmp_path / "candidate.yaml"
+    generic = (tmp_path / "stage2.yaml", tmp_path / "stage3.yaml")
+    specific = (tmp_path / "candidate_stage2.yaml", tmp_path / "candidate_stage3.yaml")
+    for path in (stage1, *generic, *specific):
+        path.touch()
+
+    assert _continuation_stage_templates(stage1) == specific
+
+    specific[1].unlink()
+    with pytest.raises(FileNotFoundError, match="both Stage 2 and Stage 3"):
+        _continuation_stage_templates(stage1)
+
+
+def test_continuation_binding_rejects_j2_sparse_csi_drift() -> None:
+    root = Path(__file__).resolve().parents[1]
+    reference = _load_template(root / "tools/configs/pcpf/sparse_csi/weak_experts/j2_joint_csi_spatial4x2_layer1.yaml")
+
+    candidate = copy.deepcopy(reference)
+    candidate["data"]["dataset"]["sparse_csi"]["selection_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="selection and packed cache"):
+        _validate_continuation_binding(reference, candidate)
+
+    candidate = copy.deepcopy(reference)
+    candidate["data"]["dataloader"]["generator_seeds"]["train"] += 1
+    with pytest.raises(ValueError, match="generator seeds"):
+        _validate_continuation_binding(reference, candidate)
+
+    candidate = copy.deepcopy(reference)
+    candidate["model"]["primary"]["sparse_csi_encoder"]["num_layers"] = 0
+    with pytest.raises(ValueError, match="encoder config"):
+        _validate_continuation_binding(reference, candidate)
 
 
 def test_completed_stage_requires_full_epoch_and_matching_best_checkpoint(tmp_path: Path) -> None:
