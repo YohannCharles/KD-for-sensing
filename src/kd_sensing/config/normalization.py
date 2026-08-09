@@ -19,7 +19,7 @@ def normalize_loaded_config(cfg: dict[str, Any]) -> None:
         dataset.setdefault(key, value)
     image_profile = resolve_image_profile(primary.get("image_profile", model.get("image_profile", dataset.get("image_profile"))))
     dataset["image_profile"] = image_profile
-    if primary.get("type") == "pcpf_temporal_risk_fusion":
+    if primary.get("type") == "four_modal_topology_predictor":
         primary.pop("image_profile", None)
     else:
         primary["image_profile"] = image_profile

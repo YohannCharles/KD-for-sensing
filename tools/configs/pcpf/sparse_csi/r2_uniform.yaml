@@ -1,7 +1,0 @@
-_base_: stage3.yaml
-experiment:
-  name: PCPF-T-sparse-CSI-R2-uniform
-model:
-  primary:
-    fusion_mode: uniform
-

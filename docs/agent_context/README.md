@@ -4,8 +4,8 @@
 
 | Route id | Scoped context | 适用任务 |
 | --- | --- | --- |
-| `model` | `models.md` | PCPF-T 与稳定 baseline 模型/loss |
+| `model` | `models.md` | 四模态 topology predictor 与稳定 baseline 模型/loss |
 | `data` | `data.md` | MMW ID-block protocol、MMW/DeepSense6G 数据与归一化 |
-| `config` | `configs.md` | canonical recipe、PCPF local config 与配置解析 |
+| `config` | `configs.md` | canonical recipe、topology predictor local config 与配置解析 |
 | `cli` | `cli.md` | 三个 package CLI 与隔离的本地 helper |
 | `openspec` | 本文件 | current spec 与 active change |

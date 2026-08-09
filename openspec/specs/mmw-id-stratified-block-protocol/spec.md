@@ -28,7 +28,7 @@
 
 ### Requirement: MMW block assignment 必须平衡 domain 内 beam 分布
 
-系统 MUST 以完整 block 为最小单位分配 train、validation、test，目标比例固定为 `0.70/0.15/0.15`，默认使用 32-base-frame 连续 block、manifest schema version 2 与 conditional assignment v2。分配 MUST 使用只由 `split_seed` 控制的局部 RNG，并优化总基础样本或预计窗口比例、各 split 与全量 beam 分布差异、每 trajectory 比例和每 scene 比例。标签目标 MUST 同时包含全局、按 scene/domain 及按 `(scene_id,cav_id)` trajectory 的 train--validation 与 train--test TV，并惩罚 validation/test beam 质量在对应 scene 或 trajectory 的 train 中缺失；不得只优化全局 histogram，也不得只用 Pearson correlation。每条 trajectory 和每个 scene 在三个 split 中 MUST 均有 block；train MUST 为最大 split，validation/test MUST 非空。同 seed、同数据与任意输入遍历顺序 MUST 得到完全相同 manifest。旧 128-block、schema version 1 或 global-only assignment MUST 失败关闭，其 normalization、GPS 与 sparse-CSI split-specific cache MUST 随 manifest hash 重建。
+系统 MUST 以完整 block 为最小单位分配 train、validation、test，目标比例固定为 `0.70/0.15/0.15`，默认使用 32-base-frame 连续 block、manifest schema version 2 与 conditional assignment v2。分配 MUST 使用只由 `split_seed` 控制的局部 RNG，并优化总基础样本或预计窗口比例、各 split 与全量 beam 分布差异、每 trajectory 比例和每 scene 比例。标签目标 MUST 同时包含全局、按 scene/domain 及按 `(scene_id,cav_id)` trajectory 的 train--validation 与 train--test TV，并惩罚 validation/test beam 质量在对应 scene 或 trajectory 的 train 中缺失；不得只优化全局 histogram，也不得只用 Pearson correlation。每条 trajectory 和每个 scene 在三个 split 中 MUST 均有 block；train MUST 为最大 split，validation/test MUST 非空。同 seed、同数据与任意输入遍历顺序 MUST 得到完全相同 manifest。旧 128-block、schema version 1 或 global-only assignment MUST 失败关闭，其 normalization、GPS 与其他 split-specific cache MUST 随 manifest hash 重建。
 
 #### Scenario: 纯连续 70/15/15 标签偏移更大
 
@@ -50,9 +50,9 @@
 
 #### Scenario: 旧全局标签平衡 manifest 被复用
 
-- **WHEN** loader 或 PCPF resolver 收到 manifest schema version 1、旧 assignment algorithm 或 block size 128 的产物
+- **WHEN** loader 或 topology-predictor resolver 收到 manifest schema version 1、旧 assignment algorithm 或 block size 128 的产物
 - **THEN** 系统 MUST 在 dataset 创建前拒绝
-- **AND** 不得沿用旧 split-specific normalization、GPS、CSI bundle 或 checkpoint
+- **AND** 不得沿用旧 split-specific normalization、GPS artifact 或 checkpoint
 
 ### Requirement: manifest 必须完整绑定来源、窗口和 split 身份
 
@@ -66,9 +66,9 @@ canonical manifest MUST 位于 `splits/mmw_id_stratified_block_v1/seed_<N>.json`
 
 ### Requirement: 所有 split-dependent cache 必须携带新协议身份
 
-MMW token、CSI split index、sample/window index、modality feature、prototype、contrastive queue、GPS scaler、normalization 与 label-frequency cache MUST 记录 `split_protocol`、`protocol_version`、`split_seed`、`block_size`、`split_manifest_hash`、`data_source_hash`、`window_config_hash` 和 `weather_binding`。缺少或不匹配任一字段 MUST 失效。按原始 sample ID 构建且与 split 无关的 CSI 内容 cache MAY 保留，但 split-specific index/bundle MUST 重建并验证 sample identity。
+MMW token、sample/window index、modality feature、prototype、contrastive queue、GPS scaler、normalization 与 label-frequency cache MUST 记录 `split_protocol`、`protocol_version`、`split_seed`、`block_size`、`split_manifest_hash`、`data_source_hash`、`window_config_hash` 和 `weather_binding`。缺少或不匹配任一字段 MUST 失效。
 
-#### Scenario: 加载旧 normalization 或 sparse-CSI bundle
+#### Scenario: 加载旧 split-dependent artifact
 
 - **WHEN** cache 没有完整 block protocol identity 或 sample coverage 与 manifest 不一致
 - **THEN** 系统 MUST 拒绝该 cache 并要求重建 split-specific artifact
@@ -111,32 +111,23 @@ GPS scaler、normalization、beam frequency/class weight、prototype、cluster c
 - **WHEN** 统计构建器收到 validation 或 test dataset
 - **THEN** 系统 MUST 拒绝更新并保持已有 train-only provenance
 
-### Requirement: PCPF-T 必须绑定唯一 MMW block protocol
+### Requirement: topology predictor 必须绑定唯一 MMW block protocol
 
-PCPF-T resolver、preflight、train、continue-pipeline、gate、matrix 与 sparse-CSI sidecar MUST 只接受 `mmw_id_stratified_block_v1` protocol version 1、manifest schema version 2 和 conditional assignment v2，并绑定相同 split seed、block size、manifest hash、data source hash、window config hash 与 train seed。旧 `mmw_trajectory_disjoint`、clean-inner、group-safe、随机窗口及其 cache/checkpoint MUST 失败关闭。
+topology predictor resolver、preflight、train、matrix 与 probing evaluator MUST 只接受 `mmw_id_stratified_block_v1` protocol version 1、manifest schema version 2 和 conditional assignment v2，并绑定相同 split seed、block size、manifest hash、data source hash、window config hash 与 train seed。旧 `mmw_trajectory_disjoint`、clean-inner、group-safe、随机窗口及其 cache/checkpoint MUST 失败关闭。
 
-#### Scenario: PCPF-T 请求旧 split artifact
+#### Scenario: topology predictor 请求旧 split artifact
 
-- **WHEN** resolved config、checkpoint、normalization 或 sparse-CSI bundle 绑定旧 protocol 或不同 manifest hash
+- **WHEN** resolved config、checkpoint 或 normalization 绑定旧 protocol 或不同 manifest hash
 - **THEN** runner MUST 在 dataset 或 optimizer 创建前拒绝
 
-### Requirement: sparse CSI 必须遵守 block 与 split-specific cache 边界
+### Requirement: topology predictor 开发默认不得访问 test
 
-channel 默认只可用于泄漏诊断；`use_sparse_csi=true` 时，系统 MAY 使用当前窗口自身五帧历史 channel 生成固定 sparse CSI sidecar。sidecar 与 packed bundle MUST 记录完整 block protocol cache identity，只扫描 train/validation，且不得包含 test feature。原始内容寻址 CSI cache MAY 复用，但 split-specific index、coverage 和 bundle MUST 按新 manifest 重建。
+开发运行 MUST 固定复用 seed 0 manifest 并默认只构建 train/validation。只有独立显式 test evaluation 才可加载 test；model selection 和数据画像 MUST 保持 `test_evaluated=false`。prototype 与其他可拟合 statistics MUST 只来自 train。
 
-#### Scenario: test 或跨 block channel 进入 packed bundle
+#### Scenario: 运行单阶段训练
 
-- **WHEN** bundle coverage 含 test identity、跨 split frame 或跨 block window
-- **THEN** cache validation MUST 失败且不得回退到在线 source channel
-
-### Requirement: PCPF-T 开发默认不得访问 test
-
-开发运行 MUST 固定复用 seed 0 manifest 并默认只构建 train/validation。只有独立显式 test evaluation 才可加载 test；continue-pipeline、Stage 2 gate、model selection 和数据画像 MUST 保持 `test_evaluated=false`。所有可拟合风险状态、prototype、temperature/calibration 与 memory/feature statistics MUST 只来自 train。
-
-#### Scenario: 继续三阶段训练
-
-- **WHEN** continue-pipeline 解析 Stage 2/3
-- **THEN** 全部 stage MUST 绑定同一 block manifest 和 train seed
+- **WHEN** topology predictor fresh training 启动
+- **THEN** resolved config、checkpoint 与 validation evidence MUST 绑定同一 block manifest 和 train seed
 - **AND** test loader MUST 不存在
 
 ### Requirement: 数据画像必须适配同 trajectory 的 block overlap 语义

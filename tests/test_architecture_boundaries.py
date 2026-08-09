@@ -54,6 +54,15 @@ RETIRED_OWNERS = {
     "src/kd_sensing/evaluation/modality_competition.py",
     "src/kd_sensing/losses/clean_capacity_reference.py",
     "src/kd_sensing/losses/modality_alignment_contrastive.py",
+    "src/kd_sensing/models/pcpf_temporal_risk.py",
+    "src/kd_sensing/models/sparse_pilot_encoder.py",
+    "src/kd_sensing/losses/pcpf_temporal_risk.py",
+    "src/kd_sensing/data/pcpf_sparse_csi.py",
+    "src/kd_sensing/engine/model_initialization.py",
+    "src/kd_sensing/channel",
+    "tools/run_pcpf.py",
+    "tools/eval_pcpf.py",
+    "tools/configs/pcpf",
 }
 
 
@@ -123,7 +132,7 @@ def test_openspec_current_context_is_scoped_to_probing_mainline() -> None:
     assert specs == {
         "clean-data-integrity",
         "mmw-id-stratified-block-protocol",
-        "pcpf-temporal-risk-fusion",
+        "four-modal-topology-predictor",
         "repo-boundaries",
         "u0-mainline",
     }

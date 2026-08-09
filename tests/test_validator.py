@@ -41,7 +41,6 @@ def test_validate_applies_the_configured_fixed_single_modality(monkeypatch) -> N
         "model": {
             "primary": {
                 "modalities": ["image", "radar", "gps", "lidar"],
-                "use_sparse_csi": True,
             }
         },
         "temporal_missing": {
@@ -53,21 +52,19 @@ def test_validate_applies_the_configured_fixed_single_modality(monkeypatch) -> N
 
     metrics = validator.validate(None, dataloader, cfg, None, torch.device("cpu"))
 
-    assert torch.equal(captured["force_modality_mask"], torch.tensor([False, False, True, False, False]))
+    assert torch.equal(captured["force_modality_mask"], torch.tensor([False, False, True, False]))
     raw_batch = {
         "image": torch.full((2, 5, 1), torch.nan),
         "radar_ra": torch.full((2, 5, 1), torch.inf),
         "radar_da": torch.full((2, 5, 1), torch.inf),
         "gps": torch.ones(2, 5, 1),
         "lidar": torch.full((2, 5, 1), torch.nan),
-        "csi": torch.full((2, 5, 2, 2), complex(float("nan"), 0.0), dtype=torch.complex64),
-        "csi_pilot_mask": torch.ones(2, 5, 2, 2, dtype=torch.bool),
     }
     transformed = captured["batch_transform"](raw_batch)
     assert torch.equal(transformed["gps"], torch.ones_like(transformed["gps"]))
-    for key in ("image", "radar_ra", "radar_da", "lidar", "csi"):
+    for key in ("image", "radar_ra", "radar_da", "lidar"):
         assert torch.equal(transformed[key], torch.zeros_like(transformed[key]))
-    expected = torch.tensor([False, False, True, False, False]).expand(2, -1)
+    expected = torch.tensor([False, False, True, False]).expand(2, -1)
     assert torch.equal(transformed["available_modalities"], expected)
     assert metrics["fixed_modality"] == "gps"
     assert metrics["prediction_setup"]["temporal_missing"]["fixed_modality"] == "gps"

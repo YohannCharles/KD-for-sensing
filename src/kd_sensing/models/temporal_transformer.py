@@ -34,7 +34,7 @@ class SharedTemporalTransformer(nn.Module):
         if int(dim_feedforward) <= 0 or not 0.0 <= float(dropout) < 1.0:
             raise ValueError("dim_feedforward must be positive and dropout must be in [0, 1).")
         if bool(causal):
-            raise ValueError("PCPF-T uses all five historical frames and does not support causal attention.")
+            raise ValueError("The topology predictor uses all five historical frames and does not support causal attention.")
 
         self.input_norms = nn.ModuleList(nn.LayerNorm(self.d_model) for _ in range(self.num_modalities))
         self.input_adapters = nn.ModuleList(

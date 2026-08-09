@@ -12,7 +12,6 @@ from kd_sensing.engine.debug_diagnostics import (
     print_startup_summary,
     write_startup_summary,
 )
-from kd_sensing.engine.model_initialization import initialize_model_from_checkpoint
 from kd_sensing.engine.normalization_artifacts import (
     load_normalization_artifacts,
     save_normalization_artifacts,
@@ -87,15 +86,15 @@ def _unique_run_path(path: Path) -> Path:
 
 def _build_training_extensions(cfg: dict) -> list[TrainingExtension]:
     u_mask_cfg = cfg.get("loss", {}).get("u_mask_beam_jepa", {}) if isinstance(cfg.get("loss"), dict) else {}
-    pcpf_cfg = cfg.get("loss", {}).get("pcpf_temporal_risk", {}) if isinstance(cfg.get("loss"), dict) else {}
+    topology_cfg = cfg.get("loss", {}).get("four_modal_topology", {}) if isinstance(cfg.get("loss"), dict) else {}
     u_mask_enabled = isinstance(u_mask_cfg, dict) and bool(u_mask_cfg.get("enabled", False))
-    pcpf_enabled = isinstance(pcpf_cfg, dict) and bool(pcpf_cfg.get("enabled", False))
-    if u_mask_enabled and pcpf_enabled:
-        raise ValueError("U0 and PCPF-T training extensions are mutually exclusive.")
-    if pcpf_enabled:
-        from kd_sensing.losses.pcpf_temporal_risk import PCPFTemporalRiskTrainingExtension
+    topology_enabled = isinstance(topology_cfg, dict) and bool(topology_cfg.get("enabled", False))
+    if u_mask_enabled and topology_enabled:
+        raise ValueError("U0 and topology-predictor training extensions are mutually exclusive.")
+    if topology_enabled:
+        from kd_sensing.losses.four_modal_topology import FourModalTopologyTrainingExtension
 
-        return [PCPFTemporalRiskTrainingExtension()]
+        return [FourModalTopologyTrainingExtension()]
     if u_mask_enabled:
         from kd_sensing.losses.u_mask_beam_jepa import UMaskBeamJEPATrainingExtension
 
@@ -190,27 +189,7 @@ def _prepare_training_run_context(cfg: dict) -> TrainingRunContext:
 
 def _build_training_resources(context: TrainingRunContext) -> None:
     context.primary_model = build_model(context.model_cfg["primary"]).to(context.device)
-    initialization_load = initialize_model_from_checkpoint(
-        context.primary_model,
-        context.training_cfg,
-        map_location="cpu",
-    )
-    context.state = TrainingState(
-        start_epoch=0 if initialization_load is not None else int(context.training_cfg.get("start_epoch", 0))
-    )
-    if initialization_load is not None:
-        context.state.checkpoint_loads.append(initialization_load)
-        context.cfg.setdefault("runtime", {})["model_initialization"] = initialization_load
-    prepare_stage = getattr(context.primary_model, "prepare_training_stage", None)
-    if callable(prepare_stage):
-        preparation = prepare_stage(
-            cfg=context.cfg,
-            train_loader=context.dataloaders.get("train"),
-            device=context.device,
-            run_dir=context.run_dir,
-            non_blocking=context.non_blocking,
-        )
-        context.cfg.setdefault("runtime", {})["pcpf_stage_preparation"] = preparation
+    context.state = TrainingState(start_epoch=int(context.training_cfg.get("start_epoch", 0)))
     context.task_criterion = build_task_criterion(context.cfg)
     context.optimizer = build_optimizer(context.cfg, context.primary_model)
     context.scheduler = build_scheduler(context.cfg, context.optimizer)

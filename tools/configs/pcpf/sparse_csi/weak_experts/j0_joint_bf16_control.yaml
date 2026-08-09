@@ -1,7 +1,0 @@
-_base_: ../stage1.yaml
-
-training:
-  amp:
-    enabled: true
-    dtype: bfloat16
-    grad_scaler: false

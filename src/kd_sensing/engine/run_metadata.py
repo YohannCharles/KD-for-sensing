@@ -125,11 +125,6 @@ def prediction_setup_metadata(
     num_pred = int(dataset_cfg.get("num_pred", model_cfg.get("num_pred", 0)) or 0)
     temporal_cfg = cfg.get("temporal_missing", {})
     enabled_modalities = list(resolve_enabled_modalities(cfg))
-    if (
-        str(primary_cfg.get("type", "")).strip().lower() == "pcpf_temporal_risk_fusion"
-        and bool(primary_cfg.get("use_sparse_csi", False))
-    ):
-        enabled_modalities.append("csi")
     metadata = {
         "dataset_type": str(dataset_cfg.get("type", "")).strip().lower(),
         "scene": dataset_cfg.get("scene"),

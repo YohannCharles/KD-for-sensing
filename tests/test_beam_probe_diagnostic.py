@@ -36,21 +36,21 @@ from kd_sensing.utils.checkpoint import checkpoint_file_digest
 
 
 FOUR_SENSING_MASKS = {
-    "missing_csi": (1, 1, 1, 1, 0),
-    "missing_image_csi": (0, 1, 1, 1, 0),
-    "missing_radar_csi": (1, 0, 1, 1, 0),
-    "missing_gps_csi": (1, 1, 0, 1, 0),
-    "missing_lidar_csi": (1, 1, 1, 0, 0),
-    "missing_image_radar_csi": (0, 0, 1, 1, 0),
-    "missing_image_gps_csi": (0, 1, 0, 1, 0),
-    "missing_image_lidar_csi": (0, 1, 1, 0, 0),
-    "missing_radar_gps_csi": (1, 0, 0, 1, 0),
-    "missing_radar_lidar_csi": (1, 0, 1, 0, 0),
-    "missing_gps_lidar_csi": (1, 1, 0, 0, 0),
-    "image_only": (1, 0, 0, 0, 0),
-    "radar_only": (0, 1, 0, 0, 0),
-    "gps_only": (0, 0, 1, 0, 0),
-    "lidar_only": (0, 0, 0, 1, 0),
+    "full": (1, 1, 1, 1),
+    "missing_image": (0, 1, 1, 1),
+    "missing_radar": (1, 0, 1, 1),
+    "missing_gps": (1, 1, 0, 1),
+    "missing_lidar": (1, 1, 1, 0),
+    "missing_image_radar": (0, 0, 1, 1),
+    "missing_image_gps": (0, 1, 0, 1),
+    "missing_image_lidar": (0, 1, 1, 0),
+    "missing_radar_gps": (1, 0, 0, 1),
+    "missing_radar_lidar": (1, 0, 1, 0),
+    "missing_gps_lidar": (1, 1, 0, 0),
+    "image_only": (1, 0, 0, 0),
+    "radar_only": (0, 1, 0, 0),
+    "gps_only": (0, 0, 1, 0),
+    "lidar_only": (0, 0, 0, 1),
 }
 
 
@@ -332,12 +332,15 @@ def test_probe_diagnostic_rejects_incomplete_unbounded_evidence(tmp_path: Path) 
         )
 
 
-def test_probe_evidence_selects_all_15_four_sensing_masks_with_csi_sealed(tmp_path: Path) -> None:
+def test_probe_evidence_selects_all_15_native_four_sensing_masks(tmp_path: Path) -> None:
     checkpoint = tmp_path / "best.pth"
     torch.save(
         {
             "checkpoint_role": "validation_best",
-            "model_metadata": {"training_stage": "stage3_fusion"},
+            "model_metadata": {
+                "type": "four_modal_topology_predictor",
+                "modalities": ["image", "radar", "gps", "lidar"],
+            },
         },
         checkpoint,
     )
@@ -380,7 +383,7 @@ def test_probe_evidence_selects_all_15_four_sensing_masks_with_csi_sealed(tmp_pa
                 "data_protocol": protocol,
                 "prototype_topology": topology,
             },
-            "modalities": ("image", "radar", "gps", "lidar", "csi"),
+            "modalities": ("image", "radar", "gps", "lidar"),
             "pattern": patterns,
             "sample_id": row_ids,
             "labels": torch.full((len(patterns),), 3, dtype=torch.long),
@@ -412,18 +415,18 @@ def test_probe_evidence_selects_all_15_four_sensing_masks_with_csi_sealed(tmp_pa
     cfg = {
         "experiment": {"seed": 1},
         "data_protocol": protocol,
-        "loss": {"pcpf_temporal_risk": {"prototype_topology": topology}},
+        "loss": {"four_modal_topology": {"prototype_topology": topology}},
     }
 
     evidence = load_probe_evidence(matrix_report=report, checkpoint=checkpoint, cfg=cfg)
 
     assert len(evidence.sample_id) == len(FOUR_SENSING_MASKS) * len(sample_ids)
     assert set(evidence.pattern) == set(FOUR_SENSING_MASKS)
-    assert evidence.source["pattern_available_sensing_count"]["missing_csi"] == 4
+    assert evidence.source["pattern_available_sensing_count"]["full"] == 4
     assert evidence.source["pattern_available_sensing_count"]["radar_only"] == 1
     assert evidence.source["bounded_evaluation"] is False
 
-    cfg["loss"]["pcpf_temporal_risk"]["prototype_topology"]["audit_sha256"] = "0" * 64
+    cfg["loss"]["four_modal_topology"]["prototype_topology"]["audit_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="topology identity"):
         load_probe_evidence(matrix_report=report, checkpoint=checkpoint, cfg=cfg)
 

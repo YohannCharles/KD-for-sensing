@@ -35,23 +35,14 @@ def _temporal_batch(batch_size: int) -> dict[str, torch.Tensor]:
     }
 
 
-def _sparse_csi_temporal_batch(batch_size: int) -> dict[str, torch.Tensor]:
-    return {
-        **_temporal_batch(batch_size),
-        "csi": torch.ones(batch_size, 5, 2, 2, dtype=torch.complex64),
-        "csi_pilot_mask": torch.ones(batch_size, 5, 2, 2, dtype=torch.bool),
-    }
-
-
-@pytest.mark.parametrize("fixed_modality", ["image", "radar", "gps", "lidar", "csi"])
+@pytest.mark.parametrize("fixed_modality", ["image", "radar", "gps", "lidar"])
 def test_fixed_single_modality_keeps_only_the_requested_expert(fixed_modality: str) -> None:
-    batch = _sparse_csi_temporal_batch(2)
+    batch = _temporal_batch(2)
     cfg = {
         "experiment": {"seed": 1},
         "model": {
             "primary": {
                 "modalities": ["image", "radar", "gps", "lidar"],
-                "use_sparse_csi": True,
             }
         },
         "temporal_missing": {
@@ -64,7 +55,7 @@ def test_fixed_single_modality_keeps_only_the_requested_expert(fixed_modality: s
     apply_training_temporal_missing(batch, cfg, epoch=3, step=7)
 
     expected = torch.tensor(
-        [name == fixed_modality for name in ("image", "radar", "gps", "lidar", "csi")],
+        [name == fixed_modality for name in ("image", "radar", "gps", "lidar")],
         dtype=torch.bool,
     )
     assert torch.equal(batch["available_modalities"], expected.expand(2, -1))
@@ -73,31 +64,10 @@ def test_fixed_single_modality_keeps_only_the_requested_expert(fixed_modality: s
     assert batch["temporal_missing_metadata"] == {
         "mode": "fixed_single_modality",
         "seed": 1,
-        "available_rate": pytest.approx(0.2),
+        "available_rate": pytest.approx(0.25),
         "num_fallback_fixes": 0,
         "fixed_modality": fixed_modality,
     }
-
-
-def test_fixed_single_modality_does_not_fallback_to_another_available_modality() -> None:
-    batch = _sparse_csi_temporal_batch(2)
-    batch["csi_valid_mask"] = torch.tensor([[True] * 5, [False] * 5])
-    cfg = {
-        "model": {
-            "primary": {
-                "modalities": ["image", "radar", "gps", "lidar"],
-                "use_sparse_csi": True,
-            }
-        },
-        "temporal_missing": {
-            "enabled": True,
-            "mode": "fixed_single_modality",
-            "fixed_modality": "csi",
-        },
-    }
-
-    with pytest.raises(ValueError, match="available csi history for every sample"):
-        apply_training_temporal_missing(batch, cfg, epoch=0, step=0)
 
 
 def test_u0_recipe_declares_the_retained_temporal_protocol() -> None:

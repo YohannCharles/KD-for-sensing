@@ -1,7 +1,7 @@
 schema_version: 1
 kind: maintainer_context_index
 purpose:
-  summary: 路由 PCPF-T 主线、稳定 baseline、正式 MMW protocol 与 DeepSense6G。
+  summary: 路由四模态 topology-probing 主线、稳定 baseline、正式 MMW protocol 与 DeepSense6G。
 agent_context:
   root: docs/agent_context/README.md
 task_routes:
@@ -9,14 +9,14 @@ task_routes:
     context_path: docs/agent_context/models.md
     authority_paths:
       - openspec/specs/u0-mainline/spec.md
-      - openspec/specs/pcpf-temporal-risk-fusion/spec.md
-      - openspec/changes/add-uncertainty-adaptive-local-probing/specs/pcpf-temporal-risk-fusion/spec.md
+      - openspec/specs/four-modal-topology-predictor/spec.md
+      - openspec/changes/add-uncertainty-adaptive-local-probing/specs/four-modal-topology-predictor/spec.md
       - openspec/changes/add-uncertainty-adaptive-local-probing/specs/sensing-guided-local-beam-probing/spec.md
     owner_modules:
       - src/kd_sensing/models/
       - src/kd_sensing/losses/
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_pcpf_temporal_transformer.py tests/test_pcpf_risk.py tests/test_pcpf_fusion.py tests/test_pcpf_loss.py tests/test_pcpf_stage_freezing.py tests/test_u_mask_beam_jepa.py tests/test_component_registry.py -q
+      - conda run -n kd_mm_beam pytest tests/test_four_modal_topology_predictor.py tests/test_beam_posterior.py tests/test_u_mask_beam_jepa.py tests/test_component_registry.py -q
   - id: data
     context_path: docs/agent_context/data.md
     authority_paths:
@@ -37,7 +37,7 @@ task_routes:
       - src/kd_sensing/config/
       - configs/mmw/
       - configs/deepsense6g/
-      - tools/configs/pcpf/
+      - tools/configs/topology_predictor/
     focused_validation:
       - conda run -n kd_mm_beam pytest tests/test_config_load_characterization.py -q
   - id: cli
@@ -57,9 +57,9 @@ task_routes:
       - openspec/specs/clean-data-integrity/spec.md
     owner_modules:
       - tools/
-    notes: PCPF-T 原型拓扑预测与 sensing-guided local beam probing 是唯一 active research mainline；Direct Router、CUAF、nested/R0--R7 已退出 active surface，trajectory 只保留数据协议和 PCPF 直接依赖。
+    notes: 原生四模态拓扑预测与 sensing-guided local beam probing 是唯一 active research mainline；旧分阶段融合、sparse CSI 与兼容入口均已退出 active surface。
     focused_validation:
-      - conda run -n kd_mm_beam pytest tests/test_pcpf_workflow.py tests/test_pcpf_sparse_csi.py -q
+      - conda run -n kd_mm_beam pytest tests/test_four_modal_topology_predictor.py tests/test_beam_probe_diagnostic.py -q
       - conda run -n kd_mm_beam python scripts/verify_compile.py
   - id: openspec
     context_path: docs/agent_context/README.md

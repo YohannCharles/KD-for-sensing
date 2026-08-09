@@ -1,6 +1,6 @@
 # CLI 任务上下文
 
-public CLI 只有 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`。PCPF-T 使用 `tools/run_pcpf.py` 与 `tools/eval_pcpf.py`，不注册 console script，也不成为 canonical MMW route。
+public CLI 只有 `kd-sensing-train`、`kd-sensing-evaluate`、`kd-sensing-preprocess`。四模态拓扑主线使用 `tools/run_topology_predictor.py` 与 `tools/eval_topology_predictor.py`，不注册 console script，也不成为 canonical MMW route。
 
 不要新增历史 wrapper、console script 或兼容入口。先读 `openspec/specs/repo-boundaries/spec.md`。
 

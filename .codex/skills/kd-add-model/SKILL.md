@@ -1,6 +1,6 @@
 ---
 name: kd-add-model
-description: 在 KD-for-sensing 中新增或修改模型组件、baseline、registry entry、forward/loss 契约和模型侧配置。用于 PCPF-T 或保留 baseline 的模型工作，并保持 OpenSpec、注册表、训练流程和本地产物边界。
+description: 在 KD-for-sensing 中新增或修改模型组件、baseline、registry entry、forward/loss 契约和模型侧配置。用于四模态 topology predictor 或保留 baseline 的模型工作，并保持 OpenSpec、注册表、训练流程和本地产物边界。
 ---
 
 # KD 模型改动
@@ -14,8 +14,8 @@ description: 在 KD-for-sensing 中新增或修改模型组件、baseline、regi
 ## 工作流
 
 1. 先确认现有 owner、registry 和组件能否承载改动；沿用 `src/kd_sensing` 的当前模块边界。
-2. 模型、loss、数据 sidecar 与本地实验工具各归其 owner；不得复制通用 trainer/evaluator，也不得增加兼容聚合层或退休入口。
-3. 明确 forward shape、可训练参数、stage freezing、checkpoint metadata 和 config parser 失败条件。
+2. 模型、loss 与本地实验工具各归其 owner；不得复制通用 trainer，也不得增加兼容聚合层或退休入口。
+3. 明确 forward shape、可训练参数、checkpoint metadata 和 config parser 失败条件。
 4. 只新增覆盖实际契约的聚焦测试；模型公共边界变化同时运行 registry 与架构测试。
 5. 不提交 `dataset/`、`outputs/`、`logs/`、cache、TensorBoard 或新 checkpoint。
 

@@ -1,3 +1,0 @@
-_base_: ../stage3.yaml
-experiment:
-  name: PCPF-T-A4-full

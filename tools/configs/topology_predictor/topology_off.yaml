@@ -1,8 +1,6 @@
-_base_: stage1.yaml
-experiment:
-  name: PCPF-T-sparse-CSI-stage1-no-topology-loss
+_base_: _base.yaml
 loss:
-  pcpf_temporal_risk:
+  four_modal_topology:
     unimodal_soft_weight: 0.0
     use_beam_prototype_alignment: false
     lambda_proto: 0.0

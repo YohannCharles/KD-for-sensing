@@ -2,7 +2,7 @@
 
 ### Requirement: probing topology likelihood 只能由 train radio ground truth 拟合
 
-系统 MAY 为 sensing-guided finite RF probing 拟合一个独立 topology likelihood artifact，但其输入 MUST 仅为绑定 `mmw_id_stratified_block_v1` train role 的官方未来 64-beam power 和对应 argmax beam label。artifact MUST 只描述 ULA-DFT phase-cycle 上按最优 beam 对齐的相对 log-gain 均值/协方差与 normalized-gain kernel；MUST NOT 进入 PCPF-T forward、loss、optimizer、checkpoint selection、prototype、risk 或 sensing posterior。validation/test power、label 或指标 MUST NOT 更新、选择或校准该 artifact。
+系统 MAY 为 sensing-guided finite RF probing 拟合一个独立 topology likelihood artifact，但其输入 MUST 仅为绑定 `mmw_id_stratified_block_v1` train role 的官方未来 64-beam power 和对应 argmax beam label。artifact MUST 只描述 ULA-DFT phase-cycle 上按最优 beam 对齐的相对 log-gain 均值/协方差与 normalized-gain kernel；MUST NOT 进入 four-modal predictor forward、loss、optimizer、checkpoint selection、prototype 或 sensing posterior。validation/test power、label 或指标 MUST NOT 更新、选择或校准该 artifact。
 
 #### Scenario: 拟合 probing likelihood artifact
 

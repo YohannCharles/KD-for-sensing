@@ -4,7 +4,7 @@ from kd_sensing.modalities import normalize_modalities, resolve_image_profile, v
 
 
 RETAINED_MODALITIES = ("image", "radar", "gps", "lidar")
-RETAINED_MODELS = {"u_mask_beam_jepa", "modular_sequence", "pcpf_temporal_risk_fusion"}
+RETAINED_MODELS = {"u_mask_beam_jepa", "modular_sequence", "four_modal_topology_predictor"}
 RETAINED_DATASETS = {"mmw", "deepsense6g"}
 DEEPSENSE6G_SCENES = {31, 32, 33, 34}
 
@@ -35,8 +35,8 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
     fft = tuple(data.get("fft_tuple", ()))
     if len(fft) < 3 or int(fft[0]) != 64 or int(fft[2]) != 128 or int(data.get("clipped_range", 0)) != 128:
         raise ValueError("Retained radar inputs require fft_tuple [64, *, 128] and clipped_range=128.")
-    if str(model.get("type", "")) == "pcpf_temporal_risk_fusion":
-        _validate_pcpf_config(cfg, model, data)
+    if str(model.get("type", "")) == "four_modal_topology_predictor":
+        _validate_topology_predictor_config(cfg, model, data)
     if dataset_type == "mmw":
         if data_section.get("split_protocol") != "mmw_id_stratified_block_v1":
             raise ValueError("MMW data.split_protocol must be 'mmw_id_stratified_block_v1'.")
@@ -73,48 +73,22 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
             raise ValueError("DeepSense6G future_beam labels require model.primary.num_classes=64.")
 
 
-def _validate_pcpf_config(cfg: dict[str, Any], model: dict[str, Any], data: dict[str, Any]) -> None:
-    from kd_sensing.losses.pcpf_temporal_risk_config import pcpf_temporal_risk_config
-    from kd_sensing.models.pcpf_temporal_risk import validate_pcpf_model_config
+def _validate_topology_predictor_config(cfg: dict[str, Any], model: dict[str, Any], data: dict[str, Any]) -> None:
+    from kd_sensing.losses.four_modal_topology import four_modal_topology_config
+    from kd_sensing.models.four_modal_topology_predictor import validate_topology_predictor_model_config
 
     if str(data.get("type", "")).strip().lower() != "mmw":
-        raise ValueError("PCPF-T is scoped to the MMW dataset.")
-    validate_pcpf_model_config(model, data)
-    loss = pcpf_temporal_risk_config(cfg)
+        raise ValueError("The four-modal topology predictor is scoped to the MMW dataset.")
+    validate_topology_predictor_model_config(model, data)
+    four_modal_topology_config(cfg)
     experiment = cfg.get("experiment", {})
     if experiment.get("claim_ineligible") is not True:
-        raise ValueError("PCPF-T requires experiment.claim_ineligible=true.")
+        raise ValueError("The topology predictor requires experiment.claim_ineligible=true.")
     training = cfg.get("training", {})
     final_test = training.get("final_test")
     final_test_enabled = final_test if isinstance(final_test, bool) else (final_test or {}).get("enabled", True)
     if bool(final_test_enabled):
-        raise ValueError("PCPF-T requires training.final_test.enabled=false.")
-    stage = loss["training_stage"]
-    initialization = training.get("initialization_checkpoint")
-    expected_source = {
-        "stage2_risk": "stage1_expert",
-        "stage3_fusion": "stage2_risk",
-    }.get(stage)
-    if expected_source is not None:
-        if not isinstance(initialization, dict):
-            raise ValueError(f"{stage} requires training.initialization_checkpoint.")
-        if initialization.get("role") != "validation_best":
-            raise ValueError(f"{stage} requires a validation_best initialization checkpoint.")
-        if initialization.get("expected_source_training_stage") != expected_source:
-            raise ValueError(f"{stage} requires expected_source_training_stage={expected_source!r}.")
-    if stage == "stage1_expert" and initialization not in (None, False):
-        raise ValueError("stage1_expert must start fresh.")
-    if stage in {"stage2_risk", "stage3_fusion"} and not loss["stage_preparation"]["enabled"]:
-        raise ValueError(f"{stage} requires train-only stage_preparation.enabled=true.")
-    if stage == "stage3_fusion":
-        gate = training.get("pcpf_stage2_gate")
-        if not isinstance(gate, dict):
-            raise ValueError(f"{stage} requires training.pcpf_stage2_gate.")
-        unknown = sorted(set(gate) - {"report_path", "sha256", "stage2_gate_passed"})
-        if unknown:
-            raise ValueError(f"training.pcpf_stage2_gate contains unsupported fields: {unknown}.")
-        digest = str(gate.get("sha256", "")).strip().lower()
-        if not gate.get("report_path") or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            raise ValueError("training.pcpf_stage2_gate requires report_path and a SHA256 digest.")
-        if gate.get("stage2_gate_passed") is not True:
-            raise ValueError(f"{stage} refuses a Stage 2 gate that did not pass.")
+        raise ValueError("The topology predictor requires training.final_test.enabled=false.")
+    retired = sorted(set(training) & {"initialization_checkpoint"})
+    if retired:
+        raise ValueError(f"Single-stage topology training rejects retired fields: {retired}.")

@@ -1,6 +1,6 @@
 import hashlib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -8,7 +8,6 @@ from torch.utils.data import Dataset, get_worker_info
 
 from kd_sensing.data.layouts import mmw_condition_layout
 from kd_sensing.data.mmw.pilot_alignment import resolve_input_channel_refs, resolve_last_input_channel_ref
-from kd_sensing.data.pcpf_sparse_csi import PCPFSparseCSISidecar
 from kd_sensing.data.samples import create_samples
 from kd_sensing.data.transform_ops.gps import GPSStandardScaler, load_gps_coordinate_cache, load_gps_feature_sequence
 from kd_sensing.data.transform_ops.image import build_rgb_imagenet_transform, load_rgb_imagenet_frames
@@ -67,7 +66,6 @@ class MMWDataset(Dataset):
         include_router_corruption_metadata: bool = False,
         include_channel_ref: bool = False,
         include_channel_history_refs: bool = False,
-        sparse_csi: Mapping[str, Any] | None = None,
         pilot_time_mode: str = "last_input",
         enabled_modalities: list[str] | tuple[str, ...] | None = None,
     ) -> None:
@@ -117,10 +115,9 @@ class MMWDataset(Dataset):
         self.include_router_corruption_metadata = bool(include_router_corruption_metadata)
         self.include_channel_ref = bool(include_channel_ref)
         self.include_channel_history_refs = bool(include_channel_history_refs)
-        self.sparse_csi_sidecar = PCPFSparseCSISidecar(sparse_csi) if sparse_csi is not None else None
         self.pilot_time_mode = str(pilot_time_mode)
-        if (self.include_channel_ref or self.include_channel_history_refs or self.sparse_csi_sidecar is not None) and self.pilot_time_mode != "last_input":
-            raise ValueError("MMW sparse pilot currently requires pilot_time_mode='last_input'.")
+        if (self.include_channel_ref or self.include_channel_history_refs) and self.pilot_time_mode != "last_input":
+            raise ValueError("MMW channel references require pilot_time_mode='last_input'.")
         self._beam_power_cache: dict[str, torch.Tensor] = {}
         self.lidar_bev_size = tuple(int(value) for value in lidar_bev_size)
         self.lidar_roi = tuple(float(value) for value in lidar_roi)
@@ -187,7 +184,7 @@ class MMWDataset(Dataset):
             seq_len=self.seq_len,
             gps_source_seq_len=self.seq_len,
             num_pred=self.num_pred,
-            include_channel_ref=self.include_channel_ref or self.include_channel_history_refs or self.sparse_csi_sidecar is not None,
+            include_channel_ref=self.include_channel_ref or self.include_channel_history_refs,
         )
         self.schema_identity = {
             "dataset_family": "MMW",
@@ -195,8 +192,6 @@ class MMWDataset(Dataset):
             "seq_len": self.seq_len,
             "num_pred": self.num_pred,
         }
-        if self.sparse_csi_sidecar is not None:
-            self.schema_identity["sparse_csi"] = self.sparse_csi_sidecar.identity
 
     def __len__(self) -> int:
         return len(self.samples.rows or [])
@@ -284,7 +279,6 @@ class MMWDataset(Dataset):
 
     def _with_metadata(self, idx: int, sample: dict[str, Any]) -> dict[str, Any]:
         row = self._row(idx)
-        sparse_csi_sidecar = getattr(self, "sparse_csi_sidecar", None)
         metadata = {
             key: text
             for key in (
@@ -307,7 +301,7 @@ class MMWDataset(Dataset):
             metadata["future_beam_path"] = str(joined_resource(self.data_root, future_beam_path).resolve())
         metadata["source_sample_id"] = source_sample_id
         metadata["stable_sample_id"] = f"mmw:{self.condition}:{self.scene_slug}:{self.split}:{source_sample_id}"
-        if self.include_channel_history_refs or sparse_csi_sidecar is not None:
+        if self.include_channel_history_refs:
             reference = resolve_input_channel_refs(
                 row,
                 self.samples.channel_paths[idx] if self.samples.channel_paths is not None else [],
@@ -318,19 +312,7 @@ class MMWDataset(Dataset):
             if self.include_channel_history_refs:
                 sample["channel_history_refs"] = reference["channel_history_refs"]
                 sample["channel_ref"] = reference["channel_history_refs"][-1]
-                sample["csi_available"] = True
-            if sparse_csi_sidecar is not None:
-                sample.update(
-                    sparse_csi_sidecar.load_history(
-                        reference["channel_history_refs"],
-                        history_frame_ids=reference["history_frame_ids"],
-                    )
-                )
-                metadata.update(
-                    sparse_csi_selection_sha256=sparse_csi_sidecar.identity["selection_sha256"],
-                    sparse_csi_codebook_hash=sparse_csi_sidecar.identity["codebook_hash"],
-                    sparse_csi_snr_available=False,
-                )
+                sample["channel_available"] = True
             metadata.update(
                 pilot_frame_id=reference["history_frame_ids"][-1],
                 last_input_frame_id=reference["last_input_frame_id"],
@@ -346,7 +328,7 @@ class MMWDataset(Dataset):
                 num_pred=self.num_pred,
             )
             sample["channel_ref"] = reference["channel_ref"]
-            sample["csi_available"] = True
+            sample["channel_available"] = True
             metadata.update({key: reference[key] for key in ("pilot_frame_id", "last_input_frame_id", "target_frame_id")})
         sample["metadata"] = metadata
         sample["sample_id"] = source_sample_id

@@ -64,13 +64,13 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 
 ### Requirement: 两个创新点必须通过三 seed 嵌套消融分离
 
-系统 MUST 在 topology supervision `off/on` 的现有三 seed validation-best checkpoints 上比较 `Direct Prediction`、`Posterior Top-7` 与 full-covariance `TBCP-7`。两个 topology 条件 MUST 使用同一 `mmw_id_stratified_block_v1` protocol、完整 15 个 CSI-off sensing masks、相同 validation identity/order、同一个 train-only likelihood 和相同 K=7 simulator。系统 MUST 报告 topology 主效应、`TBCP-7 - Posterior Top-7` matched-budget 增益、端到端增益和 difference-in-differences 交互。
+系统 MUST 在原生四模态 topology supervision `off/on` 的重新训练三 seed validation-best checkpoints 上比较 `Direct Prediction`、`Posterior Top-7` 与 full-covariance `TBCP-7`。两个 topology 条件 MUST 使用同一 `mmw_id_stratified_block_v1` protocol、原生 15 个非空 sensing masks、相同 validation identity/order、同一个 train-only likelihood 和相同 K=7 simulator。系统 MUST 报告 topology 主效应、`TBCP-7 - Posterior Top-7` matched-budget 增益、端到端增益和 difference-in-differences 交互。
 
 #### Scenario: 运行嵌套消融
 
 - **WHEN** topology supervision `off/on` 的 seed 1/2/3 完成 validation replay
 - **THEN** 每个单元格 MUST 汇总全部三 seed mean/std、逐 mask 与 Full/drop-1/drop-2/Single 分组
-- **AND** topology `off` MUST 只使用已注册 nested-ablation checkpoint，不得在本轮重新训练、重新选择 seed 或修改其他训练预算
+- **AND** topology `off/on` MUST 都以单阶段四模态配置 fresh-start，除 topology loss 开关外训练预算与参数完全匹配
 
 #### Scenario: 匹配预算隔离第二个创新点
 
@@ -88,13 +88,13 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 - **THEN** 它 MUST 不接收 GT、channel、CSI、完整 power 或未请求 measurement
 - **AND** 它 MUST 与 TBCP-7 使用相同 K、sample identity、simulator、final selection 和 normalized-gain 实现
 
-### Requirement: probing diagnostic 必须覆盖全部四-sensing 非空 mask
+### Requirement: probing diagnostic 必须覆盖全部四模态非空 mask
 
-诊断 MUST 绑定 validation-best checkpoint、其 unbounded 31-mask evidence、唯一 MMW protocol 与正式 topology，并选择 CSI availability 严格为 false、image/radar/gps/lidar availability 任意非空组合的全部 15 个 mask。每个 mask MUST 包含相同且完整的 validation sample identity/order。输出 MUST 包含逐 pattern、Full、drop-1、drop-2、Single macro/worst 以及全部 seed 汇总。
+诊断 MUST 绑定单阶段四模态 validation-best checkpoint、其原生 unbounded 15-mask evidence、唯一 MMW protocol 与正式 topology。每个 mask MUST 包含相同且完整的 validation sample identity/order。输出 MUST 包含逐 pattern、Full、drop-1、drop-2、Single macro/worst 以及全部 seed 汇总。
 
 #### Scenario: evidence mask 或 identity 漂移
 
-- **WHEN** 不足/多于 15 个合法 sensing mask、CSI 被开放、任一 mask 样本不完整或 order 不一致
+- **WHEN** modalities 不是 canonical 四模态、不足或多于 15 个合法 mask、任一 mask 样本不完整或 order 不一致
 - **THEN** diagnostic MUST 在加载 radio power 前失败关闭
 
 #### Scenario: 运行三 seed replay

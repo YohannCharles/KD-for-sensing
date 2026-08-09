@@ -49,7 +49,7 @@ ADAPTIVE_OFFSETS = {
 }
 PROBING_POLICY_VERSION = "sensing_guided_local7_posterior_mass_v1"
 SEVERE_SINGLE_PATTERNS = ("image_only", "radar_only", "gps_only", "lidar_only")
-EXPECTED_MODALITIES = ("image", "radar", "gps", "lidar", "csi")
+EXPECTED_MODALITIES = ("image", "radar", "gps", "lidar")
 EXPECTED_TOPOLOGY = "ula_dft_phase_cycle_v1"
 EXPECTED_PROTOCOL = "mmw_id_stratified_block_v1"
 ROBUSTNESS_VERSION = "tbcp7_synthetic_measurement_error_v1"
@@ -318,7 +318,7 @@ def load_probe_evidence(
     checkpoint_path = Path(checkpoint).resolve()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(report, dict):
-        raise ValueError("PCPF matrix report must be a mapping.")
+        raise ValueError("Topology-predictor matrix report must be a mapping.")
     if report.get("claim_ineligible") is not True or report.get("outer_test_accessed") is not False:
         raise ValueError("Probe diagnostic requires claim-ineligible validation evidence with outer test sealed.")
 
@@ -328,25 +328,29 @@ def load_probe_evidence(
         raise ValueError("Probe diagnostic requires a validation_best checkpoint.")
     validate_checkpoint_publication(checkpoint_path, payload=checkpoint_payload)
     model_metadata = checkpoint_payload.get("model_metadata")
-    if not isinstance(model_metadata, Mapping) or model_metadata.get("training_stage") != "stage3_fusion":
-        raise ValueError("Probe diagnostic requires a Stage 3 checkpoint.")
+    if (
+        not isinstance(model_metadata, Mapping)
+        or model_metadata.get("type") != "four_modal_topology_predictor"
+        or tuple(model_metadata.get("modalities", ())) != EXPECTED_MODALITIES
+    ):
+        raise ValueError("Probe diagnostic requires a native four-modal topology-predictor checkpoint.")
 
     provenance = report.get("provenance")
     if not isinstance(provenance, Mapping):
-        raise ValueError("PCPF matrix report is missing provenance.")
+        raise ValueError("Topology-predictor matrix report is missing provenance.")
     recorded_checkpoint = provenance.get("checkpoint")
     if not isinstance(recorded_checkpoint, Mapping) or recorded_checkpoint.get("sha256") != checkpoint_sha256:
         raise ValueError("Matrix report does not bind the requested checkpoint SHA256.")
     evidence_record = provenance.get("sample_evidence")
     if not isinstance(evidence_record, Mapping):
-        raise ValueError("PCPF matrix report is missing sample evidence provenance.")
+        raise ValueError("Topology-predictor matrix report is missing sample evidence provenance.")
     evidence_path = Path(str(evidence_record.get("path", ""))).resolve()
     evidence_sha256, evidence_size = checkpoint_file_digest(evidence_path)
     if evidence_sha256 != evidence_record.get("sha256") or evidence_size != int(evidence_record.get("size_bytes", -1)):
-        raise ValueError("PCPF sample evidence hash or size does not match the matrix report.")
+        raise ValueError("Topology-predictor sample evidence hash or size does not match the matrix report.")
     records = load_torch_payload(evidence_path, map_location="cpu")
     if not isinstance(records, Mapping) or records.get("bounded_evaluation") is not False:
-        raise ValueError("Probe diagnostic requires an unbounded PCPF observation cache.")
+        raise ValueError("Probe diagnostic requires an unbounded topology-predictor observation cache.")
 
     binding = records.get("evidence_binding")
     protocol = cfg.get("data_protocol")
@@ -378,7 +382,7 @@ def load_probe_evidence(
     ):
         raise ValueError("Probe evidence does not match the configured audited ULA-DFT topology identity.")
     if tuple(records.get("modalities", ())) != EXPECTED_MODALITIES:
-        raise ValueError("Probe diagnostic requires the five-modality J2 evidence schema.")
+        raise ValueError("Probe diagnostic requires the native four-modal evidence schema.")
 
     patterns = tuple(str(value) for value in records.get("pattern", ()))
     sample_ids = tuple(str(value) for value in records.get("sample_id", ()))
@@ -413,18 +417,14 @@ def load_probe_evidence(
             raise ValueError(f"Evidence pattern {pattern_name} has inconsistent availability masks.")
         pattern_masks[pattern_name] = next(iter(masks))
     expected_masks = {
-        tuple(bool(bits & (1 << index)) for index in range(4)) + (False,)
+        tuple(bool(bits & (1 << index)) for index in range(4))
         for bits in range(1, 1 << 4)
     }
-    selected_pattern_masks = {
-        name: mask
-        for name, mask in pattern_masks.items()
-        if not mask[4] and any(mask[:4])
-    }
+    selected_pattern_masks = {name: mask for name, mask in pattern_masks.items() if any(mask)}
     if set(selected_pattern_masks.values()) != expected_masks or len(selected_pattern_masks) != len(expected_masks):
-        raise ValueError("Probe evidence must contain exactly 15 non-empty four-sensing masks with CSI unavailable.")
+        raise ValueError("Probe evidence must contain exactly 15 non-empty native four-sensing masks.")
     selected_pattern_names = tuple(
-        sorted(selected_pattern_masks, key=lambda name: (-sum(selected_pattern_masks[name][:4]), name))
+        sorted(selected_pattern_masks, key=lambda name: (-sum(selected_pattern_masks[name]), name))
     )
 
     selected_rows: list[int] = []
@@ -473,7 +473,7 @@ def load_probe_evidence(
             "validation_sample_order_sha256": _sha256_ordered_lines(reference_ids or ()),
             "patterns": list(selected_pattern_names),
             "pattern_available_sensing_count": {
-                name: int(sum(selected_pattern_masks[name][:4])) for name in selected_pattern_names
+                name: int(sum(selected_pattern_masks[name])) for name in selected_pattern_names
             },
         },
     )
@@ -2435,7 +2435,7 @@ def _write_tbcp_report(
     lines = [
         "# TBCP-7 Validation Diagnostic",
         "",
-        "- Scope: all 15 non-empty image/radar/GPS/LiDAR masks with CSI unavailable",
+        "- Scope: all 15 non-empty image/radar/GPS/LiDAR masks",
         "- Budget: K=7; no model training or checkpoint update",
         "- Likelihood: train-only aligned ULA-DFT relative log-gain mean/covariance",
         "- Claim boundary: validation-only, claim-ineligible, outer test not accessed",
@@ -2776,7 +2776,7 @@ def _write_tbcp_seed_report(
         "# TBCP-7 Three-seed Validation Summary",
         "",
         "- Seeds: 1, 2, 3; all runs use one train-only likelihood and one validation identity",
-        "- Scope: all 15 non-empty four-sensing masks with CSI unavailable",
+        "- Scope: all 15 non-empty four-sensing masks",
         "- Claim boundary: validation-only, claim-ineligible, outer test not accessed",
         f"- Policy: `{config['binding']['policy_version']}`",
         f"- Likelihood: `{config['binding']['likelihood_fingerprint']}`",
@@ -3410,10 +3410,10 @@ def _validate_candidates(values: Sequence[int] | Any, expected: int, num_beams: 
 
 def _topology_binding(cfg: Mapping[str, Any]) -> dict[str, Any]:
     loss = cfg.get("loss", {})
-    pcpf = loss.get("pcpf_temporal_risk", {}) if isinstance(loss, Mapping) else {}
-    topology = pcpf.get("prototype_topology") if isinstance(pcpf, Mapping) else None
+    topology_loss = loss.get("four_modal_topology", {}) if isinstance(loss, Mapping) else {}
+    topology = topology_loss.get("prototype_topology") if isinstance(topology_loss, Mapping) else None
     if not isinstance(topology, Mapping):
-        raise ValueError("Topology likelihood requires PCPF prototype topology provenance.")
+        raise ValueError("Topology likelihood requires four-modal prototype topology provenance.")
     result = {
         "id": str(topology.get("id", "")),
         "descriptor_sha256": str(topology.get("descriptor_sha256", "")),
@@ -3425,12 +3425,12 @@ def _topology_binding(cfg: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("Topology likelihood requires the audited ULA-DFT topology identity and SHA256.")
     runtime = cfg.get("runtime", {})
-    resolver = runtime.get("pcpf_resolver", {}) if isinstance(runtime, Mapping) else {}
+    resolver = runtime.get("topology_predictor_resolver", {}) if isinstance(runtime, Mapping) else {}
     runtime_topology = resolver.get("prototype_topology") if isinstance(resolver, Mapping) else None
     if isinstance(runtime_topology, Mapping) and any(
         runtime_topology.get(key) != result[key] for key in ("id", "descriptor_sha256", "audit_sha256")
     ):
-        raise ValueError("PCPF runtime and loss topology provenance disagree.")
+        raise ValueError("Topology-predictor runtime and loss topology provenance disagree.")
     return result
 
 

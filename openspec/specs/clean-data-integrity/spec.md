@@ -2,81 +2,82 @@
 
 ## Purpose
 
-定义 MMW 唯一 ID stratified block protocol 的 train/validation/test 数据完整性、train-only 拟合状态与默认 test 封存，并保持 DeepSense6G 独立数据契约。
+定义 MMW 唯一 ID-stratified block protocol 的 train/validation/test 隔离、four-modal topology predictor 的 sensing-only 边界与 TBCP train-only calibration 契约，并保持 DeepSense6G 独立数据契约。
 
 ## Requirements
 
 ### Requirement: MMW 只能使用唯一且精确绑定的 block protocol
 
-MMW 训练和开发验证 MUST 通过 protocol `mmw_id_stratified_block_v1` 建立数据域。配置 MUST 显式绑定 manifest 路径/hash、protocol version、split seed、block size、data source hash、window config hash、train/validation/test role 与通过的 audit report。clean-inner、trajectory-disjoint、历史 group-safe、窗口随机拆分和未知 MMW protocol MUST 在创建 dataset 前失败。
+MMW 训练和开发验证 MUST 通过 `mmw_id_stratified_block_v1` 建立数据域。配置 MUST 绑定 manifest path/hash、protocol version、split seed、block size、data source hash、window config hash、split roles 与通过的 audit。旧 trajectory-disjoint、clean-inner、group-safe、随机窗口或未知 protocol MUST 在 dataset 创建前失败。
 
 #### Scenario: 构建合法 MMW loader
 
 - **WHEN** 配置与受支持 manifest、audit 和 split CSV 完全一致
 - **THEN** 系统 MUST 默认只构建 train 与 validation loader
-- **AND** 每个 loader 的运行元数据 MUST 记录 protocol、split seed 与 manifest identity
+- **AND** metadata MUST 记录 protocol、split seed、manifest identity 与 `test_evaluated=false`
 
 ### Requirement: split 间必须隔离 block、基础帧、天气副本与窗口帧
 
-协议校验 MUST 允许并要求同一 `(scene_id,cav_id)` 的不同 block 出现在 train、validation、test，同时拒绝跨 split block、base sample、天气副本和窗口实际引用帧。系统 MUST 审计 sample/target identity、完整 source row、历史/未来 frame、weather binding、block identity 与 split assignment。共享 RSU context MUST 作为 diagnostic overlap 披露，不得用于改变 block assignment。
+协议校验 MUST 允许同一 `(scene_id,cav_id)` 的不同 block 出现在不同 split，同时拒绝跨 split block、base sample、weather copy 和实际窗口帧重叠。共享 RSU context MAY 作为 diagnostic overlap 披露，不得改变 assignment。
 
-#### Scenario: 其他 split 的 block 被并入训练输入
+#### Scenario: 其他 split 数据进入训练
 
-- **WHEN** validation/test block 或窗口被加入 train，或任一窗口跨 block
-- **THEN** audit MUST 失败
-- **AND** 配置不得进入训练或开发评估
+- **WHEN** validation/test block、base frame、weather copy 或窗口被并入 train
+- **THEN** audit MUST 失败且训练不得启动
 
-### Requirement: 可拟合状态只能来自训练集
+### Requirement: sensing 模型只能读取四模态历史输入
 
-GPS scaler、CSI codebook、prototype 统计、contrastive memory/negative queue 与其他 normalization artifact MUST 只由绑定 protocol 的 train loader 拟合。validation/test MUST 不参与 optimizer、scheduler、extension state、训练采样、prototype 初始化、class prior 或可拟合统计更新；checkpoint selection 只能读取 validation loss。test 只有显式 `--evaluate-test` 才可构建，且只能用于最终只读评估。
+four-modal topology predictor MUST 只消费 image、radar、gps、lidar、temporal/availability mask 与未来 beam label。CSI、channel、path、beam power、历史 beam、weather、scene、domain、corruption type 或 severity MUST 不得进入 model/loss；weather/domain MAY 仅用于只读评估分组。
 
-#### Scenario: 运行开发验证
+#### Scenario: 配置请求旧路线输入
 
-- **WHEN** 系统对 MMW validation loader 评估
-- **THEN** validation MUST 是只读输入
-- **AND** 默认不得构建 test dataset，metadata MUST 保持 `test_evaluated=false`
+- **WHEN** model、loss 或 dataset 声明 CSI sidecar、stage、risk、learned fusion 或任一禁止输入
+- **THEN** strict config validation MUST 在 dataset/model 创建前失败
 
-### Requirement: DeepSense6G 不受 MMW protocol 重解释
+### Requirement: 可拟合 sensing 状态只能来自 train
 
-DeepSense6G MUST 保留 Scene31--34、四模态和 64 类 future-beam 数据契约。它可以有 train/test 或显式 validation CSV，但不得要求 MMW trajectory protocol。
+GPS scaler、prototype、normalization、memory/queue 与其他可拟合 sensing state MUST 只使用绑定 protocol 的 train role。validation/test MUST 不更新 optimizer、scheduler、prototype、statistics 或 checkpoint state；checkpoint selection MAY 只读取 validation loss。
+
+#### Scenario: 开发验证
+
+- **WHEN** validation evaluator 运行 15-mask matrix
+- **THEN** validation MUST 保持只读且 test dataset MUST 不构建
+- **AND** report MUST 记录 `claim_ineligible=true`、`outer_test_accessed=false`
+
+### Requirement: probing likelihood 只能使用 train radio ground truth
+
+TBCP MAY 拟合独立 topology likelihood artifact，但只允许读取绑定 train role 的官方 64-beam power 与 argmax label。artifact MUST 记录 train identity/count/hash、source content hash、protocol 与 topology provenance；MUST NOT 进入 sensing model forward、loss、optimizer、checkpoint 或 validation fitting。
+
+#### Scenario: validation/test 尝试更新 likelihood
+
+- **WHEN** fitter 收到非 train role 或 identity/hash 漂移
+- **THEN** MUST 在读取完整目标 power 前失败
+- **AND** 不得通过 confirmation、trainval、validation replay 或 test sensitivity 更新 artifact
+
+### Requirement: finite probing 必须隔离 evaluation radio ground truth
+
+radio simulator MAY 私有持有 evaluation 样本完整 64-beam power，但 candidate policy MUST 只接收 sensing posterior、train-only likelihood 与已请求 measurements。GT、channel、未请求 power、完整 vector 与 metric denominator MUST 不进入非 oracle policy。
+
+#### Scenario: policy 请求 oracle 信息
+
+- **WHEN** 非 oracle candidate path 尝试读取完整 power、GT 或未请求 beam
+- **THEN** API MUST 拒绝且不得生成可用报告
+
+### Requirement: test 默认封存
+
+MMW test 只有独立显式 `--evaluate-test` 才可构建，并只能用于最终只读评估。confirmation、trainval、merged split、validation/test driven model/policy selection MUST 被拒绝。
+
+#### Scenario: 未授权 test 请求
+
+- **WHEN** 开发训练、matrix、probing 或 calibration 没有显式 test 授权
+- **THEN** loader 集合 MUST 只有 train/validation 且 metadata MUST 保持 `test_evaluated=false`
+
+### Requirement: DeepSense6G 保持独立
+
+DeepSense6G MUST 保留 Scene31--34、四模态和 64 类 future-beam 契约，不得要求 MMW protocol。
 
 #### Scenario: 加载 DeepSense6G recipe
 
-- **WHEN** recipe 没有 MMW data protocol
-- **THEN** 数据工厂 MUST 使用其独立 split 契约
-
-### Requirement: PCPF-T 可拟合风险状态只能来自绑定协议的 train role
-
-PCPF-T 的风险分量 mean/std、静态能力先验、`mean_train_risk`、温度、解析融合参数和 checkpoint selection MUST 只使用所绑定 `mmw_id_stratified_block_v1` seed manifest 的 train role 与只读 validation role。所有可拟合统计 MUST 仅遍历 manifest 声明的 train windows，validation/test MUST 不更新模型、统计、阈值、prototype、memory bank 或 gate；默认运行 MUST 记录 `test_evaluated=false`。
-
-#### Scenario: 准备 Stage 2 或 Stage 3
-
-- **WHEN** trainer 调用 PCPF-T 的 stage preparation
-- **THEN** preparation MUST 只接收 train dataset 和 train temporal-missing transform
-- **AND** 产物 MUST 记录 protocol、split role、遍历范围和 train-only 状态
-
-### Requirement: 历史 development evaluation 必须显式降级声明
-
-PCPF-T MAY 对 validation 做只读诊断，但配置和全部开发报告 MUST 固定记录 `claim_ineligible: true`。test 只能由独立显式最终评估读取；confirmation、trainval、merged split 或 test-driven gate/融合/模型选择 MUST 被拒绝。
-
-#### Scenario: 评估 validation 或显式 test
-
-- **WHEN** resolved config 运行开发 validation 或显式最终 test
-- **THEN** evaluator MUST 保持只读并输出 `claim_ineligible: true`
-- **AND** 未显式授权的 test 请求 MUST 在 dataset 创建前失败
-
-### Requirement: PCPF-T 输入必须保持历史 sensing-only
-
-PCPF-T 默认模型、风险 target 和 stage preparation MUST 只消费 canonical image、radar、gps、lidar、temporal availability mask 与未来 beam label。只有配置显式声明 `use_sparse_csi=true` 时，模型 MAY 额外消费从同一样本五帧历史 `csi1..csi5` channel 引用按预注册 2x2 默认选择确定性生成的 sparse CSI；C2 开销筛选及其预注册 J2 三阶段 lineage MAY 使用同一个 4x2 选择。当前/未来 CSI、未来 channel、path、beam power、历史 beam、天气、场景和 corruption metadata MUST 不得进入 forward、风险 target 或可拟合统计；天气与 domain MAY 仅作为评估分组元数据。
-
-#### Scenario: 配置携带禁止字段
-
-- **WHEN** PCPF-T model、loss 或 risk 配置声明任一禁止输入
-- **THEN** 严格配置校验 MUST 在模型和 dataset 创建前失败
-
-#### Scenario: 构建 sparse CSI batch
-
-- **WHEN** PCPF-T 配置显式启用历史 sparse CSI
-- **THEN** dataset MUST 验证五个 channel 引用分别匹配历史 frame id 且最后历史帧早于 target
-- **AND** 生成与编码 MUST 不注入 AWGN、dropout、corruption、当前/未来 CSI 或虚构 SNR
-- **AND** metadata MUST 记录 split role、selection/codebook identity 与 `snr_available=false`
+- **WHEN** 用户加载保留的 Scene31--34 配置
+- **THEN** 系统 MUST 使用 DeepSense6G 自身 split 与 train-only normalization 契约
+- **AND** MUST NOT 注入 MMW manifest、topology audit 或 probing artifact
