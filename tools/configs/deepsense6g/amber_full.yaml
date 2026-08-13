@@ -1,0 +1,86 @@
+_base_: ../../../configs/deepsense6g/_base.yaml
+experiment:
+  name: deepsense6g-amber-full-local
+  claim_ineligible: true
+model:
+  primary:
+    type: modular_sequence
+    modalities: [image, radar, gps, lidar]
+    image_profile: rgb_imagenet
+    image_channels: 3
+    radar_channels: 2
+    gps_input_size: 3
+    lidar_channels: 3
+    feature_size: 64
+    d_model: 64
+    num_classes: 64
+    num_pred: 1
+    consume_missing_modality_metadata: true
+    encoders:
+      image:
+        type: resnet34_spatial_tokens
+        output_dim: 64
+        pretrained: false
+        freeze_backbone: false
+        image_size: [224, 224]
+        token_pool_size: [2, 2]
+      radar:
+        type: resnet18_spatial_tokens
+        output_dim: 64
+        pretrained: false
+        freeze_backbone: false
+        in_channels: 2
+        image_size: [128, 64]
+        token_pool_size: [2, 2]
+      gps:
+        type: gps_mlp
+        output_dim: 64
+      lidar:
+        type: resnet18_spatial_tokens
+        output_dim: 64
+        pretrained: false
+        freeze_backbone: false
+        in_channels: 3
+        image_size: [224, 224]
+        token_pool_size: [2, 2]
+    representation_core:
+      type: amber_full_adaptive_mask_transformer
+      d_model: 64
+      num_heads: 4
+      modality_layers: 1
+      fusion_layers: 2
+      dropout: 0.1
+      max_seq_len: 8
+      max_spatial_tokens: 4
+      num_cma_queries: 4
+      cma_dim: 64
+      cma_temperature: 0.2
+      mask_token_strategy: learned_per_modality
+      auxiliary_loss_weights:
+        l2: 0.1
+        cma: 0.05
+    heads:
+      beam:
+        type: beam_head
+loss:
+  type: focal_loss
+  alpha: 1
+  gamma: 2
+  auxiliary:
+    amber_full:
+      enabled: true
+      l2_weight: 0.1
+      cma_weight: 0.05
+training:
+  checkpoint_selection: last
+  final_test:
+    enabled: true
+  final_test_missing_matrix: true
+output:
+  dir: outputs/deepsense6g_secondary_transfer_v3/amber_full
+  run_name: seed1
+  progress:
+    enabled: false
+comparability:
+  strict_ranking_allowed: false
+  claim_status: local_experimental_baseline

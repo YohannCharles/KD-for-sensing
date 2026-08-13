@@ -1,0 +1,22 @@
+_base_: _base.yaml
+temporal_missing:
+  enabled: true
+  history_window: 5
+  prediction_window: 1
+  mode: balanced_pattern_schedule
+  schedule_id: mmw_fair_whole_modality_v1
+  panel_size: 480
+  condition_counts:
+    clean: 120
+    drop1: 120
+    drop2: 120
+    drop3: 120
+    token20: 0
+    token40: 0
+    token60: 0
+    token80: 0
+    token90: 0
+  subset_balance: exact_within_drop_count
+  token_balance: exact_aggregate_cell_marginals
+output:
+  dir: outputs/four_modal_topology_predictor_radar_robust

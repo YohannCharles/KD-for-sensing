@@ -1,0 +1,10 @@
+_base_: radar_robust_base.yaml
+loss:
+  four_modal_topology:
+    hard_label_smoothing: 0.1
+    unimodal_soft_weight: 0.0
+    use_beam_prototype_alignment: false
+    lambda_proto: 0.0
+    lambda_modality_proto: 0.0
+output:
+  dir: outputs/four_modal_topology_predictor_radar_robust_uniform_ls

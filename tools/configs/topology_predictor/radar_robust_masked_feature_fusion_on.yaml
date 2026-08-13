@@ -1,0 +1,6 @@
+_base_: radar_robust_on.yaml
+model:
+  primary:
+    fusion_mode: masked_feature_mlp
+output:
+  dir: outputs/four_modal_topology_predictor_masked_feature_fusion

@@ -22,10 +22,16 @@ from kd_sensing.data.mmw.trajectory_protocol import (
     trajectory_manifest_path,
     validate_trajectory_config_protocol,
 )
+from kd_sensing.data.temporal_missing import (
+    WHOLE_ONLY_PATTERN_CONDITION_COUNTS,
+    WHOLE_ONLY_PATTERN_PANEL_SIZE,
+    WHOLE_ONLY_PATTERN_SCHEDULE_ID,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 METHODS = ("U0", "amber_full", "rmbp_mm")
+SENSING_MODALITIES = ("image", "radar", "gps", "lidar")
 METHOD_BASES = {
     "U0": "configs/mmw/u0.yaml",
     "amber_full": "configs/mmw/amber_full.yaml",
@@ -33,6 +39,66 @@ METHOD_BASES = {
 }
 DEFAULT_OUTPUT_ROOT = "outputs/mmw_trajectory_u0"
 DEFAULT_PROTOCOL = trajectory_manifest_path(ROOT / "outputs", TRAJECTORY_SPLIT_SEED)
+
+
+def _normalise_checkpoint_selection(value: str | None) -> str | None:
+    """Validate the trainer's checkpoint policy while preserving omitted defaults."""
+
+    if value is None:
+        return None
+    normalised = str(value).strip().lower()
+    if normalised not in {"last", "best_validation_loss"}:
+        raise ValueError("checkpoint_selection must be 'last' or 'best_validation_loss'.")
+    return normalised
+
+
+def _bind_optional_strict_caches(
+    cfg: dict[str, Any],
+    *,
+    frame_cache_root: Path | None,
+    gps_coordinate_cache_root: Path | None,
+) -> None:
+    """Bind a matched pair of strict image/LiDAR and GPS caches, when requested."""
+
+    if (frame_cache_root is None) != (gps_coordinate_cache_root is None):
+        raise ValueError("frame_cache_root and gps_coordinate_cache_root must be provided together")
+    if frame_cache_root is None:
+        return
+
+    frame_root = Path(frame_cache_root).expanduser().resolve()
+    gps_root = Path(gps_coordinate_cache_root).expanduser().resolve()
+    if not frame_root.is_dir():
+        raise FileNotFoundError(f"MMW frame cache root is missing: {frame_root}")
+    if not gps_root.is_dir():
+        raise FileNotFoundError(f"MMW GPS coordinate cache root is missing: {gps_root}")
+
+    dataset = cfg.setdefault("data", {}).setdefault("dataset", {})
+    dataset.update(
+        {
+            "frame_cache_root": str(frame_root),
+            "frame_cache_strict": True,
+            "gps_coordinate_cache_root": str(gps_root),
+        }
+    )
+
+
+def _apply_temporal_schedule(cfg: dict[str, Any], *, whole_modality: bool) -> None:
+    """Apply the optional pre-registered whole-modality schedule."""
+
+    if not whole_modality:
+        return
+    temporal = cfg.setdefault("temporal_missing", {})
+    temporal.update(
+        {
+            "enabled": True,
+            "mode": "balanced_pattern_schedule",
+            "schedule_id": WHOLE_ONLY_PATTERN_SCHEDULE_ID,
+            "panel_size": int(WHOLE_ONLY_PATTERN_PANEL_SIZE),
+            "condition_counts": copy.deepcopy(WHOLE_ONLY_PATTERN_CONDITION_COUNTS),
+            "subset_balance": "exact_within_drop_count",
+            "token_balance": "exact_aggregate_cell_marginals",
+        }
+    )
 
 
 def build_config(
@@ -45,10 +111,21 @@ def build_config(
     epochs: int,
     batch_size: int,
     smoke: bool = False,
+    whole_modality: bool = False,
+    checkpoint_selection: str | None = None,
+    frame_cache_root: Path | None = None,
+    gps_coordinate_cache_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Build one train/validation config from a retained route and manifest."""
+    """Build one train/validation config from a retained route and manifest.
+
+    The canonical launcher path intentionally leaves the tracked recipe's temporal
+    schedule and checkpoint policy untouched.  Ablation/baseline runs opt into the
+    pre-registered whole-modality panel and validation-best selection explicitly.
+    """
     if method not in METHOD_BASES:
         raise ValueError(f"Unsupported MMW method: {method}")
+
+    selected_checkpoint = _normalise_checkpoint_selection(checkpoint_selection)
 
     cfg = _load_base_config(ROOT / METHOD_BASES[method])
     dataset = cfg.setdefault("data", {}).setdefault("dataset", {})
@@ -57,6 +134,16 @@ def build_config(
     cfg.setdefault("data", {}).update(split_protocol=TRAJECTORY_PROTOCOL_MODE, split_seed=int(split_seed))
     cfg.setdefault("experiment", {}).update(name=method, seed=int(train_seed), train_seed=int(train_seed))
     bind_trajectory_config(cfg, protocol_path)
+    _apply_temporal_schedule(cfg, whole_modality=whole_modality)
+    _bind_optional_strict_caches(
+        cfg,
+        frame_cache_root=frame_cache_root,
+        gps_coordinate_cache_root=gps_coordinate_cache_root,
+    )
+
+    primary = cfg.setdefault("model", {}).setdefault("primary", {})
+    if method in {"amber_full", "rmbp_mm"} and tuple(primary.get("modalities", ())) != SENSING_MODALITIES:
+        raise ValueError(f"{method} sensing-only baseline must use modalities {list(SENSING_MODALITIES)}")
 
     loader = cfg.setdefault("data", {}).setdefault("dataloader", {})
     loader.update(
@@ -68,6 +155,8 @@ def build_config(
     )
     training = cfg.setdefault("training", {})
     training.update({"epochs": 1 if smoke else int(epochs), "max_epochs": 1 if smoke else int(epochs)})
+    if selected_checkpoint is not None:
+        training["checkpoint_selection"] = selected_checkpoint
     training["final_test"] = {"enabled": False}
     cfg["output"] = {
         "dir": str(output_root / method),
@@ -123,6 +212,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gpus")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--whole-modality",
+        action="store_true",
+        help="Use the pre-registered panel480 clean/drop1/drop2/drop3 schedule.",
+    )
+    parser.add_argument(
+        "--checkpoint-selection",
+        choices=("last", "best_validation_loss"),
+        default=None,
+        help="Optional checkpoint policy; omitted leaves the canonical recipe unchanged.",
+    )
+    parser.add_argument("--frame-cache-root", default=None, help="Optional strict MMW image/LiDAR cache root.")
+    parser.add_argument(
+        "--gps-coordinate-cache-root",
+        default=None,
+        help="Optional strict MMW GPS coordinate cache root; must be paired with --frame-cache-root.",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -131,6 +237,11 @@ def main(argv: list[str] | None = None) -> int:
         methods = tuple(_csv(args.methods))
         train_seeds = tuple(int(item) for item in _csv(args.train_seeds))
         gpus = None if args.gpus is None else tuple(int(item) for item in _csv(args.gpus))
+        checkpoint_selection = _normalise_checkpoint_selection(args.checkpoint_selection)
+        frame_cache_root = None if args.frame_cache_root is None else Path(args.frame_cache_root)
+        gps_coordinate_cache_root = (
+            None if args.gps_coordinate_cache_root is None else Path(args.gps_coordinate_cache_root)
+        )
         protocol_path = Path(args.protocol).resolve()
         if protocol_path != trajectory_manifest_path(protocol_path.parents[2], args.split_seed):
             raise ValueError("--protocol path and --split-seed do not identify the same trajectory manifest.")
@@ -144,25 +255,32 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     output_root.mkdir(parents=True, exist_ok=True)
-    for job in jobs:
-        config_path = Path(job["config_path"])
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config = build_config(
-            job["method"],
-            output_root,
-            protocol_path=protocol_path,
-            split_seed=args.split_seed,
-            train_seed=int(job["train_seed"]),
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            smoke=args.smoke,
-        )
-        dump_config(config, config_path)
-        resolved = load_config(config_path)
-        validate_trajectory_config_protocol(resolved)
-        dump_config(resolved, config_path)
-        for key in ("config_path", "log_path", "run_dir"):
-            job[key] = str(Path(job[key]).relative_to(ROOT))
+    try:
+        for job in jobs:
+            config_path = Path(job["config_path"])
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config = build_config(
+                job["method"],
+                output_root,
+                protocol_path=protocol_path,
+                split_seed=args.split_seed,
+                train_seed=int(job["train_seed"]),
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                smoke=args.smoke,
+                whole_modality=args.whole_modality,
+                checkpoint_selection=checkpoint_selection,
+                frame_cache_root=frame_cache_root,
+                gps_coordinate_cache_root=gps_coordinate_cache_root,
+            )
+            dump_config(config, config_path)
+            resolved = load_config(config_path)
+            validate_trajectory_config_protocol(resolved)
+            dump_config(resolved, config_path)
+            for key in ("config_path", "log_path", "run_dir"):
+                job[key] = _manifest_path(Path(job[key]))
+    except (FileNotFoundError, ValueError) as exc:
+        parser.error(str(exc))
     manifest_path.write_text(json.dumps(jobs, indent=2) + "\n", encoding="utf-8")
 
     if args.dry_run:
@@ -211,6 +329,16 @@ def _run_jobs(jobs: list[dict[str, Any]], manifest_path: Path) -> int:
 
 def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _manifest_path(path: Path) -> str:
+    """Keep job manifests portable for roots inside or outside the repository."""
+
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(ROOT))
+    except ValueError:
+        return str(resolved)
 
 
 def _now() -> str:

@@ -157,34 +157,34 @@ def test_synthetic_probe_noise_is_matched_by_sample_and_beam(tmp_path: Path) -> 
         simulator.probe("sample", (2,), measurement_error_std_db=float("nan"))
 
 
-def test_adaptive_local7_preserves_core_wrap_and_uses_narrowest_tie() -> None:
+def test_adaptive_local3_preserves_core_wrap_and_uses_narrowest_tie() -> None:
     probability = np.zeros(64, dtype=np.float64)
     probability[0] = 1.0
 
     candidates, spacing = build_adaptive_local_candidates(probability)
 
     assert spacing == 1
-    assert candidates == (61, 62, 63, 0, 1, 2, 3)
+    assert candidates == (63, 0, 1)
     assert {63, 0, 1}.issubset(candidates)
-    assert len(candidates) == len(set(candidates)) == 7
+    assert len(candidates) == len(set(candidates)) == 3
 
 
-def test_adaptive_local7_expands_for_a_distant_posterior_mode() -> None:
+def test_adaptive_local3_expands_for_a_distant_posterior_mode() -> None:
     probability = np.zeros(64, dtype=np.float64)
     probability[[0, 16, 48, 10]] = [0.30, 0.25, 0.25, 0.20]
 
     candidates, spacing = build_adaptive_local_candidates(probability)
 
-    assert spacing == 8
-    assert candidates == (48, 56, 63, 0, 1, 8, 16)
+    assert spacing == 16
+    assert candidates == (48, 0, 16)
     assert set(ADAPTIVE_SPACINGS) == set(ADAPTIVE_OFFSETS)
-    assert {63, 0, 1}.issubset(candidates)
+    assert {48, 0, 16}.issubset(candidates)
 
 
-def test_posterior_top7_uses_stable_lower_label_ties() -> None:
+def test_posterior_top3_uses_stable_lower_label_ties() -> None:
     probability = np.full(64, 1.0 / 64.0, dtype=np.float64)
 
-    assert build_posterior_topk_candidates(probability) == (0, 1, 2, 3, 4, 5, 6)
+    assert build_posterior_topk_candidates(probability) == (0, 1, 2)
 
 
 def test_posterior_policies_reject_invalid_probability_without_oracle_inputs() -> None:
@@ -251,8 +251,8 @@ def test_probe_diagnostic_writes_complete_bounded_artifacts(tmp_path: Path) -> N
 
     assert result["config"]["outer_test_accessed"] is False
     assert result["config"]["model_trained_or_updated"] is False
-    assert result["config"]["probing_policy"]["budget"] == 7
-    assert result["config"]["probing_policy"]["adaptive_spacings"] == [1, 2, 4, 8]
+    assert result["config"]["probing_policy"]["budget"] == 3
+    assert result["config"]["probing_policy"]["adaptive_spacings"] == [1, 2, 4, 8, 16]
     for name in (
         "config.json",
         "summary.csv",
@@ -270,13 +270,13 @@ def test_probe_diagnostic_writes_complete_bounded_artifacts(tmp_path: Path) -> N
     with gzip.open(output / "per_sample_results.csv.gz", "rt", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     local3 = [row for row in rows if row["strategy"] == "Local Scan" and row["K"] == "3"]
-    adaptive7 = [row for row in rows if row["strategy"] == "Adaptive Local" and row["K"] == "7"]
-    posterior7 = [row for row in rows if row["strategy"] == "Posterior Top-K" and row["K"] == "7"]
+    adaptive3 = [row for row in rows if row["strategy"] == "Adaptive Local" and row["K"] == "3"]
+    posterior3 = [row for row in rows if row["strategy"] == "Posterior Top-K" and row["K"] == "3"]
     assert len(local3) == len(row_ids)
-    assert len(adaptive7) == len(posterior7) == len(row_ids)
+    assert len(adaptive3) == len(posterior3) == len(row_ids)
     assert all(row["correct"] == row["gt_covered"] == "1" for row in local3)
-    assert all(row["adaptive_spacing"] == "1" for row in adaptive7)
-    assert all(row["beam_spread"] and row["beam_normalized_entropy"] for row in adaptive7)
+    assert all(row["adaptive_spacing"] == "1" for row in adaptive3)
+    assert all(row["beam_spread"] and row["beam_normalized_entropy"] for row in adaptive3)
     with pytest.raises(ValueError, match="Refusing to overwrite"):
         run_probe_diagnostic(
             evidence,
@@ -590,29 +590,29 @@ def test_tbcp_diagnostic_writes_15_mask_closed_loop_trace(tmp_path: Path) -> Non
         include_batch_feedback_experiments=True,
     )
 
-    assert result["config"]["primary_policy"]["name"] == "TBCP-7"
+    assert result["config"]["primary_policy"]["name"] == "TBCP-3"
     assert result["config"]["outer_test_accessed"] is False
     groups = {row["group"] for row in result["group_summary"]}
     assert {"Full", "Drop-1 Worst", "Drop-2 Worst", "Single Worst"}.issubset(groups)
     with gzip.open(output / "per_sample_results.csv.gz", "rt", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    tbcp_rows = [row for row in rows if row["method"] == "TBCP-7"]
+    tbcp_rows = [row for row in rows if row["method"] == "TBCP-3"]
     diagonal_rows = [row for row in rows if row["method"] == TBCP_DIAGONAL_METHOD]
     assert len(tbcp_rows) == len(row_ids)
     assert len(diagonal_rows) == len(row_ids)
     assert len([row for row in rows if row["method"] == "Topology Open-loop Gain-7"]) == len(row_ids)
-    assert len([row for row in rows if row["method"] == "TBCP-7"]) == len(row_ids)
+    assert len([row for row in rows if row["method"] == "TBCP-3"]) == len(row_ids)
     for budget in (3, 5, 9):
         for method in (f"TBCP-{budget}", f"Topology Open-loop Gain-{budget}", f"Posterior Top-{budget}"):
             selected = [row for row in rows if row["method"] == method]
             assert len(selected) == len(row_ids)
             assert all(len(json.loads(row["probe_indices"])) == budget for row in selected)
-    assert all(len(json.loads(row["probe_indices"])) == 7 for row in tbcp_rows)
-    assert all(len(json.loads(row["probe_measurements"])) == 7 for row in tbcp_rows)
-    assert all(len(json.loads(row["posterior_map_trace"])) == 8 for row in tbcp_rows)
+    assert all(len(json.loads(row["probe_indices"])) == 3 for row in tbcp_rows)
+    assert all(len(json.loads(row["probe_measurements"])) == 3 for row in tbcp_rows)
+    assert all(len(json.loads(row["posterior_map_trace"])) == 4 for row in tbcp_rows)
     assert result["config"]["covariance_ablation"]["modes"] == ["full", "diagonal"]
     assert result["config"]["defense_experiments"]["budgets"] == [3, 5, 7, 9]
-    assert result["config"]["defense_experiments"]["primary_budget_remains_frozen"] == 7
+    assert result["config"]["defense_experiments"]["primary_budget"] == 3
     assert result["config"]["batch_feedback_experiments"]["enabled"] is True
     assert result["config"]["batch_feedback_experiments"]["schedules"]["Batch-TBCP-2+2+3"]["measurement_rounds"] == 3
     assert result["config"]["batch_feedback_experiments"]["schedules"]["Batch-TBCP-2+5"]["feedback_updates"] == 1
@@ -635,7 +635,7 @@ def test_tbcp_diagnostic_writes_15_mask_closed_loop_trace(tmp_path: Path) -> Non
     assert "Batch-TBCP-3+4" in Path(result["report"]).read_text(encoding="utf-8")
     with gzip.open(output / "tbcp_trace.csv.gz", "rt", encoding="utf-8") as handle:
         trace_rows = list(csv.DictReader(handle))
-    assert len(trace_rows) == len(row_ids) * 7
+    assert len(trace_rows) == len(row_ids) * 3
 
     run_paths = {}
     for seed in (1, 2, 3):
@@ -663,9 +663,10 @@ def test_tbcp_diagnostic_writes_15_mask_closed_loop_trace(tmp_path: Path) -> Non
         run_paths[seed] = run_path
     summary = summarize_tbcp_replays(run_paths, output_dir=tmp_path / "three-seed")
     assert summary["config"]["seeds"] == [1, 2, 3]
-    assert summary["stability"]["Posterior5+Hill2"]["pattern_count"] == 15
+    assert summary["stability"]["Posterior Top-3"]["pattern_count"] == 15
     assert summary["stability"][TBCP_DIAGONAL_METHOD]["pattern_count"] == 15
-    assert summary["stability"]["Topology Open-loop Gain-7"]["pattern_count"] == 15
+    assert summary["stability"]["Topology Open-loop Gain-3"]["pattern_count"] == 15
+    assert summary["stability"]["Batch-TBCP-2+1"]["pattern_count"] == 15
     assert summary["stability"]["Batch-TBCP-2+2+3"]["pattern_count"] == 15
     assert summary["stability"]["Batch-TBCP-3+4"]["pattern_count"] == 15
     assert Path(summary["report"]).is_file()
@@ -733,5 +734,5 @@ def test_tbcp_diagnostic_writes_15_mask_closed_loop_trace(tmp_path: Path) -> Non
         output_dir=tmp_path / "robustness-three-seed",
     )
     assert robustness_summary["config"]["checkpoint_seeds"] == [1, 2, 3]
-    assert robustness_summary["stability"]["sigma_6db_vs_Posterior5+Hill2"]["condition_count"] == 9
+    assert robustness_summary["stability"]["sigma_6db_vs_Posterior Top-3"]["condition_count"] == 9
     assert Path(robustness_summary["report"]).is_file()

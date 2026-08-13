@@ -1,0 +1,6 @@
+_base_: radar_robust_masked_feature_fusion_off.yaml
+loss:
+  four_modal_topology:
+    joint_topology_weight: 0.0
+output:
+  dir: outputs/four_modal_topology_predictor_joint_topology

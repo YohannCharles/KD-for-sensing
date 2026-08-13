@@ -9,9 +9,9 @@
 - **WHEN** posterior 质量集中在 beam 63 和 beam 0
 - **THEN** circular mean、beam variance 和 spread MUST 将 63/0 视为 phase-cycle 相邻，不得按线性距离分开 63 格
 
-### Requirement: TBCP-7 必须使用 train-only topology likelihood 闭环更新 belief
+### Requirement: TBCP-3 必须使用 train-only topology likelihood 闭环更新 belief
 
-`TBCP-7` MUST 是固定 K=7 的主 probing policy。它 MUST 以冻结 sensing posterior 为原始 prior，以第一束 measurement 为 reference，并使用 train-only artifact 的相对 log-gain joint Gaussian likelihood 更新 64-beam posterior。联合 covariance MUST 包含共享 reference 的相关项；每轮 MUST 从原始 prior 与当前全部 measurement 重新计算，MUST NOT 将相关 measurement 当成独立证据重复相乘或使用 validation-tuned likelihood temperature。
+`TBCP-3` MUST 是固定 K=3 的主 probing policy。它 MUST 采用 2+1 反馈：前两束由冻结 sensing posterior 与 train-only gain utility 确定并作为一个 measurement batch 请求，随后以第一束 measurement 为 reference，用 train-only artifact 的相对 log-gain joint Gaussian likelihood 更新 64-beam posterior，再选择第三束。联合 covariance MUST 包含共享 reference 的相关项；更新 MUST 从原始 prior 与当前全部 measurement 重新计算，MUST NOT 将相关 measurement 当成独立证据重复相乘或使用 validation-tuned likelihood temperature。
 
 #### Scenario: 得到前两束 measurement
 
@@ -26,7 +26,7 @@
 
 ### Requirement: 下一束必须最大化 posterior expected terminal gain
 
-TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在未 probe beam 中最大化当前 posterior 下、加入该 candidate 后的期望最终 normalized gain；utility MUST 只使用 train-only `gain_kernel` 与已选择 indices。utility 完全相同 MUST 选择较小 beam index。获得至少两束 measurement 后，第三至第七束 MUST 使用更新 posterior，因此候选序列 MAY 随 requested feedback 改变。
+TBCP-3 的第一束 MUST 为 sensing MAP。第二束 MUST 在原始 posterior 下最大化加入该 candidate 后的期望最终 normalized gain；获得两束 measurement 后，第三束 MUST 使用更新 posterior 再最大化相同 utility。utility MUST 只使用 train-only `gain_kernel` 与已选择 indices；utility 完全相同 MUST 选择较小 beam index。候选策略不得读取 GT、完整 power 或未请求 measurement。
 
 #### Scenario: feedback 改变后续扫描位置
 
@@ -36,13 +36,19 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 
 #### Scenario: 完成固定预算 probing
 
-- **WHEN** policy 已请求七个唯一的合法 beam
-- **THEN** policy MUST 停止并从七个返回 measurement 中选择 power 最大者作为 final beam
+- **WHEN** policy 已请求三个唯一的合法 beam
+- **THEN** policy MUST 停止并从三个返回 measurement 中选择 power 最大者作为 final beam
 - **AND** ledger MUST 保存有序 indices、measurement、posterior trace、final beam、coverage 与 normalized gain
 
 ### Requirement: 批量反馈诊断必须保持固定预算与信息边界
 
-系统 MUST 支持预注册的 `Batch-TBCP-2+2+3`、`Batch-TBCP-2+5` 与 `Batch-TBCP-3+4` validation-only diagnostics。每个策略 MUST 请求恰好 7 个唯一 beam；同一 batch 内的后续 candidate MUST 不读取该 batch 的 measurement，只有整个 batch 返回后才允许一次联合 posterior update。批量策略 MUST 使用与 `TBCP-7` 相同的 sensing prior、train-only likelihood、covariance mode、simulator、final measured-argmax 和 validation identity。
+系统 MUST 支持主策略 `Batch-TBCP-2+1` 以及预注册的 K=7 batch controls `Batch-TBCP-2+2+3`、`Batch-TBCP-2+5` 与 `Batch-TBCP-3+4` validation-only diagnostics。主策略请求恰好 3 个唯一 beam、2 个 measurement rounds；K=7 controls 请求恰好 7 个 beam。每个策略同一 batch 内的后续 candidate MUST 不读取该 batch 的 measurement，只有整个 batch 返回后才允许一次联合 posterior update。批量策略 MUST 使用与 `TBCP-3` 相同的 sensing prior、train-only likelihood、covariance mode、simulator、final measured-argmax 和 validation identity。
+
+#### Scenario: 主线两批反馈
+
+- **WHEN** 执行 `Batch-TBCP-2+1`
+- **THEN** ledger MUST 记录 3 个 requested measurements、2 个 measurement rounds 和 1 个跨批 posterior update
+- **AND** candidate policy MUST 只接收第一批已经返回的 requested measurements
 
 #### Scenario: 批量策略减少反馈屏障
 
@@ -60,11 +66,11 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 
 - **WHEN** 执行 `Batch-TBCP-3+4`
 - **THEN** ledger MUST 记录 7 个 requested measurements、2 个 measurement rounds 和 1 个跨批 posterior update
-- **AND** 该结果 MUST 与 `Batch-TBCP-2+2+3`、`Batch-TBCP-2+5` 和严格串行 `TBCP-7` 成对报告，不得据此重新选择主策略
+- **AND** 该结果 MUST 与 `Batch-TBCP-2+2+3`、`Batch-TBCP-2+5` 和主策略 `TBCP-3` 成对报告，不得据此隐去 K=7 sensitivity
 
 ### Requirement: 两个创新点必须通过三 seed 嵌套消融分离
 
-系统 MUST 在原生四模态 topology supervision `off/on` 的重新训练三 seed validation-best checkpoints 上比较 `Direct Prediction`、`Posterior Top-7` 与 full-covariance `TBCP-7`。两个 topology 条件 MUST 使用同一 `mmw_id_stratified_block_v1` protocol、原生 15 个非空 sensing masks、相同 validation identity/order、同一个 train-only likelihood 和相同 K=7 simulator。系统 MUST 报告 topology 主效应、`TBCP-7 - Posterior Top-7` matched-budget 增益、端到端增益和 difference-in-differences 交互。
+系统 MUST 在原生四模态 topology supervision `off/on` 的重新训练三 seed validation-best checkpoints 上比较 `Direct Prediction`、`Posterior Top-3` 与 full-covariance `TBCP-3`。两个 topology 条件 MUST 使用同一 `mmw_id_stratified_block_v1` protocol、原生 15 个非空 sensing masks、相同 validation identity/order、同一个 train-only likelihood 和相同 K=3 simulator。系统 MUST 报告 topology 主效应、`TBCP-3 - Posterior Top-3` matched-budget 增益、端到端增益和 difference-in-differences 交互；K=5/7/9 只进入固定预算 sensitivity。
 
 #### Scenario: 运行嵌套消融
 
@@ -75,18 +81,18 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 #### Scenario: 匹配预算隔离第二个创新点
 
 - **WHEN** 计算第二个创新点的闭环贡献
-- **THEN** 主比较 MUST 为相同 topology 条件内 `TBCP-7 - Posterior Top-7`
-- **AND** `TBCP-7 - Direct Prediction` 只能作为端到端 pipeline 增益，不得冒充同预算 acquisition 消融
+- **THEN** 主比较 MUST 为相同 topology 条件内 `TBCP-3 - Posterior Top-3`
+- **AND** `TBCP-3 - Direct Prediction` 只能作为端到端 pipeline 增益，不得冒充同预算 acquisition 消融
 
 ### Requirement: 静态和一轮反馈策略必须作为同预算基线
 
-`Posterior-Top7`、`Local-7`、`Adaptive-Local-7`、`Uniform-7` 与 `Posterior5+Hill2` MUST 保留为 K=7 baseline/ablation，不得在样本级根据 validation 结果切换。`Posterior5+Hill2` MUST 先请求 sensing posterior Top-5，再只根据这五个 requested measurement 的最强 beam 补两个尚未请求的最近 phase-cycle neighbor。Oracle/Full-64 MUST 单独标记 claim-ineligible。
+`Posterior-Top3`、`Local-3`、`Adaptive-Local-3` 与 `Uniform-3` MUST 作为主 K=3 baseline；K=5/7/9 的 Posterior Top-K、TBCP-K 与 open-loop controls MUST 保留为预算 sensitivity，不得在样本级根据 validation 结果切换。Oracle/Full-64 MUST 单独标记 claim-ineligible。
 
 #### Scenario: baseline 构造候选
 
 - **WHEN** 任一非 oracle baseline 运行
 - **THEN** 它 MUST 不接收 GT、channel、CSI、完整 power 或未请求 measurement
-- **AND** 它 MUST 与 TBCP-7 使用相同 K、sample identity、simulator、final selection 和 normalized-gain 实现
+- **AND** 它 MUST 与主 TBCP-3 使用相同 K=3、sample identity、simulator、final selection 和 normalized-gain 实现
 
 ### Requirement: probing diagnostic 必须覆盖全部四模态非空 mask
 
@@ -99,7 +105,7 @@ TBCP-7 的第一束 MUST 为 sensing MAP。第二束以及后续每束 MUST 在�
 
 #### Scenario: 运行三 seed replay
 
-- **WHEN** topology-on seed 1/2/3 使用同一 protocol、topology、artifact 和 K=7 运行 validation replay
+- **WHEN** topology-on seed 1/2/3 使用同一 protocol、topology、artifact 和 K=3 运行 validation replay
 - **THEN** 报告 MUST 汇总全部 seed mean/std 与 paired delta，不得选择最有利 seed
 - **AND** 必须记录 `claim_ineligible=true`、`outer_test_accessed=false` 与 `model_trained_or_updated=false`
 
@@ -114,7 +120,7 @@ radio simulator MAY 私有缓存 evaluation 样本的完整 64-beam power，但 
 
 ### Requirement: robustness sensitivity 必须使用预注册 matched synthetic measurement error
 
-系统 MUST 提供一个与无噪声主诊断分离的 bounded robustness sensitivity。它 MUST 使用固定 `sigma_db={0,3,6}`、固定 noise seed、固定 replica 集与 stable-id hash subset；requested power MUST 按独立 per-beam dB error 扰动，且同一 `(sample_id, beam, replica)` 的标准正态 draw MUST 跨 policy、mask、batch size、checkpoint seed 与 sigma 复用。噪声参数 MUST 同时进入 TBCP joint likelihood；动态 TBCP 与 Posterior5+Hill2 MUST 真实重放 feedback-dependent candidate sequence，不得从无噪声 trace 推导。
+系统 MUST 提供一个与无噪声主诊断分离的 bounded robustness sensitivity。它 MUST 使用固定 `sigma_db={0,3,6}`、固定 noise seed、固定 replica 集与 stable-id hash subset；requested power MUST 按独立 per-beam dB error 扰动，且同一 `(sample_id, beam,replica)` 的标准正态 draw MUST 跨 policy、mask、batch size、checkpoint seed 与 sigma 复用。噪声参数 MUST 同时进入 TBCP joint likelihood；动态 TBCP-3 MUST 真实重放 feedback-dependent candidate sequence，不得从无噪声 trace 推导。
 
 #### Scenario: matched-noise replay
 
@@ -124,7 +130,7 @@ radio simulator MAY 私有缓存 evaluation 样本的完整 64-beam power，但 
 
 #### Scenario: noise 造成已覆盖但选错
 
-- **WHEN** K=7 candidates 包含 GT，但 noisy measurement argmax 选择其他 beam
+- **WHEN** K=3 candidates 包含 GT，但 noisy measurement argmax 选择其他 beam
 - **THEN** evaluator MUST 分别记录 coverage、Top-1 与 clean normalized gain，不得套用无噪声 `correct == covered` 断言
 
 #### Scenario: sensitivity provenance 或网格漂移
@@ -138,13 +144,13 @@ radio simulator MAY 私有缓存 evaluation 样本的完整 64-beam power，但 
 
 #### Scenario: 生成 feedback-overhead 报告
 
-- **WHEN** sensitivity 汇总 TBCP-7、Posterior5+Hill2 与静态 K=7 baseline
-- **THEN** 所有方法 MUST 共享七个 measurement slots，controller updates MUST 分别按 `5/1/0` 计数
+- **WHEN** sensitivity 汇总 TBCP-3、Batch-TBCP-2+1 与静态 K=3 baseline
+- **THEN** 所有方法 MUST 共享三个 measurement slots；TBCP-3 与 Batch-TBCP-2+1 MUST 记录一次 controller update，静态 baseline MUST 记录零次
 - **AND** 报告 MUST 使用固定 normalized overhead grid，不得根据 validation 结果挑选更有利的 payload duration 或 latency 参数
 
 ### Requirement: covariance 消融必须只移除 train-estimated cross-offset covariance
 
-系统 MUST 在无噪声完整 validation 上提供 `TBCP-7 full covariance` 与 `TBCP-7 diagonal covariance` 的三 seed paired ablation。diagonal control MUST 对同一个 train-only artifact 使用 `diag(diag(C))` 后再构造 relative-measurement joint covariance；共同 reference measurement 诱导的相关项 MUST 保留。两个方法 MUST 共用 sensing prior、likelihood mean、gain kernel、K=7、simulator、最终 measured-argmax、sample identity/order 和其余全部数值设置。
+系统 MUST 在无噪声完整 validation 上提供主 `TBCP-3 full covariance` 与 `TBCP-3 diagonal covariance` 的三 seed paired ablation。diagonal control MUST 对同一个 train-only artifact 使用 `diag(diag(C))` 后再构造 relative-measurement joint covariance；共同 reference measurement 诱导的相关项 MUST 保留。两个方法 MUST 共用 sensing prior、likelihood mean、gain kernel、K=3、simulator、最终 measured-argmax、sample identity/order 和其余全部数值设置。
 
 #### Scenario: 运行 diagonal covariance control
 
@@ -174,9 +180,9 @@ radio simulator MAY 私有缓存 evaluation 样本的完整 64-beam power，但 
 - **THEN** 候选序列 MUST 完全相同
 - **AND** 只有候选固定后的 measured-argmax final beam MAY 随返回 power 改变
 
-### Requirement: 预算敏感性必须预注册且不得替换主 K=7
+### Requirement: 预算敏感性必须预注册且不得替换主 K=3
 
-系统 MUST 在无噪声完整 validation 上运行固定 `K={3,5,7,9}` 的 `TBCP-K`、`Topology Open-loop Gain-K` 与 `Posterior Top-K`。每个 K 下三种方法 MUST 共用相同 posterior、sample identity/order、requested-measurement API、final selection 和 metric。K=7 MUST 保持主设定；其他预算 MUST 标记为 sensitivity，MUST NOT 根据 validation 最优点重新选择主 K 或修改 calibration/policy。
+系统 MUST 在无噪声完整 validation 上运行固定 `K={3,5,7,9}` 的 `TBCP-K`、`Topology Open-loop Gain-K` 与 `Posterior Top-K`。每个 K 下三种方法 MUST 共用相同 posterior、sample identity/order、requested-measurement API、final selection 和 metric。K=3 MUST 保持主设定；K=5/7/9 MUST 标记为 sensitivity，不得根据单一 mask 或 seed 隐去预算点或修改 calibration/policy。
 
 #### Scenario: 生成三 seed 预算曲线
 
@@ -184,8 +190,55 @@ radio simulator MAY 私有缓存 evaluation 样本的完整 64-beam power，但 
 - **THEN** summary MUST 对每个预注册 K 报告三 seed mean/std、逐 mask 与 macro/worst 结果
 - **AND** MUST 保留全部四个预算，包括不利点，并记录 `claim_ineligible=true`、`outer_test_accessed=false` 与 `model_trained_or_updated=false`
 
-#### Scenario: K=7 回归一致性
+#### Scenario: K=3 回归一致性
 
 - **WHEN** 启用预算曲线
-- **THEN** 曲线中的 TBCP-7 与 Posterior Top-7 MUST 与同一 run 的主 TBCP-7 和既有 baseline 使用同一候选、measurement 与指标
-- **AND** evaluator MUST 不为 K=7 建立第二套策略实现
+- **THEN** 曲线中的 TBCP-3 与 Posterior Top-3 MUST 与同一 run 的主 TBCP-3 和既有 baseline 使用同一候选、measurement 与指标
+- **AND** evaluator MUST 不为 K=3 建立第二套策略实现
+### Requirement: 公平 sensing-only ablation 与 baseline evidence
+
+实验主表中的模型 MUST 只接收 canonical `image、radar、gps、lidar` 五帧历史、availability mask 与 beam label；不得使用历史 beam index、CSI、channel、beam power 或未请求 measurement。AMBER-Full-local 与 RMBP-MM-local MUST 标注为 sensing-only local adaptation，并使用相同 MMW protocol、whole-modality missing schedule、seed 集、epoch budget 与 validation-best 选择。
+
+Topology ablation MUST 至少包含 hard CE、neighbor soft-only、prototype-only 和 soft+prototype full；普通 uniform label smoothing MUST 作为 topology-specificity control。Baseline posterior evidence MAY 接入相同 Direct/Posterior-Top3/OpenLoopGain3/TBCP3 evaluator，但必须通过 generic adapter 产生并记录独立 model-family provenance，不得放宽 native topology checkpoint loader。
+
+#### Scenario: baseline 信息权限一致
+
+- **WHEN** 比较 topology predictor 与 AMBER/RMBP baseline
+- **THEN** 各方法在主 sensing-only 表中均不得出现历史 beam index 或当前 beam-power 输入
+- **AND** 若报告历史 beam reference，必须单独标记 privileged、不得进入严格排名
+
+#### Scenario: baseline posterior probing
+
+- **WHEN** baseline logits 被送入 TBCP-3
+- **THEN** adapter MUST 只将当前 64 类 logits 转为 normalized posterior，复用同一 train-only likelihood、K=3 simulator、sample identity/order 和 final measured-argmax
+- **AND** adapter MUST 不读取 GT、完整 validation power 或未请求 beam
+
+### Requirement: 配对统计必须以 trajectory/domain cluster 为独立单位
+
+系统 MUST 对 Prototype-only 相对 Hard control 与 RMBP-MM-local 的 Direct、Posterior Top-3、TBCP-3 提升执行配对cluster bootstrap。比较 MUST 在相同checkpoint seed、stable sample、missing pattern和method上配对，并固定使用10000次bootstrap、seed 20260813；MUST 分别报告trajectory和domain cluster的95% percentile interval，不得将mask展开行视为独立样本、不得把crossed交叉单元伪装成独立物理轨迹或选择性只报有利cluster口径。
+
+#### Scenario: evidence身份或配对集合漂移
+
+- **WHEN** 两方法的seed、sample、mask、GT、domain、trajectory或protocol identity不一致
+- **THEN** bootstrap MUST 在抽样前失败关闭
+- **AND** 不得以内连接静默丢弃不匹配样本
+
+### Requirement: MMW test只能由一次性冻结panel统一解封
+
+final-test evaluator MUST 在读取test CSV、label或power之前验证并封存 Prototype-only、Hard、RMBP-MM-local、AMBER-Full-local × seed 1/2/3 的checkpoint/config SHA256、validation-best role、protocol/topology/normalization、train-only likelihood、15-mask和TBCP-3策略版本。解封后 MUST 统一报告 Direct、Posterior Top-3、TBCP-3及缺失0/1/2/3模态；任何方法缺失或绑定漂移 MUST 在test loader创建前终止。
+
+#### Scenario: test结果触发方法修改
+
+- **WHEN** final panel已写入`test_evaluated=true` seal或任何test evidence
+- **THEN** 后续不得根据结果修改模型、checkpoint、超参数、likelihood、TBCP策略或seed选择
+- **AND** 修复只允许处理不改变冻结方法语义的评估器实现错误，并必须保留原始失败审计记录
+
+### Requirement: complexity报告必须区分计算与RF probing开销
+
+系统 MUST 对四个冻结方法报告参数量、batch-1五帧完整四模态的profiler-covered FLOPs及同步CUDA forward median/p95。TBCP-3 MUST 记录3个beam measurements、2个measurement rounds与1次controller feedback update；与Full-64的比较只能将`61/64=95.3125%`表述为beam measurement count reduction，不得声称等比例真实时延或能耗下降。
+
+#### Scenario: 生成冻结方法复杂度表
+
+- **WHEN** complexity runner测量四方法的完整四模态sensing forward与TBCP-3协议开销
+- **THEN** 报告 MUST 绑定config/checkpoint、设备、精度、输入shape、warmup与重复次数
+- **AND** profiler未识别算子的FLOPs不得伪造，RF measurement减少不得表述为等比例wall-clock或能耗减少

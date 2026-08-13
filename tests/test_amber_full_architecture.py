@@ -225,3 +225,14 @@ def _synthetic_modalities(seq_len: int = 2) -> dict[str, torch.Tensor]:
         "gps_batch": torch.randn(2, seq_len, 8),
         "lidar_batch": torch.randn(2, seq_len, 8),
     }
+
+
+def test_modular_baseline_force_modality_mask_matches_native_whole_mask() -> None:
+    model = _amber_full_test_model().eval()
+    inputs = _synthetic_modalities()
+    mask = torch.tensor([[True, False, True, False], [False, True, False, True]])
+
+    forced = model(**inputs, force_modality_mask=mask)["logits"]
+    native = model(**inputs, modality_mask=mask)["logits"]
+
+    assert torch.allclose(forced, native)

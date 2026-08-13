@@ -23,7 +23,6 @@ from kd_sensing.eval.beam_topology_likelihood import (
     TBCP_BUDGET,
     TBCP_POLICY_VERSION,
     TopologyLikelihood,
-    build_posterior5_hill2_candidates,
     build_topology_open_loop_candidates,
     run_batched_tbcp,
     run_tbcp_batch,
@@ -39,41 +38,50 @@ from kd_sensing.utils.checkpoint import (
 
 NUM_BEAMS = 64
 DEFAULT_BUDGETS = (3, 5, 7, 9)
-ADAPTIVE_BUDGET = 7
-ADAPTIVE_SPACINGS = (1, 2, 4, 8)
+ADAPTIVE_BUDGET = TBCP_BUDGET
+ADAPTIVE_SPACINGS = (1, 2, 4, 8, 16)
 ADAPTIVE_OFFSETS = {
-    1: (-3, -2, -1, 0, 1, 2, 3),
-    2: (-4, -2, -1, 0, 1, 2, 4),
-    4: (-8, -4, -1, 0, 1, 4, 8),
-    8: (-16, -8, -1, 0, 1, 8, 16),
+    1: (-1, 0, 1),
+    2: (-2, 0, 2),
+    4: (-4, 0, 4),
+    8: (-8, 0, 8),
+    16: (-16, 0, 16),
 }
-PROBING_POLICY_VERSION = "sensing_guided_local7_posterior_mass_v1"
+PROBING_POLICY_VERSION = "sensing_guided_local3_posterior_mass_v1"
 SEVERE_SINGLE_PATTERNS = ("image_only", "radar_only", "gps_only", "lidar_only")
 EXPECTED_MODALITIES = ("image", "radar", "gps", "lidar")
 EXPECTED_TOPOLOGY = "ula_dft_phase_cycle_v1"
 EXPECTED_PROTOCOL = "mmw_id_stratified_block_v1"
-ROBUSTNESS_VERSION = "tbcp7_synthetic_measurement_error_v1"
+ROBUSTNESS_VERSION = "tbcp3_synthetic_measurement_error_v1"
 ROBUSTNESS_NOISE_MODEL_VERSION = "matched_lognormal_db_sha256_box_muller_v1"
 ROBUSTNESS_NOISE_STD_DB = (0.0, 3.0, 6.0)
 ROBUSTNESS_NOISE_REPLICAS = (0, 1, 2)
 ROBUSTNESS_NOISE_SEED = 20260809
 ROBUSTNESS_SAMPLE_COUNT = 512
 ROBUSTNESS_FEEDBACK_OVERHEAD = (0.0, 0.005, 0.01, 0.02, 0.05)
-TBCP_DIAGONAL_METHOD = "TBCP-7 Diagonal Covariance"
+PRIMARY_TBCP_METHOD = f"TBCP-{TBCP_BUDGET}"
+PRIMARY_POSTERIOR_METHOD = f"Posterior Top-{TBCP_BUDGET}"
+PRIMARY_LOCAL_METHOD = f"Local-{TBCP_BUDGET}"
+PRIMARY_ADAPTIVE_METHOD = f"Adaptive Local-{TBCP_BUDGET}"
+PRIMARY_UNIFORM_METHOD = f"Uniform-{TBCP_BUDGET}"
+PRIMARY_ORACLE_METHOD = f"Oracle Local-{TBCP_BUDGET}"
+PRIMARY_BATCH_METHOD = "Batch-TBCP-2+1"
+TBCP_DIAGONAL_METHOD = f"{PRIMARY_TBCP_METHOD} Diagonal Covariance"
 DEFENSE_EXPERIMENT_VERSION = "tbcp_open_loop_budget_curve_v1"
-BATCH_FEEDBACK_EXPERIMENT_VERSION = "tbcp7_fixed_batch_feedback_v2"
+BATCH_FEEDBACK_EXPERIMENT_VERSION = "tbcp3_primary_with_k7_controls_v1"
 BATCH_TBCP_METHODS = {
-    "Batch-TBCP-2+2+3": BATCH_TBCP_SCHEDULES[0],
-    "Batch-TBCP-2+5": BATCH_TBCP_SCHEDULES[1],
-    "Batch-TBCP-3+4": BATCH_TBCP_SCHEDULES[2],
+    PRIMARY_BATCH_METHOD: BATCH_TBCP_SCHEDULES[0],
+    "Batch-TBCP-2+2+3": BATCH_TBCP_SCHEDULES[1],
+    "Batch-TBCP-2+5": BATCH_TBCP_SCHEDULES[2],
+    "Batch-TBCP-3+4": BATCH_TBCP_SCHEDULES[3],
 }
 METHOD_FEEDBACK_UPDATES = {
     "Direct Prediction": 0,
-    "Local-7": 0,
-    "Adaptive Local-7": 0,
-    "Posterior Top-7": 0,
-    "Posterior5+Hill2": 1,
-    "TBCP-7": 5,
+    PRIMARY_LOCAL_METHOD: 0,
+    PRIMARY_ADAPTIVE_METHOD: 0,
+    PRIMARY_POSTERIOR_METHOD: 0,
+    PRIMARY_TBCP_METHOD: 1,
+    PRIMARY_BATCH_METHOD: 1,
     "Batch-TBCP-2+2+3": 2,
     "Batch-TBCP-2+5": 1,
     "Batch-TBCP-3+4": 1,
@@ -105,7 +113,7 @@ def build_adaptive_local_candidates(
     pred_prob: Sequence[float],
     num_beams: int = NUM_BEAMS,
 ) -> tuple[tuple[int, ...], int]:
-    """Choose a preregistered Local-7 spacing by predicted posterior mass."""
+    """Choose a preregistered local spacing by predicted posterior mass."""
     probability = validate_beam_probability(pred_prob, num_beams)
     if probability.ndim != 1:
         raise ValueError("pred_prob must be a single beam posterior.")
@@ -126,7 +134,7 @@ def build_adaptive_local_candidates(
             best_spacing = spacing
             best_mass = mass
     if best_candidates is None:
-        raise RuntimeError("Adaptive Local-7 candidate library is empty.")
+        raise RuntimeError(f"{PRIMARY_ADAPTIVE_METHOD} candidate library is empty.")
     return best_candidates, best_spacing
 
 
@@ -1245,19 +1253,6 @@ def run_tbcp_probe_diagnostic(
                 if defense_posterior is not None
                 else None
             )
-            posterior5 = np.argsort(-batch_prior, axis=-1, kind="stable")[:, :5]
-            posterior5_measurements = np.stack(
-                [probe_one(posterior5[:, column]) for column in range(posterior5.shape[1])],
-                axis=1,
-            )
-            hill2 = build_posterior5_hill2_candidates(posterior5, posterior5_measurements)
-            hill2_measurements = np.stack(
-                [probe_one(hill2[:, column]) for column in range(hill2.shape[1])],
-                axis=1,
-            )
-            hill_indices = np.concatenate((posterior5, hill2), axis=1)
-            hill_measurements = np.concatenate((posterior5_measurements, hill2_measurements), axis=1)
-
             for local_index, global_index in enumerate(range(start, stop)):
                 sample_id = evidence.sample_id[global_index]
                 pattern = evidence.pattern[global_index]
@@ -1281,9 +1276,9 @@ def run_tbcp_probe_diagnostic(
                     require_coverage_equivalence=measurement_sigma == 0.0,
                 )
                 for method, candidates in (
-                    ("Local-7", build_local_candidates(pred_beam, TBCP_BUDGET)),
-                    ("Adaptive Local-7", build_adaptive_local_candidates(probability[global_index])[0]),
-                    ("Posterior Top-7", build_posterior_topk_candidates(probability[global_index], TBCP_BUDGET)),
+                    (PRIMARY_LOCAL_METHOD, build_local_candidates(pred_beam, TBCP_BUDGET)),
+                    (PRIMARY_ADAPTIVE_METHOD, build_adaptive_local_candidates(probability[global_index])[0]),
+                    (PRIMARY_POSTERIOR_METHOD, build_posterior_topk_candidates(probability[global_index], TBCP_BUDGET)),
                 ):
                     measurements = probe_measurements(sample_id, candidates)
                     _write_tbcp_result(
@@ -1304,26 +1299,6 @@ def run_tbcp_probe_diagnostic(
                         batch_schedule=(TBCP_BUDGET,),
                         require_coverage_equivalence=measurement_sigma == 0.0,
                     )
-                hill_row = tuple(int(value) for value in hill_indices[local_index])
-                hill_power = tuple(float(value) for value in hill_measurements[local_index])
-                _write_tbcp_result(
-                    ledger,
-                    accumulators,
-                    simulator,
-                    sample_id=sample_id,
-                    pattern=pattern,
-                    available_sensing_count=available_count,
-                    gt_beam=gt_beam,
-                    pred_beam=pred_beam,
-                    method="Posterior5+Hill2",
-                    candidates=hill_row,
-                    measurements=hill_power,
-                    final_beam=hill_row[int(np.argmax(hill_power))],
-                    feedback_rounds=1,
-                    measurement_rounds=2,
-                    batch_schedule=(5, 2),
-                    require_coverage_equivalence=measurement_sigma == 0.0,
-                )
                 tbcp_indices = tuple(
                     int(value) for value in tbcp_trace.probe_indices[local_index, :TBCP_BUDGET]
                 )
@@ -1346,13 +1321,13 @@ def run_tbcp_probe_diagnostic(
                     available_sensing_count=available_count,
                     gt_beam=gt_beam,
                     pred_beam=pred_beam,
-                    method="TBCP-7",
+                    method=PRIMARY_TBCP_METHOD,
                     candidates=tbcp_indices,
                     measurements=tbcp_measurements,
                     final_beam=tbcp_indices[int(np.argmax(tbcp_measurements))],
-                    feedback_rounds=5,
-                    measurement_rounds=6,
-                    batch_schedule=(2, 1, 1, 1, 1, 1),
+                    feedback_rounds=1,
+                    measurement_rounds=2,
+                    batch_schedule=(2, 1),
                     posterior_map_trace=map_trace,
                     posterior_entropy_trace=entropy_trace,
                     require_coverage_equivalence=measurement_sigma == 0.0,
@@ -1406,7 +1381,7 @@ def run_tbcp_probe_diagnostic(
                             available_sensing_count=available_count,
                             gt_beam=gt_beam,
                             pred_beam=pred_beam,
-                            method="Topology Open-loop Gain-7",
+                            method=f"Topology Open-loop Gain-{TBCP_BUDGET}",
                             candidates=open_indices,
                             measurements=open_power,
                             final_beam=open_indices[int(np.argmax(open_power))],
@@ -1515,7 +1490,9 @@ def run_tbcp_probe_diagnostic(
                         candidates=diagonal_indices,
                         measurements=diagonal_measurements,
                         final_beam=int(diagonal_trace.final_beam[local_index]),
-                        feedback_rounds=5,
+                        feedback_rounds=1,
+                        measurement_rounds=2,
+                        batch_schedule=(2, 1),
                         posterior_map_trace=tuple(
                             int(value) for value in diagonal_trace.posterior_map[local_index]
                         ),
@@ -1550,7 +1527,7 @@ def run_tbcp_probe_diagnostic(
                         available_sensing_count=available_count,
                         gt_beam=gt_beam,
                         pred_beam=pred_beam,
-                        method="Oracle Local-7",
+                        method=PRIMARY_ORACLE_METHOD,
                         candidates=oracle,
                         measurements=oracle_power,
                         final_beam=oracle[int(np.argmax(oracle_power))],
@@ -1583,9 +1560,9 @@ def run_tbcp_probe_diagnostic(
                         if measurement_sigma == 0.0 and (final_beam == gt_beam) != covered:
                             raise ValueError(
                                 f"Noiseless probe correct/coverage mismatch for {sample_id}, "
-                                f"method=Uniform-7, offset={offset}."
+                                f"method={PRIMARY_UNIFORM_METHOD}, offset={offset}."
                             )
-                        accumulators[(pattern, "Uniform-7", TBCP_BUDGET, offset)].add(
+                        accumulators[(pattern, PRIMARY_UNIFORM_METHOD, TBCP_BUDGET, offset)].add(
                             correct=final_beam == gt_beam,
                             normalized_gain=simulator.normalized_gain(sample_id, final_beam),
                             covered=covered,
@@ -1606,13 +1583,12 @@ def run_tbcp_probe_diagnostic(
         _write_csv(output / "uniform_offset_summary.csv", uniform_offsets_rows)
     baseline_names = [
         "Direct Prediction",
-        "Local-7",
-        "Adaptive Local-7",
-        "Posterior Top-7",
-        "Posterior5+Hill2",
+        PRIMARY_LOCAL_METHOD,
+        PRIMARY_ADAPTIVE_METHOD,
+        PRIMARY_POSTERIOR_METHOD,
     ]
     if include_reference_baselines:
-        baseline_names.extend(("Uniform-7 offset mean", "Oracle Local-7", "Full-64"))
+        baseline_names.extend((f"{PRIMARY_UNIFORM_METHOD} offset mean", PRIMARY_ORACLE_METHOD, "Full-64"))
     if include_diagonal_covariance_ablation:
         baseline_names.append(TBCP_DIAGONAL_METHOD)
     if include_defense_experiments:
@@ -1627,7 +1603,7 @@ def run_tbcp_probe_diagnostic(
     if include_batch_feedback_experiments:
         baseline_names.extend(BATCH_TBCP_METHODS)
         if not include_defense_experiments:
-            baseline_names.append("Topology Open-loop Gain-7")
+            baseline_names.append(f"Topology Open-loop Gain-{TBCP_BUDGET}")
     config = {
         "schema_version": 1,
         "evaluation_scope": (
@@ -1656,14 +1632,15 @@ def run_tbcp_probe_diagnostic(
         "budget": TBCP_BUDGET,
         "num_beams": NUM_BEAMS,
         "primary_policy": {
-            "name": "TBCP-7",
+            "name": PRIMARY_TBCP_METHOD,
             "version": TBCP_POLICY_VERSION,
             "first_probe": "sensing_posterior_map",
             "subsequent_probe": "maximum_posterior_expected_terminal_normalized_gain",
             "belief_update": "joint_relative_db_gaussian_from_original_sensing_prior",
             "covariance_mode": COVARIANCE_MODE_FULL,
             "measurement_error_std_db": measurement_sigma,
-            "feedback_dependent_decisions": 5,
+            "feedback_dependent_decisions": 1,
+            "batch_schedule": [2, 1],
             "tie_break": "lower_beam_index",
         },
         "baselines": baseline_names,
@@ -1680,7 +1657,7 @@ def run_tbcp_probe_diagnostic(
             "enabled": bool(include_defense_experiments),
             "version": DEFENSE_EXPERIMENT_VERSION,
             "budgets": list(DEFAULT_BUDGETS) if include_defense_experiments else [],
-            "primary_budget_remains_frozen": TBCP_BUDGET,
+            "primary_budget": TBCP_BUDGET,
             "methods": ["TBCP-K", "Topology Open-loop Gain-K", "Posterior Top-K"],
             "measurement_error_std_db": 0.0,
             "open_loop_reads_measurements_during_acquisition": False,
@@ -1693,14 +1670,14 @@ def run_tbcp_probe_diagnostic(
             "schedules": {
                 method: {
                     "batch_schedule": list(schedule),
-                    "probe_k": TBCP_BUDGET,
+                    "probe_k": sum(schedule),
                     "measurement_rounds": len(schedule),
                     "feedback_updates": len(schedule) - 1,
                 }
                 for method, schedule in BATCH_TBCP_METHODS.items()
             },
             "selection": "current_posterior_expected_terminal_gain_without_intra_batch_measurements",
-            "total_measurement_slots": TBCP_BUDGET,
+            "primary_total_measurement_slots": TBCP_BUDGET,
             "validation_result_may_select_schedule": False,
         },
         "measurement_model": {
@@ -2004,7 +1981,7 @@ def summarize_tbcp_robustness_replays(
 def _robustness_stability(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for sigma_db in ROBUSTNESS_NOISE_STD_DB:
-        for baseline in ("Posterior Top-7", "Posterior5+Hill2"):
+        for baseline in (PRIMARY_POSTERIOR_METHOD,):
             condition_deltas: list[tuple[float, float, float]] = []
             conditions = sorted(
                 {
@@ -2024,14 +2001,14 @@ def _robustness_stability(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                     and row["group"] == "All-15 Macro"
                 ]
                 by_method = {str(row["method"]): row for row in selected}
-                if "TBCP-7" not in by_method or baseline not in by_method:
+                if PRIMARY_TBCP_METHOD not in by_method or baseline not in by_method:
                     raise ValueError("Robustness stability rows are incomplete.")
                 condition_deltas.append(
                     (
-                        float(by_method["TBCP-7"]["top1"]) - float(by_method[baseline]["top1"]),
-                        float(by_method["TBCP-7"]["normalized_gain"])
+                        float(by_method[PRIMARY_TBCP_METHOD]["top1"]) - float(by_method[baseline]["top1"]),
+                        float(by_method[PRIMARY_TBCP_METHOD]["normalized_gain"])
                         - float(by_method[baseline]["normalized_gain"]),
-                        float(by_method["TBCP-7"]["spectral_efficiency_ratio_10db"])
+                        float(by_method[PRIMARY_TBCP_METHOD]["spectral_efficiency_ratio_10db"])
                         - float(by_method[baseline]["spectral_efficiency_ratio_10db"]),
                     )
                 )
@@ -2131,10 +2108,10 @@ def _robustness_break_even_rows(noise_summary: Sequence[Mapping[str, Any]]) -> l
                 for row in noise_summary
                 if row["measurement_error_std_db"] == sigma_db and row["group"] == group
             }
-            tbcp = by_method.get("TBCP-7")
+            tbcp = by_method.get(PRIMARY_TBCP_METHOD)
             if tbcp is None:
-                raise ValueError(f"Robustness summary is missing TBCP-7 for {sigma_db}/{group}.")
-            for baseline in ("Posterior Top-7", "Posterior5+Hill2"):
+                raise ValueError(f"Robustness summary is missing {PRIMARY_TBCP_METHOD} for {sigma_db}/{group}.")
+            for baseline in (PRIMARY_POSTERIOR_METHOD,):
                 control = by_method.get(baseline)
                 if control is None:
                     raise ValueError(f"Robustness summary is missing {baseline} for {sigma_db}/{group}.")
@@ -2142,7 +2119,7 @@ def _robustness_break_even_rows(noise_summary: Sequence[Mapping[str, Any]]) -> l
                     metric = f"mean_spectral_efficiency_ratio_{int(snr_db)}db"
                     tbcp_rate = float(tbcp[metric])
                     control_rate = float(control[metric])
-                    denominator = 5.0 * tbcp_rate - METHOD_FEEDBACK_UPDATES[baseline] * control_rate
+                    denominator = METHOD_FEEDBACK_UPDATES[PRIMARY_TBCP_METHOD] * tbcp_rate - METHOD_FEEDBACK_UPDATES[baseline] * control_rate
                     threshold = (tbcp_rate - control_rate) / denominator if denominator > 0.0 else None
                     rows.append(
                         {
@@ -2168,7 +2145,7 @@ def _write_robustness_report(
     break_even: Sequence[Mapping[str, Any]],
 ) -> Path:
     lines = [
-        "# TBCP-7 Synthetic Robustness Sensitivity",
+        f"# {PRIMARY_TBCP_METHOD} Synthetic Robustness Sensitivity",
         "",
         f"- Samples: {config['samples_per_pattern']} hash-selected validation samples per each of 15 masks",
         f"- Measurement error sigma: {config['measurement_error_std_db']} dB",
@@ -2187,7 +2164,7 @@ def _write_robustness_report(
             ]
         )
         for sigma_db in ROBUSTNESS_NOISE_STD_DB:
-            for method in ("Posterior Top-7", "Posterior5+Hill2", "TBCP-7"):
+            for method in (PRIMARY_POSTERIOR_METHOD, PRIMARY_TBCP_METHOD):
                 row = next(
                     value
                     for value in noise_summary
@@ -2205,7 +2182,7 @@ def _write_robustness_report(
         lines.append("")
     lines.extend(["## Feedback Break-even", "", "10 dB communication reference SNR, All-15 Macro:", ""])
     for sigma_db in ROBUSTNESS_NOISE_STD_DB:
-        for baseline in ("Posterior Top-7", "Posterior5+Hill2"):
+        for baseline in (PRIMARY_POSTERIOR_METHOD,):
             row = next(
                 value
                 for value in break_even
@@ -2314,11 +2291,10 @@ def _summarize_tbcp_patterns(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     methods: tuple[tuple[str, int], ...] = (
         ("Direct Prediction", 0),
-        ("Local-7", TBCP_BUDGET),
-        ("Adaptive Local-7", TBCP_BUDGET),
-        ("Posterior Top-7", TBCP_BUDGET),
-        ("Posterior5+Hill2", TBCP_BUDGET),
-        ("TBCP-7", TBCP_BUDGET),
+        (PRIMARY_LOCAL_METHOD, TBCP_BUDGET),
+        (PRIMARY_ADAPTIVE_METHOD, TBCP_BUDGET),
+        (PRIMARY_POSTERIOR_METHOD, TBCP_BUDGET),
+        (PRIMARY_TBCP_METHOD, TBCP_BUDGET),
     )
     if include_diagonal_covariance_ablation:
         methods += ((TBCP_DIAGONAL_METHOD, TBCP_BUDGET),)
@@ -2328,11 +2304,11 @@ def _summarize_tbcp_patterns(
             if budget != TBCP_BUDGET:
                 methods += ((f"Posterior Top-{budget}", budget), (f"TBCP-{budget}", budget))
     if include_batch_feedback_experiments:
-        methods += tuple((method, TBCP_BUDGET) for method in BATCH_TBCP_METHODS)
+        methods += tuple((method, sum(schedule)) for method, schedule in BATCH_TBCP_METHODS.items())
         if not include_defense_experiments:
-            methods += (("Topology Open-loop Gain-7", TBCP_BUDGET),)
+            methods += ((f"Topology Open-loop Gain-{TBCP_BUDGET}", TBCP_BUDGET),)
     if include_reference_baselines:
-        methods += (("Oracle Local-7", TBCP_BUDGET), ("Full-64", NUM_BEAMS))
+        methods += ((PRIMARY_ORACLE_METHOD, TBCP_BUDGET), ("Full-64", NUM_BEAMS))
     rows: list[dict[str, Any]] = []
     uniform_rows: list[dict[str, Any]] = []
     for pattern in patterns:
@@ -2349,12 +2325,12 @@ def _summarize_tbcp_patterns(
         if not include_reference_baselines:
             continue
         offset_metrics = [
-            accumulators[(pattern, "Uniform-7", TBCP_BUDGET, offset)].summary()
+            accumulators[(pattern, PRIMARY_UNIFORM_METHOD, TBCP_BUDGET, offset)].summary()
             for offset in uniform_offsets(TBCP_BUDGET)
         ]
         uniform_row: dict[str, Any] = {
             "group": pattern,
-            "method": "Uniform-7 Offset Mean",
+            "method": f"{PRIMARY_UNIFORM_METHOD} Offset Mean",
             "probe_k": TBCP_BUDGET,
             "offset_count": NUM_BEAMS,
             "sample_count": offset_metrics[0]["sample_count"],
@@ -2433,10 +2409,10 @@ def _write_tbcp_report(
     group_summary: Sequence[Mapping[str, Any]],
 ) -> Path:
     lines = [
-        "# TBCP-7 Validation Diagnostic",
+        f"# {PRIMARY_TBCP_METHOD} Validation Diagnostic",
         "",
         "- Scope: all 15 non-empty image/radar/GPS/LiDAR masks",
-        "- Budget: K=7; no model training or checkpoint update",
+        f"- Budget: K={TBCP_BUDGET}; no model training or checkpoint update",
         "- Likelihood: train-only aligned ULA-DFT relative log-gain mean/covariance",
         "- Claim boundary: validation-only, claim-ineligible, outer test not accessed",
         f"- Synthetic measurement error: sigma={config['measurement_model']['measurement_error_std_db']:.1f} dB; "
@@ -2448,11 +2424,11 @@ def _write_tbcp_report(
     if config.get("defense_experiments", {}).get("enabled") is True:
         lines[6:6] = [
             "- Defense controls: topology open-loop acquisition and preregistered K={3,5,7,9} curve",
-            "- K=7 remains the frozen primary setting; the validation curve cannot select a new K",
+            f"- K={TBCP_BUDGET} remains the frozen primary setting; K=5/7/9 are sensitivity only",
         ]
     if config.get("batch_feedback_experiments", {}).get("enabled") is True:
         lines[6:6] = [
-            "- Batch controls: fixed schedules `(2,2,3)`, `(2,5)`, and `(3,4)`; total slots remain K=7",
+            "- Primary batch control: fixed schedule `(2,1)`; K=7 schedules remain sensitivity controls",
             "- Batch rounds are controller barriers, not measured hardware milliseconds",
         ]
     for group in (
@@ -2486,11 +2462,11 @@ def _write_tbcp_report(
                 f"{100 * float(row['normalized_gain']):.2f}% | "
                 f"{100 * float(row['spectral_efficiency_ratio_10db']):.2f}% | {coverage} | {selection} |"
             )
-        tbcp = next(row for row in rows if row["method"] == "TBCP-7")
-        lines.extend(["", "TBCP-7 paired aggregate deltas:"])
-        baselines = ("Posterior Top-7", "Local-7", "Adaptive Local-7", "Posterior5+Hill2")
-        if any(row["method"] == "Topology Open-loop Gain-7" for row in rows):
-            baselines += ("Topology Open-loop Gain-7",)
+        tbcp = next(row for row in rows if row["method"] == PRIMARY_TBCP_METHOD)
+        lines.extend(["", f"{PRIMARY_TBCP_METHOD} paired aggregate deltas:"])
+        baselines = (PRIMARY_POSTERIOR_METHOD, PRIMARY_LOCAL_METHOD, PRIMARY_ADAPTIVE_METHOD)
+        if any(row["method"] == f"Topology Open-loop Gain-{TBCP_BUDGET}" for row in rows):
+            baselines += (f"Topology Open-loop Gain-{TBCP_BUDGET}",)
         if any(row["method"] == TBCP_DIAGONAL_METHOD for row in rows):
             baselines += (TBCP_DIAGONAL_METHOD,)
         for batch_method in BATCH_TBCP_METHODS:
@@ -2513,11 +2489,12 @@ def _write_tbcp_report(
             ]
         )
         round_rows = {
-            "TBCP-7": {"slots": 7, "rounds": 6, "updates": 5},
+            PRIMARY_TBCP_METHOD: {"slots": TBCP_BUDGET, "rounds": 2, "updates": 1},
+            PRIMARY_BATCH_METHOD: {"slots": 3, "rounds": 2, "updates": 1},
             "Batch-TBCP-2+2+3": {"slots": 7, "rounds": 3, "updates": 2},
             "Batch-TBCP-2+5": {"slots": 7, "rounds": 2, "updates": 1},
             "Batch-TBCP-3+4": {"slots": 7, "rounds": 2, "updates": 1},
-            "Topology Open-loop Gain-7": {"slots": 7, "rounds": 1, "updates": 0},
+            f"Topology Open-loop Gain-{TBCP_BUDGET}": {"slots": TBCP_BUDGET, "rounds": 1, "updates": 0},
         }
         for method, values in round_rows.items():
             if any(row["method"] == method for row in group_summary):
@@ -2529,7 +2506,7 @@ def _write_tbcp_report(
         [
             "## Interpretation Boundary",
             "",
-            "TBCP-7 uses only the sensing posterior, a train-only topology likelihood, and already requested RF "
+            f"{PRIMARY_TBCP_METHOD} uses only the sensing posterior, a train-only topology likelihood, and already requested RF "
             "measurements. The full validation power vector remains private to the simulator and is used only for "
             "the final metric/oracle checks. Synthetic dB error is a controlled stress test, not measured RF SNR; "
             "the replay does not establish performance under real switching latency or hardware constraints.",
@@ -2730,9 +2707,9 @@ def _aggregate_tbcp_seed_rows(
 def _tbcp_stability(pattern_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     patterns = tuple(dict.fromkeys(str(row["group"]) for row in pattern_rows))
     result: dict[str, Any] = {}
-    baselines = ["Posterior Top-7", "Local-7", "Adaptive Local-7", "Posterior5+Hill2"]
-    if any(row["method"] == "Topology Open-loop Gain-7" for row in pattern_rows):
-        baselines.append("Topology Open-loop Gain-7")
+    baselines = [PRIMARY_POSTERIOR_METHOD, PRIMARY_LOCAL_METHOD, PRIMARY_ADAPTIVE_METHOD]
+    if any(row["method"] == f"Topology Open-loop Gain-{TBCP_BUDGET}" for row in pattern_rows):
+        baselines.append(f"Topology Open-loop Gain-{TBCP_BUDGET}")
     if any(row["method"] == TBCP_DIAGONAL_METHOD for row in pattern_rows):
         baselines.append(TBCP_DIAGONAL_METHOD)
     for method in BATCH_TBCP_METHODS:
@@ -2742,7 +2719,7 @@ def _tbcp_stability(pattern_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]
         top_deltas: list[list[float]] = []
         gain_deltas: list[list[float]] = []
         for pattern in patterns:
-            tbcp = next(row for row in pattern_rows if row["group"] == pattern and row["method"] == "TBCP-7")
+            tbcp = next(row for row in pattern_rows if row["group"] == pattern and row["method"] == PRIMARY_TBCP_METHOD)
             control = next(row for row in pattern_rows if row["group"] == pattern and row["method"] == baseline)
             top_deltas.append(
                 [float(tbcp[f"seed{seed}_top1"]) - float(control[f"seed{seed}_top1"]) for seed in (1, 2, 3)]
@@ -2773,7 +2750,7 @@ def _write_tbcp_seed_report(
     stability: Mapping[str, Any],
 ) -> Path:
     lines = [
-        "# TBCP-7 Three-seed Validation Summary",
+        f"# {PRIMARY_TBCP_METHOD} Three-seed Validation Summary",
         "",
         "- Seeds: 1, 2, 3; all runs use one train-only likelihood and one validation identity",
         "- Scope: all 15 non-empty four-sensing masks",
@@ -3054,12 +3031,12 @@ def _strategy_budget_keys(budgets: Sequence[int]) -> list[tuple[str, int]]:
 
 def _summarize_adaptive_spacing(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     if not rows:
-        raise ValueError("Adaptive Local-7 produced no spacing records.")
+        raise ValueError(f"{PRIMARY_ADAPTIVE_METHOD} produced no spacing records.")
     summary: list[dict[str, Any]] = []
     for group in (*SEVERE_SINGLE_PATTERNS, "Single Macro"):
         group_rows = list(rows) if group == "Single Macro" else [row for row in rows if row["group"] == group]
         if not group_rows:
-            raise ValueError(f"Adaptive Local-7 has no rows for {group}.")
+            raise ValueError(f"{PRIMARY_ADAPTIVE_METHOD} has no rows for {group}.")
         for spacing in ADAPTIVE_SPACINGS:
             selected = [row for row in group_rows if int(row["adaptive_spacing"]) == spacing]
             summary.append(
@@ -3217,9 +3194,9 @@ def _write_report(
 ) -> Path:
     macro = {(row["method"], row["probe_k"]): row for row in summary if row["group"] == "Single Macro"}
     full = macro[("Full Sweep", NUM_BEAMS)]
-    local7 = macro[("Local Scan", ADAPTIVE_BUDGET)]
-    adaptive7 = macro[("Adaptive Local", ADAPTIVE_BUDGET)]
-    posterior7 = macro[("Posterior Top-K", ADAPTIVE_BUDGET)]
+    local3 = macro[("Local Scan", ADAPTIVE_BUDGET)]
+    adaptive3 = macro[("Adaptive Local", ADAPTIVE_BUDGET)]
+    posterior3 = macro[("Posterior Top-K", ADAPTIVE_BUDGET)]
     deltas = decision["deltas"]
     best_pattern = max(
         (
@@ -3255,7 +3232,7 @@ def _write_report(
         f"{config['unique_validation_samples']:,} unique windows",
         "- Evidence: frozen checkpoint-bound validation predictions; no training or model update",
         f"- Adaptive policy: `{config['probing_policy']['version']}`, fixed K={ADAPTIVE_BUDGET}, "
-        "posterior-mass selection over spacings 1/2/4/8",
+        "posterior-mass selection over spacings 1/2/4/8/16",
         "- Topology: audited ULA-DFT phase cycle with modulo-64 adjacency; not a world-azimuth ring",
         "- Claim boundary: validation-only, claim-ineligible, outer test not accessed",
         "",
@@ -3289,14 +3266,14 @@ def _write_report(
     lines.extend(
         [
             "",
-            "## K=7 Uncertainty Policy",
+        "## K=3 Uncertainty Policy",
+        "",
+        f"- Adaptive vs fixed Local3: Top-1 {100 * (adaptive3['top1'] - local3['top1']):+.2f} pp, "
+        f"normalized gain {100 * (adaptive3['normalized_gain'] - local3['normalized_gain']):+.2f} pp。",
+        f"- Posterior Top3 vs fixed Local3: Top-1 {100 * (posterior3['top1'] - local3['top1']):+.2f} pp, "
+        f"normalized gain {100 * (posterior3['normalized_gain'] - local3['normalized_gain']):+.2f} pp。",
             "",
-            f"- Adaptive vs fixed Local7: Top-1 {100 * (adaptive7['top1'] - local7['top1']):+.2f} pp, "
-            f"normalized gain {100 * (adaptive7['normalized_gain'] - local7['normalized_gain']):+.2f} pp。",
-            f"- Posterior Top7 vs fixed Local7: Top-1 {100 * (posterior7['top1'] - local7['top1']):+.2f} pp, "
-            f"normalized gain {100 * (posterior7['normalized_gain'] - local7['normalized_gain']):+.2f} pp。",
-            "",
-            "| Pattern | Fixed Local7 Top-1 | Adaptive Local7 Top-1 | Posterior Top7 Top-1 |",
+            "| Pattern | Fixed Local3 Top-1 | Adaptive Local3 Top-1 | Posterior Top3 Top-1 |",
             "| --- | ---: | ---: | ---: |",
         ]
     )

@@ -17,6 +17,15 @@ from kd_sensing.registries import ENCODERS, MODELS
 
 
 PROBABILITY_PARAMETERIZATION = "prototype_probability_mean_v1"
+STATIC_RELIABILITY_PARAMETERIZATION = "prototype_probability_static_reliability_v1"
+BOUNDED_STATIC_RELIABILITY_PARAMETERIZATION = "prototype_probability_bounded_static_reliability_v1"
+MASKED_FEATURE_MLP_PARAMETERIZATION = "prototype_probability_masked_feature_mlp_v1"
+FUSION_MODES = {
+    "mean",
+    "trainable_static_reliability",
+    "bounded_static_reliability",
+    "masked_feature_mlp",
+}
 
 
 @MODELS.register("four_modal_topology_predictor")
@@ -38,6 +47,7 @@ class FourModalTopologyPredictor(nn.Module):
         dropout: float = 0.1,
         encoders: Mapping[str, Mapping[str, Any]] | None = None,
         beam_proto_temperature: float = 0.1,
+        fusion_mode: str = "mean",
         temporal_transformer: Mapping[str, Any] | None = None,
         prototype_topology_id: str = "cyclic_index_v1",
         prototype_topology_permutation: list[int] | tuple[int, ...] | None = None,
@@ -66,6 +76,23 @@ class FourModalTopologyPredictor(nn.Module):
             raise ValueError("Topology predictor requires d_model=64, num_classes=64, num_pred=1, seq_length=5.")
         if not 0.0 <= float(dropout) < 1.0 or float(beam_proto_temperature) <= 0.0:
             raise ValueError("dropout and beam_proto_temperature are invalid.")
+        self.fusion_mode = str(fusion_mode).strip().lower()
+        if self.fusion_mode not in FUSION_MODES:
+            raise ValueError(f"fusion_mode must be one of {sorted(FUSION_MODES)}.")
+        if self.fusion_mode in {"trainable_static_reliability", "bounded_static_reliability"}:
+            self.fusion_logits = nn.Parameter(torch.zeros(len(self.modalities), dtype=torch.float32))
+            self.probability_parameterization = (
+                BOUNDED_STATIC_RELIABILITY_PARAMETERIZATION
+                if self.fusion_mode == "bounded_static_reliability"
+                else STATIC_RELIABILITY_PARAMETERIZATION
+            )
+        else:
+            self.register_parameter("fusion_logits", None)
+            self.probability_parameterization = (
+                MASKED_FEATURE_MLP_PARAMETERIZATION
+                if self.fusion_mode == "masked_feature_mlp"
+                else PROBABILITY_PARAMETERIZATION
+            )
 
         temporal = _strict_mapping(
             temporal_transformer,
@@ -114,9 +141,18 @@ class FourModalTopologyPredictor(nn.Module):
             self.num_classes,
             temperature=float(beam_proto_temperature),
         )
+        if self.fusion_mode == "masked_feature_mlp":
+            fusion_input_dim = len(self.modalities) * self.d_model + len(self.modalities)
+            self.feature_fusion = nn.Sequential(
+                nn.LayerNorm(fusion_input_dim),
+                nn.Linear(fusion_input_dim, 2 * self.d_model),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+                nn.Linear(2 * self.d_model, self.d_model),
+            )
+        else:
+            self.feature_fusion = None
         self.prototype_topology_id = str(prototype_topology_id).strip().lower()
-        if self.prototype_topology_id == "linear_index_v1":
-            raise ValueError("Topology predictor requires a circular prototype topology.")
         self.prototype_topology_permutation = (
             list(prototype_topology_permutation) if prototype_topology_permutation is not None else None
         )
@@ -167,13 +203,27 @@ class FourModalTopologyPredictor(nn.Module):
         )
         unimodal_probability = torch.softmax(unimodal_logits.float(), dim=-1)
         unimodal_probability = unimodal_probability * available.unsqueeze(-1).to(torch.float32)
-        weights = available.to(torch.float32)
-        weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
-        fused_probability = (unimodal_probability * weights.unsqueeze(-1)).sum(dim=1)
-        fused_probability = fused_probability / fused_probability.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-        fused_features = (modality_features * weights.unsqueeze(-1).to(modality_features.dtype)).sum(dim=1)
-        tiny = torch.finfo(torch.float32).tiny
-        logits = fused_probability.clamp_min(tiny).log().unsqueeze(1)
+        if self.feature_fusion is not None:
+            masked_features = modality_features * available.unsqueeze(-1).to(modality_features.dtype)
+            fusion_input = torch.cat(
+                (
+                    masked_features.flatten(start_dim=1),
+                    available.to(modality_features.dtype),
+                ),
+                dim=1,
+            )
+            fused_features = self.feature_fusion(fusion_input)
+            fused_logits = self.prototype_bank(fused_features)
+            fused_probability = torch.softmax(fused_logits.float(), dim=-1)
+            logits = fused_logits.unsqueeze(1)
+            weights = None
+        else:
+            weights = self._fusion_weights(available)
+            fused_probability = (unimodal_probability * weights.unsqueeze(-1)).sum(dim=1)
+            fused_probability = fused_probability / fused_probability.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            fused_features = (modality_features * weights.unsqueeze(-1).to(modality_features.dtype)).sum(dim=1)
+            tiny = torch.finfo(torch.float32).tiny
+            logits = fused_probability.clamp_min(tiny).log().unsqueeze(1)
         statistics = beam_posterior_statistics(fused_probability.detach())
         return {
             "logits": logits,
@@ -191,6 +241,7 @@ class FourModalTopologyPredictor(nn.Module):
             "temporal_pooling_param_count": temporal["temporal_pooling_param_count"],
             "unimodal_logits": unimodal_logits,
             "unimodal_probabilities": unimodal_probability,
+            "fusion_weights": weights,
             "fused_probability": fused_probability,
             "prototype_state": self.prototype_bank.describe(fused_features),
             "metadata": self.checkpoint_metadata(),
@@ -204,8 +255,20 @@ class FourModalTopologyPredictor(nn.Module):
             "architecture_category": "single_stage_temporal_shared_prototype",
             "modalities": list(self.modalities),
             "probability_parameterization": self.probability_parameterization,
-            "fusion": "availability_masked_probability_mean",
+            "fusion": {
+                "mean": "availability_masked_probability_mean",
+                "trainable_static_reliability": "availability_masked_trainable_static_reliability",
+                "bounded_static_reliability": "availability_masked_bounded_static_reliability",
+                "masked_feature_mlp": "availability_masked_feature_mlp",
+            }[self.fusion_mode],
+            "fusion_mode": self.fusion_mode,
+            "fusion_logit_constraint": (
+                "tanh_unit_interval" if self.fusion_mode == "bounded_static_reliability" else "none"
+            ),
+            "global_fusion_weights": self._global_fusion_weights(),
+            "fusion_has_explicit_modality_weights": self.fusion_mode != "masked_feature_mlp",
             "prototype_bank_count": 1,
+            "prototype_feature_sources": [*self.modalities, "fused"],
             "prototype_topology": self.prototype_topology_metadata(),
             "claim_ineligible": True,
             "outer_test_accessed": False,
@@ -236,6 +299,28 @@ class FourModalTopologyPredictor(nn.Module):
                 f"{modality} encoder must return [B,{self.seq_length},{self.d_model}], got {tuple(features.shape)}."
             )
         return features
+
+    def _fusion_weights(self, available: torch.Tensor) -> torch.Tensor:
+        if self.fusion_logits is None:
+            weights = available.to(torch.float32)
+            return weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+        effective_logits = (
+            torch.tanh(self.fusion_logits)
+            if self.fusion_mode == "bounded_static_reliability"
+            else self.fusion_logits
+        )
+        logits = effective_logits.unsqueeze(0).expand(available.shape[0], -1)
+        return torch.softmax(logits.masked_fill(~available, -torch.inf), dim=1)
+
+    def _global_fusion_weights(self) -> list[float] | None:
+        if self.fusion_mode == "masked_feature_mlp":
+            return None
+        if self.fusion_logits is None:
+            return [1.0 / len(self.modalities)] * len(self.modalities)
+        logits = self.fusion_logits.detach().float()
+        if self.fusion_mode == "bounded_static_reliability":
+            logits = torch.tanh(logits)
+        return torch.softmax(logits, dim=0).cpu().tolist()
 
     def _resolve_modality_mask(
         self,
@@ -354,7 +439,11 @@ def _is_sha256(value: str) -> bool:
 
 
 __all__ = [
+    "BOUNDED_STATIC_RELIABILITY_PARAMETERIZATION",
+    "FUSION_MODES",
     "FourModalTopologyPredictor",
+    "MASKED_FEATURE_MLP_PARAMETERIZATION",
     "PROBABILITY_PARAMETERIZATION",
+    "STATIC_RELIABILITY_PARAMETERIZATION",
     "validate_topology_predictor_model_config",
 ]

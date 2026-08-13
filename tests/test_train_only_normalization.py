@@ -10,7 +10,12 @@ from torch.utils.data import ConcatDataset, Dataset
 from kd_sensing.engine import data_factory
 from kd_sensing.engine.data_factory import _build_pooled_domain_dataset
 from kd_sensing.engine.data_factory_scalers import fit_gps_scaler, gps_scaler_kwargs
-from kd_sensing.engine.normalization_artifacts import load_normalization_artifacts, save_normalization_artifacts, validate_normalization_artifact_fingerprint
+from kd_sensing.engine.normalization_artifacts import (
+    load_normalization_artifacts,
+    save_normalization_artifacts,
+    split_dependent_artifact_metadata,
+    validate_normalization_artifact_fingerprint,
+)
 from kd_sensing.data.mmw.trajectory_protocol import TRAJECTORY_PROTOCOL_MODE
 
 
@@ -36,6 +41,15 @@ class _MMWLeaf(Dataset):
     def _gps_features_for_index(self, index: int) -> np.ndarray:
         return np.asarray([[self.values[index], 0.0, 1.0]], dtype=np.float32)
 
+
+class _DeepSenseLeaf(_MMWLeaf):
+    def __init__(self, values: list[float], path: Path) -> None:
+        super().__init__(values, path)
+        self.scene_slug = "scenario31"
+        self.split = "train"
+        self.schema_identity = {"dataset_family": "DeepSense6G"}
+        self.samples = SimpleNamespace(rows=[{"seq_index": str(index)} for index in range(len(values))])
+
 def test_gps_scaler_fits_train_only_and_round_trips(tmp_path: Path):
     train = _MMWLeaf([1.0, 3.0], tmp_path / "train.csv")
     test = _MMWLeaf([100.0], tmp_path / "test.csv")
@@ -55,6 +69,18 @@ def test_gps_scaler_fits_train_only_and_round_trips(tmp_path: Path):
     validate_normalization_artifact_fingerprint({"data": {"dataset": {"gps_feature_mode": "relative_polar"}}}, {"normalization_artifacts": artifacts})
     with pytest.raises(ValueError, match="feature mode"):
         validate_normalization_artifact_fingerprint({"data": {"dataset": {"gps_feature_mode": "other"}}}, {"normalization_artifacts": artifacts})
+
+
+def test_deepsense_normalization_uses_stable_scene_split_sequence_identity(tmp_path: Path) -> None:
+    train = _DeepSenseLeaf([1.0, 3.0], tmp_path / "train.csv")
+
+    metadata = split_dependent_artifact_metadata(train)
+
+    expected = hashlib.sha256(
+        b"deepsense6g:scenario31:train:0\ndeepsense6g:scenario31:train:1"
+    ).hexdigest()
+    assert metadata["sample_id_hash"] == expected
+    assert metadata["effective_sample_count"] == 2
 
 
 def test_trajectory_scaler_identity_mismatch_is_rejected(tmp_path: Path) -> None:

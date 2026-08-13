@@ -71,24 +71,56 @@ def validate_loaded_config(cfg: dict[str, Any]) -> None:
             raise ValueError("DeepSense6G supports at most three future_beam horizons.")
         if int(model.get("num_classes", 0)) != 64:
             raise ValueError("DeepSense6G future_beam labels require model.primary.num_classes=64.")
+        evidence = cfg.get("deepsense6g_secondary_evidence")
+        if evidence is not None:
+            if not isinstance(evidence, dict) or evidence.get("protocol_id") != "deepsense6g_twc_secondary_v1":
+                raise ValueError("DeepSense6G secondary evidence requires the fixed filtered protocol.")
+            pooled = evidence.get("pooled_dataset", {})
+            if pooled.get("train_row_count") != 13240 or pooled.get("test_row_count") != 4090:
+                raise ValueError("DeepSense6G secondary evidence counts do not match the fixed protocol.")
+            if evidence.get("test_policy") != "one_shot_after_fixed_40_epochs":
+                raise ValueError("DeepSense6G secondary evidence requires the frozen one-shot test policy.")
 
 
 def _validate_topology_predictor_config(cfg: dict[str, Any], model: dict[str, Any], data: dict[str, Any]) -> None:
     from kd_sensing.losses.four_modal_topology import four_modal_topology_config
     from kd_sensing.models.four_modal_topology_predictor import validate_topology_predictor_model_config
 
-    if str(data.get("type", "")).strip().lower() != "mmw":
-        raise ValueError("The four-modal topology predictor is scoped to the MMW dataset.")
+    dataset_type = str(data.get("type", "")).strip().lower()
+    if dataset_type not in {"mmw", "deepsense6g"}:
+        raise ValueError("The four-modal topology predictor supports only MMW or DeepSense6G.")
     validate_topology_predictor_model_config(model, data)
-    four_modal_topology_config(cfg)
+    topology_loss = four_modal_topology_config(cfg)
     experiment = cfg.get("experiment", {})
     if experiment.get("claim_ineligible") is not True:
         raise ValueError("The topology predictor requires experiment.claim_ineligible=true.")
     training = cfg.get("training", {})
     final_test = training.get("final_test")
     final_test_enabled = final_test if isinstance(final_test, bool) else (final_test or {}).get("enabled", True)
-    if bool(final_test_enabled):
+    if dataset_type == "mmw" and bool(final_test_enabled):
         raise ValueError("The topology predictor requires training.final_test.enabled=false.")
+    if dataset_type == "deepsense6g":
+        if str(model.get("prototype_topology_id", "")).strip().lower() != "linear_index_v1":
+            raise ValueError("DeepSense6G topology transfer requires model topology linear_index_v1.")
+        if topology_loss["prototype_topology"]["id"] != "linear_index_v1":
+            raise ValueError("DeepSense6G topology transfer requires loss topology linear_index_v1.")
+        if str(model.get("fusion_mode", "")) != "masked_feature_mlp":
+            raise ValueError("DeepSense6G topology transfer requires masked_feature_mlp fusion.")
+        if (
+            topology_loss["unimodal_soft_weight"] != 0.0
+            or not topology_loss["use_beam_prototype_alignment"]
+            or topology_loss["lambda_proto"] != 0.1
+            or topology_loss["lambda_modality_proto"] != 0.0
+        ):
+            raise ValueError("DeepSense6G topology transfer requires the frozen Prototype-only loss.")
+        if str(training.get("checkpoint_selection", "last")).strip().lower() != "last":
+            raise ValueError("DeepSense6G without a compatible validation split requires last checkpoint selection.")
+        if training.get("final_test_missing_matrix") is not True:
+            raise ValueError("DeepSense6G topology transfer requires the frozen final-test missing matrix.")
+        if int(training.get("epochs", 0)) != 40 or int(training.get("max_epochs", 0)) != 40:
+            raise ValueError("DeepSense6G topology transfer requires the frozen 40-epoch budget.")
+        if "data_protocol" in cfg:
+            raise ValueError("DeepSense6G topology transfer cannot carry the MMW data protocol.")
     retired = sorted(set(training) & {"initialization_checkpoint"})
     if retired:
         raise ValueError(f"Single-stage topology training rejects retired fields: {retired}.")

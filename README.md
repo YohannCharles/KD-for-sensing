@@ -45,7 +45,7 @@ conda run -n kd_mm_beam python tools/eval_topology_predictor.py probe-diagnostic
   --output-dir <probe-output>
 ```
 
-Matrix 固定覆盖四模态的 15 个非空 mask。主 probing 预算固定 K=7；TBCP-7、Batch-TBCP-3+4、Posterior Top-7、Local-7 与 Uniform-7 使用相同验证身份和 requested-only 测量边界。
+Matrix 固定覆盖四模态的 15 个非空 mask。主 probing 预算固定 K=3，采用 TBCP-3/Batch-TBCP-2+1；TBCP-5/7/9、Posterior Top-K、Local-K 与 Uniform-K 仅作为预算敏感性，并使用相同验证身份和 requested-only 测量边界。
 
 ## 其他保留路线
 

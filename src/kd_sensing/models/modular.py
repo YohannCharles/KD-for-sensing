@@ -146,6 +146,7 @@ class ModularSequenceModel(nn.Module):
     """AMBER-Full and RMBP-MM's shared four-modality wrapper."""
 
     supports_modality_kwargs = True
+    supports_force_modality_mask = True
 
     def __init__(
         self,
@@ -245,6 +246,7 @@ class ModularSequenceModel(nn.Module):
         missing_mask: torch.Tensor | None = None,
         available_modalities: torch.Tensor | None = None,
         modality_mask: torch.Tensor | None = None,
+        force_modality_mask: torch.Tensor | None = None,
         missing_modality_metadata: dict[str, Any] | None = None,
         **_: Any,
     ) -> dict[str, Any]:
@@ -267,6 +269,10 @@ class ModularSequenceModel(nn.Module):
             projected[modality] = self.projectors[modality](features)
 
         batch_size, seq_len = projected["image"].shape[:2]
+        if force_modality_mask is not None:
+            if modality_mask is not None or available_modalities is not None:
+                raise ValueError("force_modality_mask cannot be combined with other whole-modality masks.")
+            modality_mask = force_modality_mask
         availability = _availability_mask(
             batch_size=batch_size,
             seq_len=seq_len,

@@ -12,12 +12,12 @@ import numpy as np
 
 
 NUM_BEAMS = 64
-TBCP_BUDGET = 7
+TBCP_BUDGET = 3
 TBCP_POLICY_VERSION = "topology_bayesian_closed_loop_gain_v1"
 BATCH_TBCP_POLICY_VERSION = "topology_bayesian_batch_closed_loop_gain_v1"
 # Fixed schedules are deliberately preregistered rather than validation-tuned.
-# The balanced 3+4 split is a single additional feedback-round control.
-BATCH_TBCP_SCHEDULES = ((2, 2, 3), (2, 5), (3, 4))
+# The primary policy is 2+1; the former K=7 schedules remain sensitivity controls.
+BATCH_TBCP_SCHEDULES = ((2, 1), (2, 2, 3), (2, 5), (3, 4))
 LIKELIHOOD_SCHEMA_VERSION = 1
 COVARIANCE_JITTER_DB2 = 1e-6
 COVARIANCE_MODE_FULL = "full"
@@ -465,7 +465,7 @@ def run_batched_tbcp(
     measurement_error_std_db: float = 0.0,
     covariance_mode: str = COVARIANCE_MODE_FULL,
 ) -> TBCPTrace:
-    """Run a fixed batch-feedback approximation to TBCP-7.
+    """Run a fixed batch-feedback approximation to the selected TBCP budget.
 
     Candidates inside one batch are selected without observing that batch's
     measurements.  The posterior is recomputed once after the whole batch,
@@ -485,8 +485,6 @@ def run_batched_tbcp(
             "batch_schedule must be one of the preregistered schedules "
             f"{BATCH_TBCP_SCHEDULES}."
         )
-    if sum(schedule) != TBCP_BUDGET:
-        raise ValueError(f"batch_schedule must contain exactly {TBCP_BUDGET} probes.")
     if any(isinstance(size, bool) or int(size) != size or int(size) <= 0 for size in schedule):
         raise ValueError("batch_schedule entries must be positive integers.")
     batched_prior = probability[None, :] if probability.ndim == 1 else probability
@@ -546,43 +544,6 @@ def _validate_probe_budget(budget: int) -> int:
     if value != budget or value < 1 or value > NUM_BEAMS:
         raise ValueError(f"Probe budget must be an integer in [1, {NUM_BEAMS}].")
     return value
-
-
-def build_posterior5_hill2_candidates(
-    initial_indices: Sequence[int] | np.ndarray,
-    initial_measurements: Sequence[float] | np.ndarray,
-) -> np.ndarray:
-    indices = np.asarray(initial_indices, dtype=np.int64)
-    power = np.asarray(initial_measurements, dtype=np.float64)
-    scalar = indices.ndim == 1
-    if scalar:
-        indices = indices[None, :]
-        power = power[None, :]
-    if indices.ndim != 2 or indices.shape[1] != 5 or power.shape != indices.shape:
-        raise ValueError("Posterior5+Hill2 requires aligned [B,5] requested indices and measurements.")
-    if np.any(indices < 0) or np.any(indices >= NUM_BEAMS) or any(
-        len(set(row.tolist())) != 5 for row in indices
-    ):
-        raise ValueError("Posterior5+Hill2 initial indices must be five unique valid beams.")
-    if not np.isfinite(power).all() or np.any(power <= 0.0):
-        raise ValueError("Posterior5+Hill2 measurements must be finite and strictly positive.")
-    result = np.empty((indices.shape[0], 2), dtype=np.int64)
-    for row_index, (row_indices, row_power) in enumerate(zip(indices, power, strict=True)):
-        center = int(row_indices[int(np.argmax(row_power))])
-        used = set(int(value) for value in row_indices)
-        additions: list[int] = []
-        for distance in range(1, NUM_BEAMS):
-            for delta in (-distance, distance):
-                candidate = (center + delta) % NUM_BEAMS
-                if candidate not in used:
-                    additions.append(candidate)
-                    used.add(candidate)
-                if len(additions) == 2:
-                    break
-            if len(additions) == 2:
-                break
-        result[row_index] = additions
-    return result[0] if scalar else result
 
 
 def _artifact_metadata(
@@ -797,7 +758,6 @@ __all__ = [
     "TBCP_POLICY_VERSION",
     "TBCPTrace",
     "TopologyLikelihood",
-    "build_posterior5_hill2_candidates",
     "build_topology_open_loop_candidates",
     "fit_topology_likelihood",
     "load_topology_likelihood",

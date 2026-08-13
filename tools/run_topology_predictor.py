@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--template", default=str(DEFAULT_TEMPLATE))
     resolve.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     resolve.add_argument("--topology-audit", required=True)
+    resolve.add_argument("--frame-cache-root", required=True)
+    resolve.add_argument("--gps-coordinate-cache-root", required=True)
     resolve.add_argument("--output", required=True)
     resolve.add_argument("--train-seed", type=int, required=True)
     resolve.add_argument("--run-name", required=True)
@@ -42,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
             template=Path(args.template),
             manifest=Path(args.manifest),
             topology_audit=Path(args.topology_audit),
+            frame_cache_root=Path(args.frame_cache_root),
+            gps_coordinate_cache_root=Path(args.gps_coordinate_cache_root),
             train_seed=int(args.train_seed),
             run_name=str(args.run_name),
         )
@@ -68,6 +72,8 @@ def resolve_config(
     template: Path,
     manifest: Path,
     topology_audit: Path,
+    frame_cache_root: Path,
+    gps_coordinate_cache_root: Path,
     train_seed: int,
     run_name: str,
 ) -> dict[str, Any]:
@@ -79,6 +85,11 @@ def resolve_config(
     cfg.setdefault("output", {})["run_name"] = run_name.strip()
     cfg.setdefault("training", {}).update(resume=False, final_test={"enabled": False})
     bind_trajectory_config(cfg, manifest.resolve())
+    cache_binding = _bind_preprocessed_caches(
+        cfg,
+        frame_cache_root=frame_cache_root.resolve(),
+        gps_coordinate_cache_root=gps_coordinate_cache_root.resolve(),
+    )
     topology = _bind_topology_audit(cfg, topology_audit.resolve())
     cfg["runtime"]["topology_predictor_resolver"] = {
         "schema_version": 1,
@@ -86,10 +97,97 @@ def resolve_config(
         "modalities": ["image", "radar", "gps", "lidar"],
         "mask_count": 15,
         "prototype_topology": topology,
+        "preprocessed_caches": cache_binding,
         "outer_test_accessed": False,
     }
     validate_loaded_config(cfg)
     return cfg
+
+
+def _bind_preprocessed_caches(
+    cfg: dict[str, Any],
+    *,
+    frame_cache_root: Path,
+    gps_coordinate_cache_root: Path,
+) -> dict[str, Any]:
+    dataset = cfg.setdefault("data", {}).setdefault("dataset", {})
+    dataset.update(
+        frame_cache_root=str(frame_cache_root),
+        frame_cache_strict=True,
+        gps_coordinate_cache_root=str(gps_coordinate_cache_root),
+    )
+    return _validate_preprocessed_caches(cfg)
+
+
+def _validate_preprocessed_caches(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    dataset = cfg.get("data", {}).get("dataset", {})
+    if dataset.get("frame_cache_strict") is not True:
+        raise ValueError("Resolved topology training requires frame_cache_strict=true.")
+    frame_cache_root = Path(str(dataset.get("frame_cache_root", ""))).resolve()
+    gps_cache_root = Path(str(dataset.get("gps_coordinate_cache_root", ""))).resolve()
+    if not frame_cache_root.is_dir():
+        raise FileNotFoundError(f"MMW frame cache root is missing: {frame_cache_root}")
+    if not gps_cache_root.is_dir():
+        raise FileNotFoundError(f"MMW GPS coordinate cache root is missing: {gps_cache_root}")
+
+    domains = {
+        str(row.get("id"))
+        for row in dataset.get("domains", [])
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    for condition in {domain.split("/", 1)[0] for domain in domains}:
+        for relative in ("image_derived", "lidar_bev"):
+            required = frame_cache_root / condition / relative
+            if not required.is_dir():
+                raise FileNotFoundError(f"MMW strict frame cache directory is missing: {required}")
+
+    manifest_path = gps_cache_root / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"MMW GPS coordinate cache manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    protocol = cfg.get("data_protocol", {})
+    expected = {
+        "protocol_id": protocol.get("protocol_id"),
+        "protocol_version": protocol.get("protocol_version"),
+        "split_manifest_hash": protocol.get("split_manifest_hash"),
+        "protocol_fingerprint": protocol.get("protocol_fingerprint"),
+        "split_seed": protocol.get("split_seed"),
+        "block_size": protocol.get("block_size"),
+        "data_source_hash": protocol.get("data_source_hash"),
+        "window_config_hash": protocol.get("window_config_hash"),
+        "weather_binding": protocol.get("weather_binding"),
+        "strict_cache_coverage": True,
+        "test_evaluated": False,
+        "outer_test_accessed": False,
+    }
+    drift = {
+        key: {"expected": value, "actual": manifest.get(key)}
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if set(manifest.get("roles", [])) != {"train", "validation"}:
+        drift["roles"] = {"expected": ["train", "validation"], "actual": manifest.get("roles")}
+    cache_domains = {
+        str(row.get("domain_id")): row
+        for row in manifest.get("domains", [])
+        if isinstance(row, Mapping) and row.get("domain_id")
+    }
+    if set(cache_domains) != domains:
+        drift["domains"] = {"expected": sorted(domains), "actual": sorted(cache_domains)}
+    if drift:
+        raise ValueError(f"MMW GPS coordinate cache provenance mismatch: {json.dumps(drift, sort_keys=True)}")
+    for domain, row in cache_domains.items():
+        cache_path = gps_cache_root / f"{domain.replace('/', '__')}.npz"
+        digest, _ = checkpoint_file_digest(cache_path)
+        if digest != row.get("sha256"):
+            raise ValueError(f"MMW GPS coordinate cache digest mismatch: {cache_path}")
+    manifest_sha256, _ = checkpoint_file_digest(manifest_path)
+    return {
+        "frame_cache_root": str(frame_cache_root),
+        "frame_cache_strict": True,
+        "gps_coordinate_cache_root": str(gps_cache_root),
+        "gps_coordinate_manifest_sha256": manifest_sha256,
+    }
 
 
 def _bind_topology_audit(cfg: dict[str, Any], path: Path) -> dict[str, str]:
@@ -147,6 +245,8 @@ def _require_resolved(cfg: Mapping[str, Any]) -> None:
     resolver = cfg.get("runtime", {}).get("topology_predictor_resolver")
     if not isinstance(resolver, Mapping) or resolver.get("single_stage") is not True:
         raise ValueError("Config was not produced by the topology-predictor resolver.")
+    if resolver.get("preprocessed_caches") != _validate_preprocessed_caches(cfg):
+        raise ValueError("Resolved topology cache binding has drifted.")
     if cfg.get("data_protocol", {}).get("test_evaluated") is not False:
         raise ValueError("Resolved topology training must keep the outer test sealed.")
 

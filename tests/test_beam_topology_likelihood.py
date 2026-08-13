@@ -11,7 +11,6 @@ from kd_sensing.eval.beam_topology_likelihood import (
     COVARIANCE_MODE_DIAGONAL,
     COVARIANCE_MODE_FULL,
     TBCP_BUDGET,
-    build_posterior5_hill2_candidates,
     build_topology_open_loop_candidates,
     fit_topology_likelihood,
     load_topology_likelihood,
@@ -144,7 +143,6 @@ def test_topology_likelihood_rejects_label_and_artifact_drift(tmp_path: Path) ->
             expected_provenance=provenance,
             expected_train_power_content_sha256=artifact.metadata["train_power_content_sha256"],
         )
-
 
 def test_topology_likelihood_rejects_current_train_power_content_drift(tmp_path: Path) -> None:
     paths, labels, protocol_ids, provenance = _fit_inputs(tmp_path)
@@ -367,12 +365,13 @@ def test_batched_tbcp_observes_only_at_registered_batch_boundaries(
     open_loop = build_topology_open_loop_candidates(prior, artifact.gain_kernel, budget=7)
 
     assert [call.shape for call in calls] == [(2, width) for width in schedule]
-    assert trace.probe_indices.shape == (2, 7)
-    assert trace.measurements.shape == (2, 7)
+    budget = sum(schedule)
+    assert trace.probe_indices.shape == (2, budget)
+    assert trace.measurements.shape == (2, budget)
     assert trace.posterior_map.shape == (2, len(schedule) + 1)
     assert trace.posterior_entropy.shape == (2, len(schedule) + 1)
     assert np.array_equal(trace.probe_indices[:, :2], open_loop[:, :2])
-    assert all(len(set(row.tolist())) == 7 for row in trace.probe_indices)
+    assert all(len(set(row.tolist())) == budget for row in trace.probe_indices)
     expected_final = trace.probe_indices[np.arange(2), np.argmax(trace.measurements, axis=-1)]
     assert np.array_equal(trace.final_beam, expected_final)
 
@@ -405,13 +404,3 @@ def test_tbcp_and_open_loop_reject_invalid_budget(tmp_path: Path, budget: object
             artifact,
             budget=budget,  # type: ignore[arg-type]
         )
-
-
-def test_posterior5_hill2_uses_measured_winner_and_unprobed_neighbors() -> None:
-    initial = np.asarray([[0, 1, 2, 10, 20], [63, 62, 61, 30, 40]])
-    measurements = np.asarray([[0.2, 0.3, 1.0, 0.1, 0.1], [1.0, 0.5, 0.4, 0.1, 0.1]])
-
-    additions = build_posterior5_hill2_candidates(initial, measurements)
-
-    assert additions.tolist() == [[3, 4], [0, 1]]
-    assert all(not set(row).intersection(extra) for row, extra in zip(initial, additions, strict=True))

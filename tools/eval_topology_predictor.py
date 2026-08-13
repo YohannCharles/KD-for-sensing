@@ -73,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
         probe.add_argument("--matrix-report", required=True)
         probe.add_argument("--topology-likelihood", required=True)
         probe.add_argument("--output-dir", required=True)
+        if action == "probe-robustness":
+            probe.add_argument("--samples-per-pattern", type=int, default=512)
         if action == "probe-diagnostic":
             probe.add_argument("--max-samples-per-pattern", type=int)
             probe.add_argument("--include-diagonal-covariance-ablation", action="store_true")
@@ -126,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                 likelihood=likelihood,
                 likelihood_source=source,
                 output_dir=args.output_dir,
+                samples_per_pattern=args.samples_per_pattern,
             )
         print(json.dumps({"report": result["report"], "output_dir": result["output_dir"]}, indent=2))
         return 0

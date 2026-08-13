@@ -30,6 +30,97 @@ def test_launcher_only_plans_u0_and_retained_baselines(tmp_path: Path) -> None:
         launcher.build_job_matrix(("T2",), (1,), (0,), tmp_path)
 
 
+def test_launcher_baseline_profile_uses_registered_whole_schedule_and_validation_best(tmp_path: Path) -> None:
+    launcher = _script_module("launch_mmw_all_weather_matrix")
+
+    cfg = launcher.build_config(
+        "amber_full",
+        tmp_path,
+        protocol_path=launcher.DEFAULT_PROTOCOL,
+        split_seed=0,
+        train_seed=1,
+        epochs=40,
+        batch_size=32,
+        whole_modality=True,
+        checkpoint_selection="best_validation_loss",
+    )
+
+    temporal = cfg["temporal_missing"]
+    assert temporal["schedule_id"] == launcher.WHOLE_ONLY_PATTERN_SCHEDULE_ID
+    assert temporal["panel_size"] == 480
+    assert temporal["condition_counts"] == {
+        "clean": 120,
+        "drop1": 120,
+        "drop2": 120,
+        "drop3": 120,
+        "token20": 0,
+        "token40": 0,
+        "token60": 0,
+        "token80": 0,
+        "token90": 0,
+    }
+    assert cfg["training"]["checkpoint_selection"] == "best_validation_loss"
+    assert cfg["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
+
+
+def test_launcher_default_profile_does_not_change_canonical_schedule_or_checkpoint_policy(tmp_path: Path) -> None:
+    launcher = _script_module("launch_mmw_all_weather_matrix")
+
+    cfg = launcher.build_config(
+        "rmbp_mm",
+        tmp_path,
+        protocol_path=launcher.DEFAULT_PROTOCOL,
+        split_seed=0,
+        train_seed=1,
+        epochs=40,
+        batch_size=32,
+    )
+
+    temporal = cfg["temporal_missing"]
+    assert temporal["schedule_id"] == "mmw_fair_pattern_v1"
+    assert temporal["panel_size"] == 600
+    assert temporal["condition_counts"]["clean"] == 120
+    assert temporal["condition_counts"]["drop1"] == 60
+    assert "checkpoint_selection" not in cfg["training"]
+    assert cfg["model"]["primary"]["modalities"] == ["image", "radar", "gps", "lidar"]
+
+
+def test_launcher_strict_cache_roots_are_matched_and_optional(tmp_path: Path) -> None:
+    launcher = _script_module("launch_mmw_all_weather_matrix")
+    frame_root = tmp_path / "frames"
+    gps_root = tmp_path / "gps"
+    frame_root.mkdir()
+    gps_root.mkdir()
+
+    cfg = launcher.build_config(
+        "rmbp_mm",
+        tmp_path / "run",
+        protocol_path=launcher.DEFAULT_PROTOCOL,
+        split_seed=0,
+        train_seed=1,
+        epochs=40,
+        batch_size=32,
+        frame_cache_root=frame_root,
+        gps_coordinate_cache_root=gps_root,
+    )
+    dataset = cfg["data"]["dataset"]
+    assert dataset["frame_cache_strict"] is True
+    assert dataset["frame_cache_root"] == str(frame_root.resolve())
+    assert dataset["gps_coordinate_cache_root"] == str(gps_root.resolve())
+
+    with pytest.raises(ValueError, match="provided together"):
+        launcher.build_config(
+            "rmbp_mm",
+            tmp_path / "run_missing_pair",
+            protocol_path=launcher.DEFAULT_PROTOCOL,
+            split_seed=0,
+            train_seed=1,
+            epochs=40,
+            batch_size=32,
+            frame_cache_root=frame_root,
+        )
+
+
 def test_evaluator_temporal_cache_is_small_and_self_validating(tmp_path: Path) -> None:
     evaluator = _script_module("eval_mmw_all_weather_matrix")
 

@@ -21,11 +21,13 @@ _FIELDS = frozenset(
         "enabled",
         "lambda_fused_hard",
         "lambda_unimodal",
+        "hard_label_smoothing",
         "unimodal_hard_weight",
         "unimodal_soft_weight",
         "use_beam_prototype_alignment",
         "lambda_proto",
         "lambda_modality_proto",
+        "joint_topology_weight",
         "beam_label_sigma",
         "prototype_topology",
     }
@@ -46,11 +48,15 @@ def four_modal_topology_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", False)),
         "lambda_fused_hard": _finite(raw.get("lambda_fused_hard", 1.0), "lambda_fused_hard"),
         "lambda_unimodal": _finite(raw.get("lambda_unimodal", 1.0), "lambda_unimodal"),
+        "hard_label_smoothing": _label_smoothing(
+            raw.get("hard_label_smoothing", 0.0), "hard_label_smoothing"
+        ),
         "unimodal_hard_weight": _finite(raw.get("unimodal_hard_weight", 1.0), "unimodal_hard_weight"),
         "unimodal_soft_weight": _finite(raw.get("unimodal_soft_weight", 0.5), "unimodal_soft_weight"),
         "use_beam_prototype_alignment": bool(raw.get("use_beam_prototype_alignment", True)),
         "lambda_proto": _finite(raw.get("lambda_proto", 0.2), "lambda_proto"),
         "lambda_modality_proto": _finite(raw.get("lambda_modality_proto", 0.1), "lambda_modality_proto"),
+        "joint_topology_weight": _finite(raw.get("joint_topology_weight", 0.0), "joint_topology_weight"),
         "beam_label_sigma": _finite(raw.get("beam_label_sigma", 2.0), "beam_label_sigma", positive=True),
         "prototype_topology": _prototype_topology(raw.get("prototype_topology")),
     }
@@ -75,12 +81,18 @@ def four_modal_topology_loss(
     unimodal_logits = torch.as_tensor(output["unimodal_logits"])
     if tuple(available.shape) != tuple(unimodal_logits.shape[:2]) or unimodal_logits.ndim != 3:
         raise ValueError("unimodal_logits and available_modalities must have shapes [B,4,64] and [B,4].")
-    fused_hard = F.cross_entropy(logits, hard, ignore_index=-100)
+    fused_hard = F.cross_entropy(
+        logits,
+        hard,
+        ignore_index=-100,
+        label_smoothing=float(config["hard_label_smoothing"]),
+    )
     safe_hard = hard.masked_fill(~valid, 0)
     per_modality_hard = F.cross_entropy(
         unimodal_logits.reshape(-1, unimodal_logits.shape[-1]),
         safe_hard.unsqueeze(1).expand(-1, unimodal_logits.shape[1]).reshape(-1),
         reduction="none",
+        label_smoothing=float(config["hard_label_smoothing"]),
     ).reshape_as(available)
     loss_mask = available & valid.unsqueeze(1)
     denominator = loss_mask.sum(dim=1).clamp_min(1).to(torch.float32)
@@ -91,7 +103,7 @@ def four_modal_topology_loss(
         safe_hard,
         int(unimodal_logits.shape[-1]),
         float(config["beam_label_sigma"]),
-        circular=True,
+        circular=topology["id"] != "linear_index_v1",
         topology_id=topology["id"],
         topology_permutation=topology["permutation"],
     ).to(device=logits.device, dtype=torch.float32)
@@ -104,6 +116,9 @@ def four_modal_topology_loss(
         + float(config["unimodal_soft_weight"]) * unimodal_soft
     )
 
+    fused_topology = -(soft_target[valid] * F.log_softmax(logits[valid].float(), dim=-1)).sum(dim=-1).mean()
+    joint_topology = 0.5 * (fused_topology + unimodal_soft)
+
     prototype = logits.sum() * 0.0
     prototype_diagnostics: dict[str, float] = {}
     if bool(config["use_beam_prototype_alignment"]):
@@ -114,7 +129,7 @@ def four_modal_topology_loss(
             modality_features=torch.as_tensor(output["modality_features"])[valid],
             mask=available[valid],
             beam_label_sigma=float(config["beam_label_sigma"]),
-            circular=True,
+            circular=topology["id"] != "linear_index_v1",
             topology_id=topology["id"],
             topology_permutation=topology["permutation"],
             lambda_proto=float(config["lambda_proto"]),
@@ -123,6 +138,7 @@ def four_modal_topology_loss(
     total = (
         float(config["lambda_fused_hard"]) * fused_hard
         + float(config["lambda_unimodal"]) * unimodal
+        + float(config["joint_topology_weight"]) * joint_topology
         + prototype
     )
     diagnostics = {
@@ -131,6 +147,11 @@ def four_modal_topology_loss(
         "loss/unimodal": _scalar(unimodal),
         "loss/unimodal_hard": _scalar(unimodal_hard),
         "loss/unimodal_soft": _scalar(unimodal_soft),
+        "loss/joint_topology_fused": _scalar(fused_topology),
+        "loss/joint_topology_unimodal": _scalar(unimodal_soft),
+        "loss/joint_topology": _scalar(joint_topology),
+        "loss/joint_topology_weight": float(config["joint_topology_weight"]),
+        "loss/hard_label_smoothing": float(config["hard_label_smoothing"]),
         **prototype_diagnostics,
     }
     return {"loss": total, "task_loss": fused_hard, "diagnostics": diagnostics}
@@ -191,8 +212,8 @@ def _prototype_topology(value: Any) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"prototype_topology contains unsupported fields: {unknown}.")
     topology_id = str(raw.get("id", "")).strip().lower()
-    if topology_id not in TOPOLOGY_IDS or topology_id == "linear_index_v1":
-        raise ValueError("four_modal_topology requires a supported circular topology.")
+    if topology_id not in TOPOLOGY_IDS:
+        raise ValueError("four_modal_topology requires a supported topology.")
     raw_permutation = raw.get("permutation")
     if topology_id == "permuted_index_v1":
         permutation = [int(item) for item in raw_permutation] if isinstance(raw_permutation, (list, tuple)) else []
@@ -233,6 +254,13 @@ def _finite(value: Any, field: str, *, positive: bool = False) -> float:
     if not math.isfinite(result) or result < 0.0 or (positive and result <= 0.0):
         comparator = "positive" if positive else "non-negative"
         raise ValueError(f"{field} must be finite and {comparator}.")
+    return result
+
+
+def _label_smoothing(value: Any, field: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise ValueError(f"{field} must be finite and in [0, 1].")
     return result
 
 

@@ -185,6 +185,12 @@ def _sample_id_hash(dataset: Any) -> str:
         for index in indices:
             row = rows[int(index)] if int(index) < len(rows) else {}
             sample_id = str(row.get("sample_id", "")).strip()
+            if not sample_id and str(getattr(leaf, "schema_identity", {}).get("dataset_family", "")) == "DeepSense6G":
+                scene = str(getattr(leaf, "scene_slug", "")).strip()
+                split = str(getattr(leaf, "split", "")).strip()
+                seq_index = str(row.get("seq_index", "")).strip() or str(int(index))
+                if scene and split:
+                    sample_id = f"deepsense6g:{scene}:{split}:{seq_index}"
             if not sample_id:
                 raise ValueError("GPS normalization provenance requires a sample_id for every train sample.")
             values.append(sample_id)

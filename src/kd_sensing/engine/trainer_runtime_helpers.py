@@ -15,7 +15,7 @@ from kd_sensing.engine.data_factory import shutdown_dataloader_workers
 from kd_sensing.engine.validator import validate
 from kd_sensing.utils.missing_patterns import resolve_missing_patterns
 from kd_sensing.eval.u_mask_beam_jepa_eval_matrix import (
-    evaluate_missing_matrix,
+    evaluate_missing_matrix_single_pass,
     format_results_markdown,
     save_results_csv,
     save_results_json,
@@ -286,7 +286,11 @@ def _evaluate_final_test_split(
     primary_model.eval()
     try:
         metrics = validate(primary_model, test_loader, cfg, task_criterion, device, output_dir=run_dir)
-        missing_pattern_results = _write_missing_pattern_eval(primary_model, test_loader, cfg, device, run_dir=run_dir)
+        missing_pattern_results = (
+            _write_missing_pattern_eval(primary_model, test_loader, cfg, device, run_dir=run_dir)
+            if cfg.get("training", {}).get("final_test_missing_matrix") is True
+            else []
+        )
     finally:
         shutdown_dataloader_workers(test_loader)
     metrics["evaluation_split"] = "test"
@@ -499,7 +503,7 @@ def _write_missing_pattern_eval(model, dataloader, cfg: dict, device, *, run_dir
     modalities = cfg["model"]["primary"]["modalities"]
     pattern_names = eval_cfg["patterns"]
     patterns = resolve_missing_patterns(pattern_names, modalities)
-    results = evaluate_missing_matrix(
+    results = evaluate_missing_matrix_single_pass(
         model,
         dataloader,
         device,
